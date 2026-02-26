@@ -37,11 +37,50 @@ export interface MigrationStatus {
   readonly current: string | null
 }
 
+export interface RlsPolicySnapshot {
+  readonly tableName: string
+  readonly policyName: string
+  readonly command: string
+  readonly roles: ReadonlyArray<string>
+  readonly using: string | null
+  readonly withCheck: string | null
+}
+
+export interface JobSnapshot {
+  readonly jobId?: number
+  readonly procName: string
+  readonly scheduleInterval: string
+  readonly config: Record<string, unknown> | null
+  readonly scheduled: boolean
+}
+
+export interface CaggPolicySnapshot {
+  readonly viewName: string
+  readonly refreshPolicies: ReadonlyArray<{
+    readonly startOffset: string
+    readonly endOffset: string
+    readonly scheduleInterval: string
+  }>
+  readonly retentionPolicy?: { readonly dropAfter: string }
+  readonly compressionEnabled: boolean
+}
+
+export interface HypertablePolicySnapshot {
+  readonly hypertableName: string
+  readonly compressionPolicy?: { readonly after: string }
+  readonly retentionPolicy?: { readonly dropAfter: string }
+  readonly reorderPolicy?: { readonly indexName: string }
+}
+
 export interface SchemaSnapshot {
   readonly tables: ReadonlyArray<TableSnapshot>
   readonly hypertables: ReadonlyArray<HypertableSnapshot>
   readonly continuousAggregates: ReadonlyArray<CaggSnapshot>
   readonly enums?: ReadonlyArray<EnumSnapshot>
+  readonly rlsPolicies?: ReadonlyArray<RlsPolicySnapshot>
+  readonly jobs?: ReadonlyArray<JobSnapshot>
+  readonly caggPolicies?: ReadonlyArray<CaggPolicySnapshot>
+  readonly hypertablePolicies?: ReadonlyArray<HypertablePolicySnapshot>
   readonly takenAt: Date
 }
 
@@ -81,12 +120,16 @@ export interface HypertableSnapshot {
   readonly compressionEnabled: boolean
   readonly compressionSettings?: CompressionSettingSnapshot
   readonly accessMethod?: string
+  readonly hypercoreSegmentby?: ReadonlyArray<string>
+  readonly hypercoreOrderby?: ReadonlyArray<string>
 }
 
 export interface CaggSnapshot {
   readonly viewName: string
   readonly viewSchema: string
   readonly viewDefinition: string
+  readonly materializedOnly?: boolean
+  readonly compressionEnabled?: boolean
 }
 
 export interface EnumSnapshot {

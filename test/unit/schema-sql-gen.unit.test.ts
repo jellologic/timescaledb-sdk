@@ -2085,3 +2085,844 @@ describe("SQL Generation — Rollback quality (M6)", () => {
     expect(down.some((s) => s.includes("Cannot auto-generate recreation of dropped continuous aggregate"))).toBe(true)
   })
 })
+
+// ==========================================================================
+// Batch 4F — Snapshot/Diff Completeness Tests
+// ==========================================================================
+
+describe("RLS Policy Diffing — existing tables", () => {
+  test("detects new RLS policy on existing table", () => {
+    const t = pgTable("users", {
+      id: serial("id"),
+      tenant_id: integer("tenant_id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [rlsPolicy("tenant_isolation", { using: "tenant_id = current_setting('app.tenant_id')::int", command: "ALL" })],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "users", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "tenant_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.rlsPoliciesToCreate.length).toBe(1)
+    expect(diff.rlsPoliciesToCreate[0]!.policy.name).toBe("tenant_isolation")
+    expect(diff.rlsToEnable.length).toBe(1)
+    expect(diff.rlsToEnable[0]).toBe("users")
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("ENABLE ROW LEVEL SECURITY"))).toBe(true)
+    expect(up.some((s) => s.includes("CREATE POLICY") && s.includes("tenant_isolation"))).toBe(true)
+  })
+
+  test("detects dropped RLS policy on existing table", () => {
+    const t = pgTable("users", {
+      id: serial("id"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "users", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [{
+        tableName: "users",
+        policyName: "old_policy",
+        command: "ALL",
+        roles: [],
+        using: "true",
+        withCheck: null,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.rlsPoliciesToDrop.length).toBe(1)
+    expect(diff.rlsPoliciesToDrop[0]!.policyName).toBe("old_policy")
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("DROP POLICY") && s.includes("old_policy"))).toBe(true)
+  })
+
+  test("detects altered RLS policy (USING change)", () => {
+    const t = pgTable("users", {
+      id: serial("id"),
+      tenant_id: integer("tenant_id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [rlsPolicy("tenant_policy", { using: "tenant_id = 42", command: "SELECT" })],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "users", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "tenant_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [{
+        tableName: "users",
+        policyName: "tenant_policy",
+        command: "SELECT",
+        roles: [],
+        using: "tenant_id = 1",
+        withCheck: null,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.rlsPoliciesToAlter.length).toBe(1)
+    expect(diff.rlsPoliciesToAlter[0]!.using).toBe("tenant_id = 42")
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("ALTER POLICY") && s.includes("tenant_id = 42"))).toBe(true)
+  })
+
+  test("multiple policies per table", () => {
+    const t = pgTable("documents", {
+      id: serial("id"),
+      owner_id: integer("owner_id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [
+        rlsPolicy("owner_select", { using: "owner_id = current_user_id()", command: "SELECT" }),
+        rlsPolicy("owner_insert", { check: "owner_id = current_user_id()", command: "INSERT" }),
+        rlsPolicy("admin_all", { using: "is_admin()", command: "ALL", roles: ["admin"] }),
+      ],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "documents", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "owner_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.rlsPoliciesToCreate.length).toBe(3)
+
+    const { up } = generateMigrationSql(diff, [t])
+    const policyStatements = up.filter((s) => s.includes("CREATE POLICY"))
+    expect(policyStatements.length).toBe(3)
+    expect(policyStatements.some((s) => s.includes("owner_select") && s.includes("FOR SELECT"))).toBe(true)
+    expect(policyStatements.some((s) => s.includes("owner_insert") && s.includes("FOR INSERT"))).toBe(true)
+    expect(policyStatements.some((s) => s.includes("admin_all") && s.includes("TO admin"))).toBe(true)
+  })
+
+  test("policy with both USING and WITH CHECK and specific roles", () => {
+    const t = pgTable("orders", {
+      id: serial("id"),
+      store_id: integer("store_id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [
+        rlsPolicy("store_access", {
+          command: "ALL",
+          using: "store_id = current_store()",
+          check: "store_id = current_store()",
+          roles: ["store_manager", "store_employee"],
+        }),
+      ],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "orders", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "store_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    const { up } = generateMigrationSql(diff, [t])
+    const policySql = up.find((s) => s.includes("CREATE POLICY") && s.includes("store_access"))!
+    expect(policySql).toContain("USING (store_id = current_store())")
+    expect(policySql).toContain("WITH CHECK (store_id = current_store())")
+    expect(policySql).toContain("TO store_manager, store_employee")
+  })
+})
+
+describe("Job Diffing", () => {
+  test("detects new job (not in snapshot)", () => {
+    const job = backgroundJob("cleanup_fn", "1 day", { name: "cleanup" })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      jobs: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([job], snapshot)
+    expect(diff.jobsToCreate.length).toBe(1)
+    expect(diff.jobsToCreate[0]!.functionName).toBe("cleanup_fn")
+  })
+
+  test("detects deleted job (in snapshot but not in definitions)", () => {
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      jobs: [{
+        jobId: 1000,
+        procName: "old_cleanup",
+        scheduleInterval: "1 day",
+        config: null,
+        scheduled: true,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([], snapshot)
+    expect(diff.jobsToDelete.length).toBe(1)
+    expect(diff.jobsToDelete[0]!.procName).toBe("old_cleanup")
+
+    const { up } = generateMigrationSql(diff, [])
+    expect(up.some((s) => s.includes("delete_job") && s.includes("old_cleanup"))).toBe(true)
+  })
+
+  test("detects job schedule change via name", () => {
+    const job = backgroundJob("my_fn", "2 hours", { name: "my_job" })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      jobs: [{
+        procName: "my_fn",
+        scheduleInterval: "1 hour",
+        config: { sdk_job_name: "my_job" },
+        scheduled: true,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([job], snapshot)
+    expect(diff.jobsToCreate.length).toBe(0)
+    expect(diff.jobsToAlter.length).toBe(1)
+    expect(diff.jobsToAlter[0]!.scheduleInterval).toBe("2 hours")
+
+    const { up } = generateMigrationSql(diff, [job])
+    expect(up.some((s) => s.includes("alter_job") && s.includes("2 hours"))).toBe(true)
+  })
+
+  test("job with name stores sdk_job_name in config", () => {
+    const job = backgroundJob("my_fn", "1 hour", {
+      name: "named_job",
+      config: { key: "value" },
+    })
+    expect(job.config!.sdk_job_name).toBe("named_job")
+    expect(job.config!.key).toBe("value")
+  })
+})
+
+describe("Hypertable Policy Diffing — existing hypertables", () => {
+  test("detects new compression policy on existing hypertable", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      compression: { segmentby: ["time"], after: "30 days" },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+        { name: "value", dataType: "double precision", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: true }],
+      continuousAggregates: [],
+      hypertablePolicies: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.compressionPoliciesToAdd.length).toBe(1)
+    expect(diff.compressionPoliciesToAdd[0]!.after).toBe("30 days")
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("add_compression_policy") && s.includes("30 days"))).toBe(true)
+  })
+
+  test("detects removed compression policy", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      compression: { segmentby: ["time"] }, // no after
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+        { name: "value", dataType: "double precision", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: true }],
+      continuousAggregates: [],
+      hypertablePolicies: [{
+        hypertableName: "events",
+        compressionPolicy: { after: "30 days" },
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.compressionPoliciesToRemove.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("remove_compression_policy"))).toBe(true)
+  })
+
+  test("detects new retention policy on existing hypertable", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+      retention: { dropAfter: "365 days" },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: false }],
+      continuousAggregates: [],
+      hypertablePolicies: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.retentionPoliciesToAdd.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("add_retention_policy") && s.includes("365 days"))).toBe(true)
+  })
+
+  test("detects removed retention policy", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: false }],
+      continuousAggregates: [],
+      hypertablePolicies: [{
+        hypertableName: "events",
+        retentionPolicy: { dropAfter: "365 days" },
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.retentionPoliciesToRemove.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("remove_retention_policy"))).toBe(true)
+  })
+
+  test("detects new reorder policy on existing hypertable", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: integer("device_id"),
+    }, {
+      timeColumn: "time",
+      reorderPolicy: { indexName: "events_device_time_idx" },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+        { name: "device_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: false }],
+      continuousAggregates: [],
+      hypertablePolicies: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.reorderPoliciesToAdd.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("add_reorder_policy") && s.includes("events_device_time_idx"))).toBe(true)
+  })
+
+  test("detects removed reorder policy", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: false }],
+      continuousAggregates: [],
+      hypertablePolicies: [{
+        hypertableName: "events",
+        reorderPolicy: { indexName: "old_idx" },
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.reorderPoliciesToRemove.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("remove_reorder_policy"))).toBe(true)
+  })
+})
+
+describe("CAGG Policy Diffing — existing CAGGs", () => {
+  test("detects new refresh policy on existing CAGG", () => {
+    const cagg = continuousAggregateView("hourly_metrics", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("temperature", "avg_temp")],
+      groupBy: ["device_id"],
+      refreshPolicy: { startOffset: "3 days", endOffset: "1 hour", scheduleInterval: "1 hour" },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{ viewName: "hourly_metrics", viewSchema: "public", viewDefinition: "" }],
+      caggPolicies: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot)
+    expect(diff.caggRefreshPoliciesToAdd.length).toBe(1)
+    expect(diff.caggRefreshPoliciesToAdd[0]!.scheduleInterval).toBe("1 hour")
+
+    const { up } = generateMigrationSql(diff, [cagg])
+    expect(up.some((s) => s.includes("add_continuous_aggregate_policy") && s.includes("hourly_metrics"))).toBe(true)
+  })
+
+  test("detects removed refresh policy on existing CAGG", () => {
+    const cagg = continuousAggregateView("hourly_metrics", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [],
+      groupBy: [],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{ viewName: "hourly_metrics", viewSchema: "public", viewDefinition: "" }],
+      caggPolicies: [{
+        viewName: "hourly_metrics",
+        refreshPolicies: [{ startOffset: "3 days", endOffset: "1 hour", scheduleInterval: "1 hour" }],
+        compressionEnabled: false,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot)
+    expect(diff.caggRefreshPoliciesToRemove.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [cagg])
+    expect(up.some((s) => s.includes("remove_continuous_aggregate_policy"))).toBe(true)
+  })
+
+  test("detects new retention policy on existing CAGG", () => {
+    const cagg = continuousAggregateView("hourly_metrics", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [],
+      groupBy: [],
+      retentionPolicy: { dropAfter: "30 days" },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{ viewName: "hourly_metrics", viewSchema: "public", viewDefinition: "" }],
+      caggPolicies: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot)
+    expect(diff.caggRetentionPoliciesToAdd.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [cagg])
+    expect(up.some((s) => s.includes("add_retention_policy") && s.includes("30 days"))).toBe(true)
+  })
+
+  test("detects removed retention policy on existing CAGG", () => {
+    const cagg = continuousAggregateView("hourly_metrics", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [],
+      groupBy: [],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{ viewName: "hourly_metrics", viewSchema: "public", viewDefinition: "" }],
+      caggPolicies: [{
+        viewName: "hourly_metrics",
+        refreshPolicies: [],
+        retentionPolicy: { dropAfter: "30 days" },
+        compressionEnabled: false,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot)
+    expect(diff.caggRetentionPoliciesToRemove.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [cagg])
+    expect(up.some((s) => s.includes("remove_retention_policy"))).toBe(true)
+  })
+
+  test("detects CAGG compression enable", () => {
+    const cagg = continuousAggregateView("hourly_metrics", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [],
+      groupBy: [],
+      compress: true,
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{ viewName: "hourly_metrics", viewSchema: "public", viewDefinition: "", compressionEnabled: false }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot)
+    expect(diff.caggCompressionToEnable.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [cagg])
+    expect(up.some((s) => s.includes("timescaledb.compress = true") && s.includes("hourly_metrics"))).toBe(true)
+  })
+
+  test("detects CAGG compression disable", () => {
+    const cagg = continuousAggregateView("hourly_metrics", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [],
+      groupBy: [],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{ viewName: "hourly_metrics", viewSchema: "public", viewDefinition: "", compressionEnabled: true }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot)
+    expect(diff.caggCompressionToDisable.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [cagg])
+    expect(up.some((s) => s.includes("timescaledb.compress = false"))).toBe(true)
+  })
+})
+
+describe("Hypercore Diffing — existing hypertables", () => {
+  test("detects hypercore enable on existing hypertable", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+      hypercore: { enabled: true },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: false, accessMethod: "heap" }],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.hypercoreToEnable.length).toBe(1)
+
+    const { up, down } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("SET ACCESS METHOD hypercore"))).toBe(true)
+    expect(down.some((s) => s.includes("SET ACCESS METHOD heap"))).toBe(true)
+  })
+
+  test("detects hypercore disable on existing hypertable", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: false, accessMethod: "hypercore" }],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.hypercoreToDisable.length).toBe(1)
+
+    const { up, down } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("SET ACCESS METHOD heap"))).toBe(true)
+    expect(down.some((s) => s.includes("SET ACCESS METHOD hypercore"))).toBe(true)
+  })
+
+  test("detects hypercore settings changes", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: integer("device_id"),
+    }, {
+      timeColumn: "time",
+      hypercore: { enabled: true, segmentby: ["device_id"], orderby: [{ column: "time", order: "DESC" }] },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+        { name: "device_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{
+        name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days",
+        compressionEnabled: false, accessMethod: "hypercore",
+        hypercoreSegmentby: ["time"], // was segmented by time, now by device_id
+        hypercoreOrderby: ["time"],
+      }],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.hypercoreSettingsToAlter.length).toBe(1)
+    expect(diff.hypercoreSettingsToAlter[0]!.segmentby).toEqual(["device_id"])
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("compress_segmentby") && s.includes("device_id"))).toBe(true)
+  })
+})
+
+// ==========================================================================
+// Batch 5E — Missing TimescaleDB API Tests
+// ==========================================================================
+
+describe("Chunk Interval Change Detection (5A)", () => {
+  test("detects chunk interval change and generates set_chunk_time_interval", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+      chunkInterval: "1 day",
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: false }],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.chunkIntervalsToAlter.length).toBe(1)
+    expect(diff.chunkIntervalsToAlter[0]!.interval).toBe("1 day")
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("set_chunk_time_interval") && s.includes("1 day"))).toBe(true)
+  })
+
+  test("no chunk interval change when same", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+      chunkInterval: "7 days",
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{ name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days", compressionEnabled: false }],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.chunkIntervalsToAlter.length).toBe(0)
+  })
+})
+
+describe("Compression Settings Change Detection (5B/6A)", () => {
+  test("detects segmentby column change → ALTER TABLE SET", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: integer("device_id"),
+    }, {
+      timeColumn: "time",
+      compression: { segmentby: ["device_id"] },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+        { name: "device_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{
+        name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days",
+        compressionEnabled: true,
+        compressionSettings: { segmentby: ["time"], orderby: [] },
+      }],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.compressionSettingsToAlter.length).toBe(1)
+    expect(diff.compressionSettingsToAlter[0]!.segmentby).toEqual(["device_id"])
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("compress_segmentby") && s.includes("device_id"))).toBe(true)
+  })
+
+  test("detects orderby direction change → ALTER TABLE SET", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+      compression: { orderby: [{ column: "time", order: "DESC" }] },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{
+        name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days",
+        compressionEnabled: true,
+        compressionSettings: { segmentby: [], orderby: ["time"] }, // was ASC (no suffix)
+      }],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.compressionSettingsToAlter.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [ht])
+    expect(up.some((s) => s.includes("compress_orderby") && s.includes("time DESC"))).toBe(true)
+  })
+
+  test("no change when compression settings match", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: integer("device_id"),
+    }, {
+      timeColumn: "time",
+      compression: { segmentby: ["device_id"], orderby: [{ column: "time" }] },
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "time", dataType: "timestamptz", isNullable: false, defaultValue: null },
+        { name: "device_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [{
+        name: "events", schema: "public", timeColumn: "time", chunkInterval: "7 days",
+        compressionEnabled: true,
+        compressionSettings: { segmentby: ["device_id"], orderby: ["time"] },
+      }],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([ht], snapshot)
+    expect(diff.compressionSettingsToAlter.length).toBe(0)
+  })
+})
+
+describe("compress_chunk_time_interval support (5C)", () => {
+  test("generates compress_chunk_time_interval in ALTER TABLE SET", () => {
+    const ht = hypertable("events", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+      compression: {
+        segmentby: ["time"],
+        chunkTimeInterval: "24 hours",
+      },
+    })
+
+    const up = genUp([ht])
+    const compSql = up.find((s) => s.includes("timescaledb.compress"))
+    expect(compSql).toContain("timescaledb.compress_chunk_time_interval = '24 hours'")
+  })
+})
+
+describe("Job name identification (5D)", () => {
+  test("backgroundJob with name adds sdk_job_name to config", () => {
+    const job = backgroundJob("process_events", "5 minutes", {
+      name: "event_processor",
+      config: { batch_size: 100 },
+    })
+
+    expect(job.name).toBe("event_processor")
+    expect(job.config!.sdk_job_name).toBe("event_processor")
+    expect(job.config!.batch_size).toBe(100)
+  })
+
+  test("backgroundJob without name does not add sdk_job_name", () => {
+    const job = backgroundJob("process_events", "5 minutes")
+    expect(job.name).toBeUndefined()
+    expect(job.config).toBeUndefined()
+  })
+
+  test("job matched by sdk_job_name in diff", () => {
+    const job = backgroundJob("new_fn_name", "1 hour", { name: "stable_name" })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      jobs: [{
+        procName: "old_fn_name",
+        scheduleInterval: "1 hour",
+        config: { sdk_job_name: "stable_name" },
+        scheduled: true,
+      }],
+      takenAt: new Date(),
+    }
+
+    // Should match by sdk_job_name, not procName
+    const diff = diffSchema([job], snapshot)
+    // The old job is matched (stable_name matches), but since procName differs, it shows as alter
+    expect(diff.jobsToCreate.length).toBe(0)
+    expect(diff.jobsToDelete.length).toBe(0)
+  })
+})

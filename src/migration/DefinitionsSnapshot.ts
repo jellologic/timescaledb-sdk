@@ -1,5 +1,5 @@
-import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, CaggDefinition, ConstraintDef, TriggerDef } from "../schema/types.js"
-import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot } from "./types.js"
+import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, CaggDefinition, ConstraintDef, TriggerDef, JobDefinition } from "../schema/types.js"
+import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot } from "./types.js"
 import type { SchemaDefinition } from "./Generator.js"
 
 export interface PersistedSnapshot {
@@ -58,12 +58,29 @@ const hypertableDefToSnapshot = (def: HypertableDefinition): HypertableSnapshot 
   timeColumn: def.hypertableConfig.timeColumn,
   chunkInterval: def.hypertableConfig.chunkInterval ?? null,
   compressionEnabled: def.hypertableConfig.compression !== undefined,
+  compressionSettings: def.hypertableConfig.compression ? {
+    segmentby: [...(def.hypertableConfig.compression.segmentby ?? [])],
+    orderby: (def.hypertableConfig.compression.orderby ?? []).map((o) => {
+      let s = o.column
+      if (o.order === "DESC") s += " DESC"
+      return s
+    }),
+  } : undefined,
+  accessMethod: def.hypertableConfig.hypercore?.enabled ? "hypercore" : undefined,
+  hypercoreSegmentby: def.hypertableConfig.hypercore?.segmentby ? [...def.hypertableConfig.hypercore.segmentby] : undefined,
+  hypercoreOrderby: def.hypertableConfig.hypercore?.orderby ? def.hypertableConfig.hypercore.orderby.map((o) => {
+    let s = o.column
+    if (o.order === "DESC") s += " DESC"
+    return s
+  }) : undefined,
 })
 
 const caggDefToSnapshot = (def: CaggDefinition): CaggSnapshot => ({
   viewName: def.viewName,
   viewSchema: def.schema,
   viewDefinition: "",
+  materializedOnly: def.materializedOnly,
+  compressionEnabled: def.compress,
 })
 
 export const definitionsToSnapshot = (
@@ -78,14 +95,74 @@ export const definitionsToSnapshot = (
   const enumDefs = definitions.filter(
     (d): d is EnumTypeDef => d._tag === "EnumType"
   )
+  const jobDefs = definitions.filter(
+    (d): d is JobDefinition => d._tag === "JobDefinition"
+  )
+  const htDefs = tableDefs.filter(
+    (d): d is HypertableDefinition => d._tag === "Hypertable"
+  )
+
+  // Extract RLS policies from table definitions
+  const rlsPolicies: RlsPolicySnapshot[] = []
+  for (const def of tableDefs) {
+    if (def.rlsPolicies) {
+      for (const p of def.rlsPolicies) {
+        rlsPolicies.push({
+          tableName: def.name,
+          policyName: p.name,
+          command: p.command ?? "ALL",
+          roles: p.roles ? [...p.roles] : [],
+          using: p.using ?? null,
+          withCheck: p.check ?? null,
+        })
+      }
+    }
+  }
+
+  // Extract jobs from job definitions
+  const jobs: JobSnapshot[] = jobDefs.map((j) => ({
+    procName: j.functionName,
+    scheduleInterval: j.scheduleInterval,
+    config: j.config ? { ...j.config } : null,
+    scheduled: j.scheduled ?? true,
+  }))
+
+  // Extract CAGG policies from definitions
+  const caggPolicies: CaggPolicySnapshot[] = caggDefs
+    .filter((c) => c.refreshPolicy || c.refreshPolicies || c.retentionPolicy || c.compress)
+    .map((c) => {
+      const policies = c.refreshPolicies ?? (c.refreshPolicy ? [c.refreshPolicy] : [])
+      return {
+        viewName: c.viewName,
+        refreshPolicies: policies.map((p) => ({
+          startOffset: p.startOffset,
+          endOffset: p.endOffset,
+          scheduleInterval: p.scheduleInterval,
+        })),
+        retentionPolicy: c.retentionPolicy ? { dropAfter: c.retentionPolicy.dropAfter } : undefined,
+        compressionEnabled: c.compress ?? false,
+      }
+    })
+
+  // Extract hypertable policies from definitions
+  const hypertablePolicies: HypertablePolicySnapshot[] = htDefs
+    .filter((h) => h.hypertableConfig.compression?.after || h.hypertableConfig.retention || h.hypertableConfig.reorderPolicy)
+    .map((h) => ({
+      hypertableName: h.name,
+      compressionPolicy: h.hypertableConfig.compression?.after ? { after: h.hypertableConfig.compression.after } : undefined,
+      retentionPolicy: h.hypertableConfig.retention ? { dropAfter: h.hypertableConfig.retention.dropAfter } : undefined,
+      reorderPolicy: h.hypertableConfig.reorderPolicy ? { indexName: h.hypertableConfig.reorderPolicy.indexName } : undefined,
+    }))
 
   return {
     tables: tableDefs.map(tableDefToSnapshot),
-    hypertables: tableDefs
-      .filter((d): d is HypertableDefinition => d._tag === "Hypertable")
-      .map(hypertableDefToSnapshot),
+    hypertables: htDefs.map(hypertableDefToSnapshot),
     continuousAggregates: caggDefs.map(caggDefToSnapshot),
     enums: enumDefs.map((e): EnumSnapshot => ({ name: e.name, schema: e.schema, values: [...e.values] })),
+    rlsPolicies,
+    jobs,
+    caggPolicies,
+    hypertablePolicies,
     takenAt: new Date(),
   }
 }

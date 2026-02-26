@@ -118,6 +118,7 @@ export interface CompressionConfig {
   readonly segmentby?: ReadonlyArray<string>
   readonly orderby?: ReadonlyArray<{ column: string; order?: "ASC" | "DESC"; nullsFirst?: boolean }>
   readonly after?: string
+  readonly chunkTimeInterval?: string
 }
 
 export interface RetentionConfig {
@@ -245,6 +246,7 @@ export interface RlsPolicyDef {
 
 export interface JobDefinition {
   readonly _tag: "JobDefinition"
+  readonly name?: string
   readonly functionName: string
   readonly scheduleInterval: string
   readonly initialStart?: string

@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { MigrationError } from "../Error.js"
-import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot } from "./types.js"
 
 export class SnapshotWarning {
   readonly _tag = "SnapshotWarning"
@@ -262,24 +262,30 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
 
     const hypertables: HypertableSnapshot[] = htRows.map((h: any) => {
       const key = `${h.hypertable_schema}.${h.hypertable_name}`
+      const am = accessMethodMap.get(key)
+      const cs = compSettingsMap.get(key)
       return {
         name: h.hypertable_name,
         schema: h.hypertable_schema,
         timeColumn: h.time_column ?? "",
         chunkInterval: h.chunk_interval ?? null,
         compressionEnabled: h.compression_enabled,
-        compressionSettings: compSettingsMap.get(key),
-        accessMethod: accessMethodMap.get(key),
+        compressionSettings: cs,
+        accessMethod: am,
+        // Attach compression settings as hypercore settings when access method is hypercore
+        hypercoreSegmentby: am === "hypercore" && cs ? cs.segmentby : undefined,
+        hypercoreOrderby: am === "hypercore" && cs ? cs.orderby : undefined,
       }
     })
 
-    // Get continuous aggregates
+    // Get continuous aggregates (with materialized_only)
     const caggRows = yield* client.execute<{
       view_name: string
       view_schema: string
       view_definition: string
+      materialized_only: boolean | null
     }>(
-      `SELECT view_name, view_schema, view_definition
+      `SELECT view_name, view_schema, view_definition, materialized_only
        FROM timescaledb_information.continuous_aggregates`
     ).pipe(catchWithWarning("continuous_aggregates", [] as any))
 
@@ -287,6 +293,8 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       viewName: c.view_name,
       viewSchema: c.view_schema,
       viewDefinition: c.view_definition ?? "",
+      materializedOnly: c.materialized_only ?? undefined,
+      compressionEnabled: undefined,
     }))
 
     // 2.5 — Enum snapshot from pg_type
@@ -310,11 +318,148 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       values: e.values ?? [],
     }))
 
+    // RLS policies from pg_policies
+    const rlsPolicyRows = yield* client.execute<{
+      schemaname: string
+      tablename: string
+      policyname: string
+      cmd: string
+      roles: string[]
+      qual: string | null
+      with_check: string | null
+    }>(
+      `SELECT schemaname, tablename, policyname, cmd, roles, qual, with_check
+       FROM pg_policies
+       WHERE schemaname NOT IN ('pg_catalog', 'information_schema')`
+    ).pipe(catchWithWarning("rls_policies", [] as any[]))
+
+    const rlsPolicies: RlsPolicySnapshot[] = (rlsPolicyRows as any[]).map((r) => ({
+      tableName: r.tablename,
+      policyName: r.policyname,
+      command: r.cmd,
+      roles: r.roles ?? [],
+      using: r.qual,
+      withCheck: r.with_check,
+    }))
+
+    // User-defined jobs (filter out internal TimescaleDB procs)
+    const jobRows = yield* client.execute<{
+      job_id: number
+      proc_name: string
+      proc_schema: string
+      schedule_interval: string
+      config: Record<string, unknown> | null
+      scheduled: boolean
+    }>(
+      `SELECT job_id, proc_name, proc_schema, schedule_interval::text, config, scheduled
+       FROM timescaledb_information.jobs
+       WHERE proc_schema NOT LIKE '_timescaledb_%'
+       AND proc_name NOT IN ('policy_refresh_continuous_aggregate', 'policy_retention', 'policy_compression', 'policy_reorder')`
+    ).pipe(catchWithWarning("user_jobs", [] as any[]))
+
+    const jobs: JobSnapshot[] = (jobRows as any[]).map((r) => ({
+      jobId: r.job_id,
+      procName: r.proc_name,
+      scheduleInterval: r.schedule_interval,
+      config: r.config,
+      scheduled: r.scheduled,
+    }))
+
+    // CAGG refresh policies
+    const caggRefreshRows = yield* client.execute<{
+      hypertable_name: string
+      config: Record<string, unknown> | null
+      schedule_interval: string
+    }>(
+      `SELECT hypertable_name, config, schedule_interval::text
+       FROM timescaledb_information.jobs
+       WHERE proc_name = 'policy_refresh_continuous_aggregate'`
+    ).pipe(catchWithWarning("cagg_refresh_policies", [] as any[]))
+
+    // CAGG retention policies
+    const caggRetentionRows = yield* client.execute<{
+      hypertable_name: string
+      config: Record<string, unknown> | null
+    }>(
+      `SELECT hypertable_name, config
+       FROM timescaledb_information.jobs
+       WHERE proc_name = 'policy_retention'
+       AND hypertable_name IN (SELECT view_name FROM timescaledb_information.continuous_aggregates)`
+    ).pipe(catchWithWarning("cagg_retention_policies", [] as any[]))
+
+    // Build caggPolicies map
+    const caggPolicyMap = new Map<string, CaggPolicySnapshot>()
+    for (const row of caggRefreshRows as any[]) {
+      const name = row.hypertable_name
+      if (!caggPolicyMap.has(name)) {
+        caggPolicyMap.set(name, { viewName: name, refreshPolicies: [], compressionEnabled: false })
+      }
+      const entry = caggPolicyMap.get(name)!
+      const cfg = row.config as any
+      ;(entry.refreshPolicies as any[]).push({
+        startOffset: cfg?.start_offset ?? "",
+        endOffset: cfg?.end_offset ?? "",
+        scheduleInterval: row.schedule_interval,
+      })
+    }
+    for (const row of caggRetentionRows as any[]) {
+      const name = row.hypertable_name
+      if (!caggPolicyMap.has(name)) {
+        caggPolicyMap.set(name, { viewName: name, refreshPolicies: [], compressionEnabled: false })
+      }
+      const entry = caggPolicyMap.get(name)!
+      const cfg = row.config as any
+      ;(entry as any).retentionPolicy = { dropAfter: cfg?.drop_after ?? "" }
+    }
+    // Detect CAGG compression from the cagg materialized hypertable
+    for (const cagg of caggRows as any[]) {
+      const name = cagg.view_name
+      if (caggPolicyMap.has(name)) {
+        // compressionEnabled already tracked via snapshot
+      }
+    }
+    const caggPolicies = [...caggPolicyMap.values()]
+
+    // Hypertable policies (compression, retention, reorder)
+    const htPolicyRows = yield* client.execute<{
+      hypertable_name: string
+      proc_name: string
+      config: Record<string, unknown> | null
+      schedule_interval: string
+    }>(
+      `SELECT hypertable_name, proc_name, config, schedule_interval::text
+       FROM timescaledb_information.jobs
+       WHERE proc_name IN ('policy_retention', 'policy_compression', 'policy_reorder')
+       AND hypertable_name NOT IN (SELECT view_name FROM timescaledb_information.continuous_aggregates)`
+    ).pipe(catchWithWarning("hypertable_policies", [] as any[]))
+
+    const htPolicyMap = new Map<string, HypertablePolicySnapshot>()
+    for (const row of htPolicyRows as any[]) {
+      const name = row.hypertable_name
+      if (!htPolicyMap.has(name)) {
+        htPolicyMap.set(name, { hypertableName: name })
+      }
+      const entry = htPolicyMap.get(name)! as any
+      const cfg = row.config as any
+      if (row.proc_name === "policy_compression") {
+        entry.compressionPolicy = { after: cfg?.compress_after ?? row.schedule_interval }
+      } else if (row.proc_name === "policy_retention") {
+        entry.retentionPolicy = { dropAfter: cfg?.drop_after ?? "" }
+      } else if (row.proc_name === "policy_reorder") {
+        entry.reorderPolicy = { indexName: cfg?.index_name ?? "" }
+      }
+    }
+    const hypertablePolicies = [...htPolicyMap.values()]
+
     return {
       tables,
       hypertables,
       continuousAggregates,
       enums,
+      rlsPolicies,
+      jobs,
+      caggPolicies,
+      hypertablePolicies,
       takenAt: new Date(),
     }
   }).pipe(

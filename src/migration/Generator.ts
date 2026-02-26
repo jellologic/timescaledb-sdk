@@ -1,5 +1,5 @@
 import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, IndexDef, EnumTypeDef, CaggDefinition, RlsPolicyDef, JobDefinition } from "../schema/types.js"
-import type { SchemaSnapshot } from "./types.js"
+import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot } from "./types.js"
 import { toSqlValue, quoteIdentifier, quoteString } from "../internal/sql.js"
 
 export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition
@@ -37,6 +37,30 @@ export interface SchemaDiff {
   readonly triggersToCreate: ReadonlyArray<{ table: string; trigger: import("../schema/types.js").TriggerDef }>
   readonly triggersToDrop: ReadonlyArray<{ table: string; triggerName: string }>
   readonly jobsToCreate: ReadonlyArray<JobDefinition>
+  readonly jobsToDelete: ReadonlyArray<{ procName: string }>
+  readonly jobsToAlter: ReadonlyArray<{ procName: string; scheduleInterval?: string; config?: Record<string, unknown> | null }>
+  readonly rlsToEnable: ReadonlyArray<string>
+  readonly rlsToDisable: ReadonlyArray<string>
+  readonly rlsPoliciesToCreate: ReadonlyArray<{ table: string; policy: RlsPolicyDef }>
+  readonly rlsPoliciesToDrop: ReadonlyArray<{ table: string; policyName: string }>
+  readonly rlsPoliciesToAlter: ReadonlyArray<{ table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string> }>
+  readonly compressionPoliciesToAdd: ReadonlyArray<{ table: string; after: string }>
+  readonly compressionPoliciesToRemove: ReadonlyArray<string>
+  readonly retentionPoliciesToAdd: ReadonlyArray<{ table: string; dropAfter: string }>
+  readonly retentionPoliciesToRemove: ReadonlyArray<string>
+  readonly reorderPoliciesToAdd: ReadonlyArray<{ table: string; indexName: string }>
+  readonly reorderPoliciesToRemove: ReadonlyArray<string>
+  readonly caggRefreshPoliciesToAdd: ReadonlyArray<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }>
+  readonly caggRefreshPoliciesToRemove: ReadonlyArray<string>
+  readonly caggRetentionPoliciesToAdd: ReadonlyArray<{ viewName: string; dropAfter: string }>
+  readonly caggRetentionPoliciesToRemove: ReadonlyArray<string>
+  readonly caggCompressionToEnable: ReadonlyArray<string>
+  readonly caggCompressionToDisable: ReadonlyArray<string>
+  readonly hypercoreToEnable: ReadonlyArray<string>
+  readonly hypercoreToDisable: ReadonlyArray<string>
+  readonly hypercoreSettingsToAlter: ReadonlyArray<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: ReadonlyArray<string> }>
+  readonly chunkIntervalsToAlter: ReadonlyArray<{ table: string; interval: string }>
+  readonly compressionSettingsToAlter: ReadonlyArray<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: string }>
   readonly warnings: ReadonlyArray<{ name: string; message: string }>
 }
 
@@ -312,8 +336,259 @@ export const diffSchema = (
     }
   }
 
-  // Job definitions (M3)
+  // Job definitions (M3) — only create jobs for tables that don't exist yet in snapshot
   const jobDefs = definitions.filter((d): d is JobDefinition => d._tag === "JobDefinition")
+  const snapshotJobs = snapshot.jobs ?? []
+  const snapshotJobNames = new Map(snapshotJobs.map((j) => [j.config?.sdk_job_name as string ?? j.procName, j]))
+
+  const jobsToCreate: JobDefinition[] = []
+  const jobsToDelete: Array<{ procName: string }> = []
+  const jobsToAlter: Array<{ procName: string; scheduleInterval?: string; config?: Record<string, unknown> | null }> = []
+
+  for (const job of jobDefs) {
+    const jobKey = job.config?.sdk_job_name as string ?? job.functionName
+    const existing = snapshotJobNames.get(jobKey)
+    if (!existing) {
+      jobsToCreate.push(job)
+    } else {
+      // Check for changes
+      const changes: { procName: string; scheduleInterval?: string; config?: Record<string, unknown> | null } = { procName: existing.procName }
+      let hasChanges = false
+      if (job.scheduleInterval !== existing.scheduleInterval) {
+        changes.scheduleInterval = job.scheduleInterval
+        hasChanges = true
+      }
+      if (job.config && JSON.stringify(job.config) !== JSON.stringify(existing.config)) {
+        changes.config = job.config
+        hasChanges = true
+      }
+      if (hasChanges) jobsToAlter.push(changes)
+    }
+  }
+
+  // Jobs in snapshot but not in definitions → delete
+  const definedJobKeys = new Set(jobDefs.map((j) => j.config?.sdk_job_name as string ?? j.functionName))
+  for (const [key, snap] of snapshotJobNames) {
+    if (!definedJobKeys.has(key)) {
+      jobsToDelete.push({ procName: snap.procName })
+    }
+  }
+
+  // RLS policy diffing on existing tables
+  const rlsToEnable: string[] = []
+  const rlsToDisable: string[] = []
+  const rlsPoliciesToCreate: Array<{ table: string; policy: RlsPolicyDef }> = []
+  const rlsPoliciesToDrop: Array<{ table: string; policyName: string }> = []
+  const rlsPoliciesToAlter: Array<{ table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string> }> = []
+
+  const snapshotRlsPolicies = snapshot.rlsPolicies ?? []
+  const snapshotRlsByTable = new Map<string, typeof snapshotRlsPolicies[number][]>()
+  for (const p of snapshotRlsPolicies) {
+    if (!snapshotRlsByTable.has(p.tableName)) snapshotRlsByTable.set(p.tableName, [])
+    snapshotRlsByTable.get(p.tableName)!.push(p)
+  }
+
+  for (const def of tableDefs) {
+    if (tablesToCreate.includes(def.name)) continue // new tables handled in CREATE
+    const existingPolicies = snapshotRlsByTable.get(def.name) ?? []
+    const existingPolicyMap = new Map(existingPolicies.map((p) => [p.policyName, p]))
+    const definedPolicies = def.rlsPolicies ?? []
+
+    // Check if RLS needs to be enabled/disabled
+    const hasSnapshotPolicies = existingPolicies.length > 0
+    if (def.enableRls && !hasSnapshotPolicies && definedPolicies.length > 0) {
+      rlsToEnable.push(def.name)
+    }
+    if (!def.enableRls && !definedPolicies.length && hasSnapshotPolicies) {
+      rlsToDisable.push(def.name)
+    }
+
+    for (const policy of definedPolicies) {
+      const existing = existingPolicyMap.get(policy.name)
+      if (!existing) {
+        rlsPoliciesToCreate.push({ table: def.name, policy })
+      } else {
+        // Check for alterations
+        const alteration: { table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string> } = { table: def.name, policyName: policy.name }
+        let hasChanges = false
+        if (policy.using && policy.using !== existing.using) {
+          alteration.using = policy.using
+          hasChanges = true
+        }
+        if (policy.check && policy.check !== existing.withCheck) {
+          alteration.check = policy.check
+          hasChanges = true
+        }
+        if (policy.roles && JSON.stringify([...policy.roles]) !== JSON.stringify([...existing.roles])) {
+          alteration.roles = policy.roles
+          hasChanges = true
+        }
+        if (hasChanges) rlsPoliciesToAlter.push(alteration)
+      }
+    }
+
+    const definedPolicyNames = new Set(definedPolicies.map((p) => p.name))
+    for (const [name] of existingPolicyMap) {
+      if (!definedPolicyNames.has(name)) {
+        rlsPoliciesToDrop.push({ table: def.name, policyName: name })
+      }
+    }
+  }
+
+  // Hypertable policy diffing (compression, retention, reorder)
+  const htDefs = tableDefs.filter((d): d is HypertableDefinition => d._tag === "Hypertable")
+  const snapshotHtPolicies = snapshot.hypertablePolicies ?? []
+  const snapshotHtPolicyMap = new Map(snapshotHtPolicies.map((p) => [p.hypertableName, p]))
+
+  const compressionPoliciesToAdd: Array<{ table: string; after: string }> = []
+  const compressionPoliciesToRemove: string[] = []
+  const retentionPoliciesToAdd: Array<{ table: string; dropAfter: string }> = []
+  const retentionPoliciesToRemove: string[] = []
+  const reorderPoliciesToAdd: Array<{ table: string; indexName: string }> = []
+  const reorderPoliciesToRemove: string[] = []
+  const chunkIntervalsToAlter: Array<{ table: string; interval: string }> = []
+  const compressionSettingsToAlter: Array<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: string }> = []
+
+  for (const htDef of htDefs) {
+    if (hypertablesToCreate.includes(htDef.name)) continue // new hypertables handled in creation
+    const existingPolicy = snapshotHtPolicyMap.get(htDef.name)
+    const config = htDef.hypertableConfig
+
+    // Compression policy
+    if (config.compression?.after && !existingPolicy?.compressionPolicy) {
+      compressionPoliciesToAdd.push({ table: htDef.name, after: config.compression.after })
+    } else if (!config.compression?.after && existingPolicy?.compressionPolicy) {
+      compressionPoliciesToRemove.push(htDef.name)
+    }
+
+    // Retention policy
+    if (config.retention && !existingPolicy?.retentionPolicy) {
+      retentionPoliciesToAdd.push({ table: htDef.name, dropAfter: config.retention.dropAfter })
+    } else if (!config.retention && existingPolicy?.retentionPolicy) {
+      retentionPoliciesToRemove.push(htDef.name)
+    }
+
+    // Reorder policy
+    if (config.reorderPolicy && !existingPolicy?.reorderPolicy) {
+      reorderPoliciesToAdd.push({ table: htDef.name, indexName: config.reorderPolicy.indexName })
+    } else if (!config.reorderPolicy && existingPolicy?.reorderPolicy) {
+      reorderPoliciesToRemove.push(htDef.name)
+    }
+
+    // Chunk interval changes (5A)
+    const existingHt = snapshot.hypertables.find((h) => h.name === htDef.name)
+    if (existingHt && config.chunkInterval && existingHt.chunkInterval && config.chunkInterval !== existingHt.chunkInterval) {
+      chunkIntervalsToAlter.push({ table: htDef.name, interval: config.chunkInterval })
+    }
+
+    // Compression settings changes (5B)
+    if (existingHt?.compressionSettings && config.compression) {
+      const defSegmentby = config.compression.segmentby ?? []
+      const defOrderby = config.compression.orderby?.map((o) => {
+        let s = o.column
+        if (o.order) s += ` ${o.order}`
+        if (o.nullsFirst !== undefined) s += o.nullsFirst ? " NULLS FIRST" : " NULLS LAST"
+        return s
+      }).join(", ") ?? ""
+      const snapSegmentby = existingHt.compressionSettings.segmentby
+      const snapOrderby = existingHt.compressionSettings.orderby.join(", ")
+
+      if (JSON.stringify([...defSegmentby]) !== JSON.stringify([...snapSegmentby]) || defOrderby !== snapOrderby) {
+        compressionSettingsToAlter.push({
+          table: htDef.name,
+          segmentby: defSegmentby.length > 0 ? defSegmentby : undefined,
+          orderby: defOrderby || undefined,
+        })
+      }
+    }
+  }
+
+  // Remove policies for hypertables that exist in snapshot but not in definitions
+  for (const [name, policy] of snapshotHtPolicyMap) {
+    const def = htDefs.find((d) => d.name === name)
+    if (!def) continue // table dropped, policies go with it
+  }
+
+  // CAGG policy diffing
+  const snapshotCaggPolicies = snapshot.caggPolicies ?? []
+  const snapshotCaggPolicyMap = new Map(snapshotCaggPolicies.map((p) => [p.viewName, p]))
+
+  const caggRefreshPoliciesToAdd: Array<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }> = []
+  const caggRefreshPoliciesToRemove: string[] = []
+  const caggRetentionPoliciesToAdd: Array<{ viewName: string; dropAfter: string }> = []
+  const caggRetentionPoliciesToRemove: string[] = []
+  const caggCompressionToEnable: string[] = []
+  const caggCompressionToDisable: string[] = []
+
+  for (const cagg of caggDefs) {
+    if (caggsToCreate.some((c) => c.viewName === cagg.viewName)) continue // new CAGGs handled in creation
+    const existingPolicy = snapshotCaggPolicyMap.get(cagg.viewName)
+    const defPolicies = cagg.refreshPolicies ?? (cagg.refreshPolicy ? [cagg.refreshPolicy] : [])
+
+    // Refresh policies: compare counts and add/remove
+    const existingRefresh = existingPolicy?.refreshPolicies ?? []
+    if (defPolicies.length > 0 && existingRefresh.length === 0) {
+      for (const p of defPolicies) {
+        caggRefreshPoliciesToAdd.push({ viewName: cagg.viewName, ...p })
+      }
+    } else if (defPolicies.length === 0 && existingRefresh.length > 0) {
+      caggRefreshPoliciesToRemove.push(cagg.viewName)
+    }
+
+    // Retention policy
+    if (cagg.retentionPolicy && !existingPolicy?.retentionPolicy) {
+      caggRetentionPoliciesToAdd.push({ viewName: cagg.viewName, dropAfter: cagg.retentionPolicy.dropAfter })
+    } else if (!cagg.retentionPolicy && existingPolicy?.retentionPolicy) {
+      caggRetentionPoliciesToRemove.push(cagg.viewName)
+    }
+
+    // Compression
+    const existingCaggSnap = snapshot.continuousAggregates.find((c) => c.viewName === cagg.viewName)
+    if (cagg.compress && !existingCaggSnap?.compressionEnabled) {
+      caggCompressionToEnable.push(cagg.viewName)
+    } else if (!cagg.compress && existingCaggSnap?.compressionEnabled) {
+      caggCompressionToDisable.push(cagg.viewName)
+    }
+  }
+
+  // Hypercore diffing
+  const hypercoreToEnable: string[] = []
+  const hypercoreToDisable: string[] = []
+  const hypercoreSettingsToAlter: Array<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: ReadonlyArray<string> }> = []
+
+  for (const htDef of htDefs) {
+    if (hypertablesToCreate.includes(htDef.name)) continue
+    const existingHt = snapshot.hypertables.find((h) => h.name === htDef.name)
+    if (!existingHt) continue
+
+    const defHypercore = htDef.hypertableConfig.hypercore
+    const isCurrentlyHypercore = existingHt.accessMethod === "hypercore"
+
+    if (defHypercore?.enabled && !isCurrentlyHypercore) {
+      hypercoreToEnable.push(htDef.name)
+    } else if (!defHypercore?.enabled && isCurrentlyHypercore) {
+      hypercoreToDisable.push(htDef.name)
+    } else if (defHypercore?.enabled && isCurrentlyHypercore) {
+      // Check settings changes
+      const defSegmentby = defHypercore.segmentby ?? []
+      const defOrderby = defHypercore.orderby?.map((o) => {
+        let s = o.column
+        if (o.order) s += ` ${o.order}`
+        return s
+      }) ?? []
+      const snapSegmentby = existingHt.hypercoreSegmentby ?? []
+      const snapOrderby = existingHt.hypercoreOrderby ?? []
+
+      if (JSON.stringify([...defSegmentby]) !== JSON.stringify([...snapSegmentby]) ||
+          JSON.stringify(defOrderby) !== JSON.stringify([...snapOrderby])) {
+        hypercoreSettingsToAlter.push({
+          table: htDef.name,
+          segmentby: defSegmentby.length > 0 ? defSegmentby : undefined,
+          orderby: defOrderby.length > 0 ? defOrderby : undefined,
+        })
+      }
+    }
+  }
 
   return {
     tablesToCreate, tablesToDrop, tablesToRename,
@@ -325,7 +600,18 @@ export const diffSchema = (
     indexesToCreate, indexesToDrop,
     constraintsToAdd, constraintsToDrop,
     triggersToCreate, triggersToDrop,
-    jobsToCreate: jobDefs,
+    jobsToCreate, jobsToDelete, jobsToAlter,
+    rlsToEnable, rlsToDisable,
+    rlsPoliciesToCreate, rlsPoliciesToDrop, rlsPoliciesToAlter,
+    compressionPoliciesToAdd, compressionPoliciesToRemove,
+    retentionPoliciesToAdd, retentionPoliciesToRemove,
+    reorderPoliciesToAdd, reorderPoliciesToRemove,
+    caggRefreshPoliciesToAdd, caggRefreshPoliciesToRemove,
+    caggRetentionPoliciesToAdd, caggRetentionPoliciesToRemove,
+    caggCompressionToEnable, caggCompressionToDisable,
+    hypercoreToEnable, hypercoreToDisable, hypercoreSettingsToAlter,
+    chunkIntervalsToAlter,
+    compressionSettingsToAlter,
     warnings: enumReorderWarnings,
   }
 }
@@ -665,6 +951,9 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
         })
         compParts.push(`timescaledb.compress_orderby = '${orderParts.join(", ")}'`)
       }
+      if (config.compression.chunkTimeInterval) {
+        compParts.push(`timescaledb.compress_chunk_time_interval = '${config.compression.chunkTimeInterval}'`)
+      }
       up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (${compParts.join(", ")});`)
 
       if (config.compression.after) {
@@ -900,6 +1189,173 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       args.push(`fixed_schedule => ${job.fixedSchedule}`)
     }
     up.push(`SELECT add_job(${args.join(", ")});`)
+  }
+
+  // Job deletions
+  for (const job of diff.jobsToDelete) {
+    up.push(`SELECT delete_job((SELECT job_id FROM timescaledb_information.jobs WHERE proc_name = '${job.procName}'));`)
+    down.push(`-- Cannot auto-generate recreation of deleted job '${job.procName}'`)
+  }
+
+  // Job alterations
+  for (const job of diff.jobsToAlter) {
+    const alterArgs: string[] = [`(SELECT job_id FROM timescaledb_information.jobs WHERE proc_name = '${job.procName}')`]
+    if (job.scheduleInterval) {
+      alterArgs.push(`schedule_interval => INTERVAL '${job.scheduleInterval}'`)
+    }
+    if (job.config) {
+      alterArgs.push(`config => '${JSON.stringify(job.config)}'::jsonb`)
+    }
+    up.push(`SELECT alter_job(${alterArgs.join(", ")});`)
+  }
+
+  // RLS enable/disable on existing tables
+  for (const table of diff.rlsToEnable) {
+    up.push(`ALTER TABLE ${quoteIdentifier(table)} ENABLE ROW LEVEL SECURITY;`)
+    down.push(`ALTER TABLE ${quoteIdentifier(table)} DISABLE ROW LEVEL SECURITY;`)
+  }
+
+  for (const table of diff.rlsToDisable) {
+    up.push(`ALTER TABLE ${quoteIdentifier(table)} DISABLE ROW LEVEL SECURITY;`)
+    down.push(`ALTER TABLE ${quoteIdentifier(table)} ENABLE ROW LEVEL SECURITY;`)
+  }
+
+  // RLS policy changes on existing tables
+  for (const { table, policyName } of diff.rlsPoliciesToDrop) {
+    up.push(`DROP POLICY ${quoteIdentifier(policyName)} ON ${quoteIdentifier(table)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped policy ${quoteIdentifier(policyName)}`)
+  }
+
+  for (const { table, policy } of diff.rlsPoliciesToCreate) {
+    up.push(generateRlsPolicySql(table, policy))
+    down.push(`DROP POLICY IF EXISTS ${quoteIdentifier(policy.name)} ON ${quoteIdentifier(table)};`)
+  }
+
+  for (const alt of diff.rlsPoliciesToAlter) {
+    let sql = `ALTER POLICY ${quoteIdentifier(alt.policyName)} ON ${quoteIdentifier(alt.table)}`
+    if (alt.roles && alt.roles.length > 0) {
+      sql += ` TO ${alt.roles.join(", ")}`
+    }
+    if (alt.using) sql += ` USING (${alt.using})`
+    if (alt.check) sql += ` WITH CHECK (${alt.check})`
+    sql += ";"
+    up.push(sql)
+  }
+
+  // Compression policy changes on existing hypertables
+  for (const p of diff.compressionPoliciesToAdd) {
+    up.push(`SELECT add_compression_policy('${p.table}', INTERVAL '${p.after}');`)
+    down.push(`SELECT remove_compression_policy('${p.table}');`)
+  }
+
+  for (const table of diff.compressionPoliciesToRemove) {
+    up.push(`SELECT remove_compression_policy('${table}');`)
+    down.push(`-- Cannot auto-generate recreation of removed compression policy on '${table}'`)
+  }
+
+  // Retention policy changes on existing hypertables
+  for (const p of diff.retentionPoliciesToAdd) {
+    up.push(`SELECT add_retention_policy('${p.table}', INTERVAL '${p.dropAfter}');`)
+    down.push(`SELECT remove_retention_policy('${p.table}');`)
+  }
+
+  for (const table of diff.retentionPoliciesToRemove) {
+    up.push(`SELECT remove_retention_policy('${table}');`)
+    down.push(`-- Cannot auto-generate recreation of removed retention policy on '${table}'`)
+  }
+
+  // Reorder policy changes on existing hypertables
+  for (const p of diff.reorderPoliciesToAdd) {
+    up.push(`SELECT add_reorder_policy('${p.table}', '${p.indexName}');`)
+    down.push(`SELECT remove_reorder_policy('${p.table}');`)
+  }
+
+  for (const table of diff.reorderPoliciesToRemove) {
+    up.push(`SELECT remove_reorder_policy('${table}');`)
+    down.push(`-- Cannot auto-generate recreation of removed reorder policy on '${table}'`)
+  }
+
+  // CAGG refresh policy changes
+  for (const p of diff.caggRefreshPoliciesToAdd) {
+    up.push(
+      `SELECT add_continuous_aggregate_policy(${quoteString(p.viewName)},\n` +
+      `  start_offset => INTERVAL '${p.startOffset}',\n` +
+      `  end_offset => INTERVAL '${p.endOffset}',\n` +
+      `  schedule_interval => INTERVAL '${p.scheduleInterval}');`
+    )
+    down.push(`SELECT remove_continuous_aggregate_policy(${quoteString(p.viewName)});`)
+  }
+
+  for (const viewName of diff.caggRefreshPoliciesToRemove) {
+    up.push(`SELECT remove_continuous_aggregate_policy(${quoteString(viewName)});`)
+    down.push(`-- Cannot auto-generate recreation of removed refresh policy on '${viewName}'`)
+  }
+
+  // CAGG retention policy changes
+  for (const p of diff.caggRetentionPoliciesToAdd) {
+    up.push(`SELECT add_retention_policy(${quoteString(p.viewName)}, INTERVAL '${p.dropAfter}');`)
+    down.push(`SELECT remove_retention_policy(${quoteString(p.viewName)});`)
+  }
+
+  for (const viewName of diff.caggRetentionPoliciesToRemove) {
+    up.push(`SELECT remove_retention_policy(${quoteString(viewName)});`)
+    down.push(`-- Cannot auto-generate recreation of removed retention policy on '${viewName}'`)
+  }
+
+  // CAGG compression enable/disable
+  for (const viewName of diff.caggCompressionToEnable) {
+    up.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(viewName)} SET (timescaledb.compress = true);`)
+    down.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(viewName)} SET (timescaledb.compress = false);`)
+  }
+
+  for (const viewName of diff.caggCompressionToDisable) {
+    up.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(viewName)} SET (timescaledb.compress = false);`)
+    down.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(viewName)} SET (timescaledb.compress = true);`)
+  }
+
+  // Hypercore enable/disable
+  for (const table of diff.hypercoreToEnable) {
+    up.push(`ALTER TABLE ${quoteIdentifier(table)} SET ACCESS METHOD hypercore;`)
+    down.push(`ALTER TABLE ${quoteIdentifier(table)} SET ACCESS METHOD heap;`)
+  }
+
+  for (const table of diff.hypercoreToDisable) {
+    up.push(`ALTER TABLE ${quoteIdentifier(table)} SET ACCESS METHOD heap;`)
+    down.push(`ALTER TABLE ${quoteIdentifier(table)} SET ACCESS METHOD hypercore;`)
+  }
+
+  // Hypercore settings changes
+  for (const h of diff.hypercoreSettingsToAlter) {
+    const hcParts: string[] = []
+    if (h.segmentby && h.segmentby.length > 0) {
+      hcParts.push(`timescaledb.compress_segmentby = '${h.segmentby.join(", ")}'`)
+    }
+    if (h.orderby && h.orderby.length > 0) {
+      hcParts.push(`timescaledb.compress_orderby = '${h.orderby.join(", ")}'`)
+    }
+    if (hcParts.length > 0) {
+      up.push(`ALTER TABLE ${quoteIdentifier(h.table)} SET (${hcParts.join(", ")});`)
+    }
+  }
+
+  // Chunk interval changes (5A)
+  for (const ci of diff.chunkIntervalsToAlter) {
+    up.push(`SELECT set_chunk_time_interval('${ci.table}', INTERVAL '${ci.interval}');`)
+    down.push(`-- Cannot auto-determine previous chunk interval for '${ci.table}'`)
+  }
+
+  // Compression settings changes (5B)
+  for (const cs of diff.compressionSettingsToAlter) {
+    const parts: string[] = []
+    if (cs.segmentby && cs.segmentby.length > 0) {
+      parts.push(`timescaledb.compress_segmentby = '${cs.segmentby.join(", ")}'`)
+    }
+    if (cs.orderby) {
+      parts.push(`timescaledb.compress_orderby = '${cs.orderby}'`)
+    }
+    if (parts.length > 0) {
+      up.push(`ALTER TABLE ${quoteIdentifier(cs.table)} SET (${parts.join(", ")});`)
+    }
   }
 
   return { up, down }
