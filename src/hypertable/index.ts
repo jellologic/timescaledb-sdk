@@ -1,0 +1,3 @@
+export { createHypertable, setChunkTimeInterval, hypertableInfo } from "./Hypertable.js"
+export { addDimension, setNumberPartitions } from "./Dimension.js"
+export { showChunks, dropChunks, reorderChunk, moveChunk } from "./Chunk.js"

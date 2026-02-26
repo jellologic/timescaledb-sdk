@@ -1,27 +1,45 @@
 {
   "name": "timescaledb-sdk",
   "version": "0.1.0",
-  "description": "SDK for interacting with TimescaleDB",
+  "description": "Effect-based TypeScript SDK for TimescaleDB",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
+    ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" },
+    "./schema": { "import": "./dist/schema/index.js", "types": "./dist/schema/index.d.ts" },
+    "./query": { "import": "./dist/query/index.js", "types": "./dist/query/index.d.ts" },
+    "./hypertable": { "import": "./dist/hypertable/index.js", "types": "./dist/hypertable/index.d.ts" },
+    "./cagg": { "import": "./dist/cagg/index.js", "types": "./dist/cagg/index.d.ts" },
+    "./compression": { "import": "./dist/compression/index.js", "types": "./dist/compression/index.d.ts" },
+    "./retention": { "import": "./dist/retention/index.js", "types": "./dist/retention/index.d.ts" },
+    "./hyperfunctions": { "import": "./dist/hyperfunctions/index.js", "types": "./dist/hyperfunctions/index.d.ts" },
+    "./jobs": { "import": "./dist/jobs/index.js", "types": "./dist/jobs/index.d.ts" },
+    "./tiering": { "import": "./dist/tiering/index.js", "types": "./dist/tiering/index.d.ts" },
+    "./migration": { "import": "./dist/migration/index.js", "types": "./dist/migration/index.d.ts" }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target node && tsc --project tsconfig.build.json",
+    "build": "rm -rf dist && bun build ./src/index.ts ./src/schema/index.ts ./src/query/index.ts ./src/hypertable/index.ts ./src/cagg/index.ts ./src/compression/index.ts ./src/retention/index.ts ./src/hyperfunctions/index.ts ./src/jobs/index.ts ./src/tiering/index.ts ./src/migration/index.ts ./src/Error.ts ./src/Client.ts ./src/Config.ts --outdir ./dist --root ./src --target node --splitting && tsc --project tsconfig.build.json",
     "dev": "bun run --watch src/index.ts",
     "test": "bun test",
+    "test:unit": "bun test test/unit/",
+    "test:integration": "bun test --preload ./test/setup/integration-preload.ts test/integration/",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build"
   },
+  "peerDependencies": {
+    "effect": "^3.0.0",
+    "@effect/sql": "^0.30.0",
+    "@effect/sql-pg": "^0.30.0"
+  },
   "devDependencies": {
+    "effect": "^3.19.19",
+    "@effect/sql": "^0.49.0",
+    "@effect/sql-pg": "^0.50.3",
     "@types/bun": "latest",
     "typescript": "^5"
   },
@@ -35,6 +53,8 @@
     "timescale",
     "postgres",
     "time-series",
-    "sdk"
+    "sdk",
+    "effect",
+    "typescript"
   ]
 }
