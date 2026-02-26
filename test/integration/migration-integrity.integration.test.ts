@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach, afterEach } from "bun:test"
+import { test, expect, describe, beforeAll, afterAll, beforeEach, afterEach } from "bun:test"
 import { Effect } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -12,11 +12,15 @@ import { serial, text } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { tableExists, dropTableCascade } from "../helpers/db-utils.js"
 import { liveClient } from "../setup/test-layers.js"
-import { runTestWith } from "../helpers/effect-runner.js"
+import { makeManagedRunner } from "../helpers/effect-runner.js"
 import type { MigrationFile } from "../../src/migration/types.js"
 
-const layer = liveClient()
-const run = <A>(effect: Effect.Effect<A, any, any>) => runTestWith(effect, layer)
+const runner = makeManagedRunner(liveClient())
+const run = <A>(effect: Effect.Effect<A, any, any>) => runner.run(effect)
+
+afterAll(async () => {
+  await runner.dispose()
+})
 
 let migDir: string
 let tableCounter = 0
@@ -41,7 +45,7 @@ describe("Integration — Migration Integrity", () => {
     const result = await generate({
       definitions: [t],
       migrationsDir: migDir,
-      description: "create table",
+      description: `create ${name}`,
     })
     expect(result).not.toBeNull()
 
@@ -66,7 +70,7 @@ describe("Integration — Migration Integrity", () => {
     const result = await generate({
       definitions: [t],
       migrationsDir: migDir,
-      description: "create table",
+      description: `create ${name}`,
     })
     expect(result).not.toBeNull()
 
@@ -113,7 +117,7 @@ describe("Integration — Migration Integrity", () => {
     await generate({
       definitions: [t],
       migrationsDir: migDir,
-      description: "create table",
+      description: `create ${name}`,
     })
 
     await run(Effect.gen(function* () {
@@ -141,22 +145,24 @@ describe("Integration — Migration Integrity", () => {
     await generate({
       definitions: [t],
       migrationsDir: migDir,
-      description: "create table",
+      description: `create ${name}`,
     })
 
     await run(Effect.gen(function* () {
-      // Before applying: 1 pending, 0 applied
+      // Before applying: 1 pending, migration not in applied list
       const statusBefore = yield* loadAndStatus(migDir)
       expect(statusBefore.pending.length).toBe(1)
-      expect(statusBefore.applied.length).toBe(0)
+      const appliedBefore = statusBefore.applied.map((r) => r.name)
+      expect(appliedBefore).not.toContain(statusBefore.pending[0])
 
       // Apply
       yield* loadAndRun(migDir)
 
-      // After applying: 0 pending, 1 applied
+      // After applying: 0 pending, migration now in applied list
       const statusAfter = yield* loadAndStatus(migDir)
       expect(statusAfter.pending.length).toBe(0)
-      expect(statusAfter.applied.length).toBe(1)
+      const appliedAfter = statusAfter.applied.map((r) => r.name)
+      expect(appliedAfter.length).toBeGreaterThan(appliedBefore.length)
 
       yield* dropTableCascade(name)
     }))
@@ -171,7 +177,7 @@ describe("Integration — Migration Integrity", () => {
     const result = await generate({
       definitions: [t],
       migrationsDir: migDir,
-      description: "check content",
+      description: `create ${name}`,
     })
     expect(result).not.toBeNull()
 

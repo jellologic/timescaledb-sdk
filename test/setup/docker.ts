@@ -1,4 +1,6 @@
 import { $ } from "bun"
+import { existsSync } from "node:fs"
+import { homedir } from "node:os"
 
 export interface DockerContainer {
   readonly id: string
@@ -10,20 +12,44 @@ export interface DockerContainer {
   readonly connectionString: string
 }
 
+// Ensure Docker is reachable from Bun's $ shell by resolving binary path and socket
+const ensureDockerEnv = () => {
+  // Resolve docker binary
+  const binaryPaths = ["/usr/local/bin/docker", "/opt/homebrew/bin/docker", "/usr/bin/docker"]
+  const dockerBin = binaryPaths.find((p) => existsSync(p))
+  if (!dockerBin) throw new Error("Docker binary not found. Please install Docker.")
+
+  // Resolve docker socket — Docker Desktop on macOS uses ~/.docker/run/docker.sock
+  if (!process.env.DOCKER_HOST) {
+    const socketPaths = [
+      `${homedir()}/.docker/run/docker.sock`,
+      "/var/run/docker.sock",
+    ]
+    const socket = socketPaths.find((p) => existsSync(p))
+    if (socket) {
+      process.env.DOCKER_HOST = `unix://${socket}`
+    }
+  }
+
+  return dockerBin
+}
+
 export const startContainer = async (): Promise<DockerContainer> => {
+  const docker = ensureDockerEnv()
+
   // Step 1: Assert Docker available
-  try {
-    await $`docker info`.quiet()
-  } catch {
-    throw new Error("Docker daemon is not running. Please start Docker.")
+  const check = await $`${docker} ps`.nothrow().quiet()
+  if (check.exitCode !== 0) {
+    throw new Error(
+      `Docker daemon is not running. Please start Docker.\nstderr: ${check.stderr.toString().slice(0, 200)}`
+    )
   }
 
   // Step 2: Ensure image
-  try {
-    await $`docker image inspect timescale/timescaledb-ha:pg17`.quiet()
-  } catch {
+  const inspect = await $`${docker} image inspect timescale/timescaledb-ha:pg17`.nothrow().quiet()
+  if (inspect.exitCode !== 0) {
     console.log("Pulling timescale/timescaledb-ha:pg17...")
-    await $`docker pull timescale/timescaledb-ha:pg17`
+    await $`${docker} pull timescale/timescaledb-ha:pg17`
   }
 
   // Step 3: Find random port
@@ -36,7 +62,7 @@ export const startContainer = async (): Promise<DockerContainer> => {
   const database = "test_db"
   const username = "postgres"
 
-  const result = await $`docker run -d \
+  const result = await $`${docker} run -d \
     --name timescaledb-sdk-test-${port} \
     -e POSTGRES_PASSWORD=${password} \
     -e POSTGRES_DB=${database} \
@@ -53,30 +79,34 @@ export const startContainer = async (): Promise<DockerContainer> => {
   const maxAttempts = 30
 
   while (attempts < maxAttempts) {
-    try {
-      await $`docker exec ${id} pg_isready -U ${username} -d ${database}`.quiet()
-      break
-    } catch {
-      attempts++
-      if (attempts >= maxAttempts) {
-        await $`docker rm -f ${id}`.quiet()
-        throw new Error(`Container failed to become ready after ${maxAttempts} attempts`)
-      }
-      await Bun.sleep(delay)
-      delay = Math.min(delay * 1.5, 2000)
+    const ready = await $`${docker} exec ${id} pg_isready -U ${username} -d ${database}`.nothrow().quiet()
+    if (ready.exitCode === 0) break
+    attempts++
+    if (attempts >= maxAttempts) {
+      await $`${docker} rm -f ${id}`.nothrow().quiet()
+      throw new Error(`Container failed to become ready after ${maxAttempts} attempts`)
     }
+    await Bun.sleep(delay)
+    delay = Math.min(delay * 1.5, 2000)
   }
 
-  // Step 6: Verify TimescaleDB
-  try {
-    await $`docker exec ${id} psql -U ${username} -d ${database} -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"`.quiet()
-    const extCheck = await $`docker exec ${id} psql -U ${username} -d ${database} -t -c "SELECT extname FROM pg_extension WHERE extname = 'timescaledb';"`.text()
-    if (!extCheck.includes("timescaledb")) {
-      throw new Error("TimescaleDB extension not found")
+  // Step 6: Verify TimescaleDB (with retry — pg_isready can return true before DB accepts SQL)
+  let extAttempts = 0
+  const maxExtAttempts = 10
+  while (extAttempts < maxExtAttempts) {
+    try {
+      await $`${docker} exec ${id} psql -U ${username} -d ${database} -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"`.quiet()
+      const extCheck = await $`${docker} exec ${id} psql -U ${username} -d ${database} -t -c "SELECT extname FROM pg_extension WHERE extname = 'timescaledb';"`.text()
+      if (extCheck.includes("timescaledb")) break
+      throw new Error("TimescaleDB extension not found in pg_extension")
+    } catch (e) {
+      extAttempts++
+      if (extAttempts >= maxExtAttempts) {
+        await $`${docker} rm -f ${id}`.nothrow().quiet()
+        throw new Error(`TimescaleDB verification failed after ${maxExtAttempts} attempts: ${e}`)
+      }
+      await Bun.sleep(500)
     }
-  } catch (e) {
-    await $`docker rm -f ${id}`.quiet()
-    throw new Error(`TimescaleDB verification failed: ${e}`)
   }
 
   const connectionString = `postgresql://${username}:${password}@localhost:${port}/${database}`
@@ -87,7 +117,8 @@ export const startContainer = async (): Promise<DockerContainer> => {
 // Step 7: Teardown
 export const stopContainer = async (container: DockerContainer): Promise<void> => {
   try {
-    await $`docker rm -f ${container.id}`.quiet()
+    const docker = ensureDockerEnv()
+    await $`${docker} rm -f ${container.id}`.nothrow().quiet()
   } catch {
     // Best effort cleanup
   }

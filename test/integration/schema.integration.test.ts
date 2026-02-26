@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach } from "bun:test"
+import { test, expect, describe, beforeEach, afterAll } from "bun:test"
 import { Effect } from "effect"
 import {
   timestamptz, integer, doublePrecision, text, serial, boolean, varchar, uuid, numeric, jsonb, bigint_, real, date, bytea, interval,
@@ -13,11 +13,14 @@ import {
   dropTableCascade, isHypertable, hypertableInfo, tableRelPersistence,
 } from "../helpers/db-utils.js"
 import { liveClient } from "../setup/test-layers.js"
-import { runTestWith } from "../helpers/effect-runner.js"
+import { makeManagedRunner } from "../helpers/effect-runner.js"
 
-const layer = liveClient()
+const runner = makeManagedRunner(liveClient())
+const run = <A>(effect: Effect.Effect<A, any, any>) => runner.run(effect)
 
-const run = <A>(effect: Effect.Effect<A, any, any>) => runTestWith(effect, layer)
+afterAll(async () => {
+  await runner.dispose()
+})
 
 // Unique table names to avoid collisions
 let tableCounter = 0
@@ -140,7 +143,6 @@ describe("Integration — Regular Tables", () => {
     ])
 
     await run(Effect.gen(function* () {
-      const client = yield* Effect.service(yield* Effect.context<any>().pipe(Effect.map((ctx) => ctx))).pipe(Effect.catchAll(() => Effect.succeed(null)))
       yield* createTableFromDef(parent)
       yield* createTableFromDef(child)
 
@@ -202,11 +204,10 @@ describe("Integration — Regular Tables", () => {
     const t2 = pgTable(name, { id: serial("id"), email: text("email") })
 
     await run(Effect.gen(function* () {
-      const client = yield* Effect.serviceOption(Effect.context<any>().pipe(Effect.map(() => null))).pipe(Effect.catchAll(() => Effect.succeed(null)))
       yield* createTableFromDef(t1)
 
       const snap1 = {
-        tables: [{ name, schema: "public", columns: [{ name: "id", dataType: "integer", isNullable: false, defaultValue: null }], indexes: [] }],
+        tables: [{ name, schema: "public", columns: [{ name: "id", dataType: "serial", isNullable: false, defaultValue: null }], indexes: [] }],
         hypertables: [],
         continuousAggregates: [],
         takenAt: new Date(),
@@ -217,12 +218,9 @@ describe("Integration — Regular Tables", () => {
       expect(addSql).toBeDefined()
 
       // Execute the ADD COLUMN
-      const tc = yield* Effect.map(Effect.context<any>(), () => null).pipe(Effect.catchAll(() => Effect.succeed(null)))
+      const client = yield* TimescaleClient
       for (const sql of up) {
-        yield* Effect.gen(function* () {
-          const c = yield* TimescaleClient
-          yield* c.execute(sql)
-        })
+        yield* client.execute(sql)
       }
 
       const cols = yield* columnInfo(name)
