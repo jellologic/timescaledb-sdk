@@ -1,14 +1,17 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test"
+import { Effect } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { generate, migrationFileToEffect } from "../../src/migration/Orchestrator.js"
-import { readJournal, readSnapshot } from "../../src/migration/FileSystem.js"
+import { generate, migrationFileToEffect, loadAndRun } from "../../src/migration/Orchestrator.js"
+import { readJournal, readSnapshot, writeJournal, writeMigrationFile, computeMigrationChecksum, computeIntegrityHash } from "../../src/migration/FileSystem.js"
 import { timestamptz, integer, doublePrecision, text, serial, boolean } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
 import { pgEnum, enumColumn } from "../../src/schema/Enum.js"
 import type { MigrationFile } from "../../src/migration/types.js"
+import { mockClient } from "../setup/test-layers.js"
+import { runTestWith } from "../helpers/effect-runner.js"
 
 let dir: string
 
@@ -246,6 +249,101 @@ describe("migrationFileToEffect()", () => {
     expect(migration.name).toBe("0001_test")
     expect(migration.up).toBeDefined()
     expect(migration.down).toBeDefined()
+  })
+})
+
+describe("LoadMigrationOptions flow", () => {
+  test("loadAndRun rejects tampered migration file", async () => {
+    const migration: MigrationFile = {
+      name: "0001_create_items",
+      timestamp: 1700000000000,
+      up: ['CREATE TABLE "items" ("id" serial NOT NULL);'],
+      down: ['DROP TABLE IF EXISTS "items";'],
+    }
+
+    // Write valid migration and get its checksum
+    await writeMigrationFile(dir, migration)
+    const checksum = computeMigrationChecksum(migration)
+    const originalIntegrity = computeIntegrityHash(migration)
+
+    // Now overwrite with tampered SQL but original integrity hash
+    const filePath = `${dir}/${migration.name}.ts`
+    let content = `import type { MigrationFile } from "timescaledb-sdk/migration"\n\n`
+    content += `export default {\n`
+    content += `  name: ${JSON.stringify(migration.name)},\n`
+    content += `  timestamp: ${migration.timestamp},\n`
+    content += `  up: ["DROP TABLE items;"],\n`
+    content += `  down: [],\n`
+    content += `  integrity: ${JSON.stringify(originalIntegrity)},\n`
+    content += `} satisfies MigrationFile\n`
+    await Bun.write(filePath, content)
+
+    // Journal still has the original checksum — integrity check should fail first
+    await writeJournal(dir, {
+      version: 1,
+      entries: [{ index: 1, name: migration.name, timestamp: migration.timestamp, checksum }],
+    })
+
+    const layer = mockClient()
+    const result = Effect.runPromise(
+      Effect.provide(loadAndRun(dir), layer)
+    )
+    expect(result).rejects.toThrow("Integrity verification failed")
+  })
+
+  test("loadAndRun with trustOverride skips integrity check", async () => {
+    const migration: MigrationFile = {
+      name: "0001_create_stuff",
+      timestamp: 1700000000000,
+      up: ["SELECT 1;"],
+      down: [],
+    }
+
+    // Write a hand-written file with no integrity
+    const filePath = `${dir}/${migration.name}.ts`
+    let content = `import type { MigrationFile } from "timescaledb-sdk/migration"\n\n`
+    content += `export default {\n`
+    content += `  name: ${JSON.stringify(migration.name)},\n`
+    content += `  timestamp: ${migration.timestamp},\n`
+    content += `  up: ["SELECT 1;"],\n`
+    content += `  down: [],\n`
+    content += `} satisfies MigrationFile\n`
+    await Bun.write(filePath, content)
+
+    // Load once to get the correct checksum for the journal
+    const { loadMigrationFile } = await import("../../src/migration/FileSystem.js")
+    const loaded = await loadMigrationFile(filePath, { trustOverride: true })
+    const checksum = computeMigrationChecksum(loaded)
+
+    await writeJournal(dir, {
+      version: 1,
+      entries: [{ index: 1, name: migration.name, timestamp: migration.timestamp, checksum }],
+    })
+
+    // Mock client that handles advisory lock + migration queries
+    const layer = mockClient({
+      execute: <A = unknown>(query: string, _params?: ReadonlyArray<unknown>) => {
+        if (query.includes("pg_try_advisory_lock")) {
+          return Effect.succeed([{ pg_try_advisory_lock: true }] as ReadonlyArray<A>)
+        }
+        if (query.includes("pg_advisory_unlock")) {
+          return Effect.succeed([{ pg_advisory_unlock: true }] as ReadonlyArray<A>)
+        }
+        // getAppliedMigrations — return empty (no migrations applied yet)
+        if (query.includes("SELECT * FROM") && query.includes("_timescaledb_sdk_migrations")) {
+          return Effect.succeed([] as ReadonlyArray<A>)
+        }
+        // All other queries (CREATE TABLE, INSERT, SELECT 1) — return empty
+        return Effect.succeed([] as ReadonlyArray<A>)
+      },
+    })
+
+    // With trustOverride, integrity check is skipped — should succeed with mock client
+    const applied = await runTestWith(
+      loadAndRun(dir, { trustOverride: true }),
+      layer
+    )
+    expect(applied).toEqual(["0001_create_stuff"])
   })
 })
 

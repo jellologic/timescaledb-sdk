@@ -295,6 +295,62 @@ describe("Integrity", () => {
     expect(loaded.name).toBe("0001_create_users")
   })
 
+  test("loadMigrationFile rejects malformed file (missing name)", async () => {
+    const filePath = `${dir}/malformed.ts`
+    let content = `export default {\n`
+    content += `  timestamp: 0,\n`
+    content += `  up: ["SELECT 1;"],\n`
+    content += `  down: [],\n`
+    content += `} as any\n`
+    await Bun.write(filePath, content)
+
+    expect(loadMigrationFile(filePath)).rejects.toThrow("Invalid migration file")
+  })
+
+  test("loadAllMigrations throws when journal references missing file", async () => {
+    await writeJournal(dir, {
+      version: 1,
+      entries: [{ index: 1, name: "0001_nonexistent", timestamp: 0, checksum: "abc" }],
+    })
+
+    expect(loadAllMigrations(dir)).rejects.toThrow()
+  })
+
+  test("loadAllMigrations with trustOverride accepts file without integrity", async () => {
+    const migration: MigrationFile = {
+      name: "0001_hand_written",
+      timestamp: 1700000000000,
+      up: ["SELECT 1;"],
+      down: [],
+    }
+
+    // Write a hand-written file (no integrity)
+    const filePath = `${dir}/${migration.name}.ts`
+    let content = `import type { MigrationFile } from "timescaledb-sdk/migration"\n\n`
+    content += `export default {\n`
+    content += `  name: ${JSON.stringify(migration.name)},\n`
+    content += `  timestamp: ${migration.timestamp},\n`
+    content += `  up: ["SELECT 1;"],\n`
+    content += `  down: [],\n`
+    content += `} satisfies MigrationFile\n`
+    await Bun.write(filePath, content)
+
+    // The checksum must match what computeMigrationChecksum produces for the loaded file
+    const loaded = await loadMigrationFile(filePath, { trustOverride: true })
+    const checksum = computeMigrationChecksum(loaded)
+
+    await writeJournal(dir, {
+      version: 1,
+      entries: [{ index: 1, name: migration.name, timestamp: migration.timestamp, checksum }],
+    })
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
+    const migrations = await loadAllMigrations(dir, { trustOverride: true })
+    expect(migrations.length).toBe(1)
+    expect(migrations[0]!.name).toBe("0001_hand_written")
+    warnSpy.mockRestore()
+  })
+
   test("sealMigration adds valid integrity to hand-written file", async () => {
     // Write a hand-written file without integrity
     const fileName = `${sampleMigration.name}.ts`
