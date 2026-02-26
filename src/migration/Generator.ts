@@ -1,8 +1,8 @@
-import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, IndexDef, EnumTypeDef, CaggDefinition } from "../schema/types.js"
+import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, IndexDef, EnumTypeDef, CaggDefinition, RlsPolicyDef, JobDefinition } from "../schema/types.js"
 import type { SchemaSnapshot } from "./types.js"
 import { toSqlValue, quoteIdentifier, quoteString } from "../internal/sql.js"
 
-export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition
+export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition
 
 const TYPE_ALIASES: Record<string, string> = {
   "serial": "integer",
@@ -36,6 +36,8 @@ export interface SchemaDiff {
   readonly constraintsToDrop: ReadonlyArray<{ table: string; constraintName: string }>
   readonly triggersToCreate: ReadonlyArray<{ table: string; trigger: import("../schema/types.js").TriggerDef }>
   readonly triggersToDrop: ReadonlyArray<{ table: string; triggerName: string }>
+  readonly jobsToCreate: ReadonlyArray<JobDefinition>
+  readonly warnings: ReadonlyArray<{ name: string; message: string }>
 }
 
 export const diffSchema = (
@@ -141,8 +143,9 @@ export const diffSchema = (
     .filter((e) => !enumDefs.find((d) => d.name === e.name))
     .map((e) => e.name)
 
-  // Detect enums with new values (ALTER TYPE ADD VALUE)
+  // Detect enums with new values (ALTER TYPE ADD VALUE) and reordering
   const enumsToAddValues: Array<{ name: string; newValues: string[] }> = []
+  const enumReorderWarnings: Array<{ name: string; message: string }> = []
   for (const def of enumDefs) {
     const existing = (snapshot.enums ?? []).find((e) => e.name === def.name)
     if (!existing) continue
@@ -150,6 +153,22 @@ export const diffSchema = (
     const newValues = def.values.filter((v) => !existingValues.has(v))
     if (newValues.length > 0) {
       enumsToAddValues.push({ name: def.name, newValues: [...newValues] })
+    }
+
+    // Detect reordering: check if existing values appear in same relative order
+    const existingInDef = def.values.filter((v) => existingValues.has(v))
+    const existingInSnapshot = existing.values
+    if (existingInDef.length === existingInSnapshot.length) {
+      for (let i = 0; i < existingInDef.length; i++) {
+        if (existingInDef[i] !== existingInSnapshot[i]) {
+          enumReorderWarnings.push({
+            name: def.name,
+            message: `Enum "${def.name}" values have been reordered. PostgreSQL does not support reordering enum values. ` +
+              `This would require DROP TYPE + CREATE TYPE which is destructive if the type is in use. Skipping.`,
+          })
+          break
+        }
+      }
     }
   }
 
@@ -293,6 +312,9 @@ export const diffSchema = (
     }
   }
 
+  // Job definitions (M3)
+  const jobDefs = definitions.filter((d): d is JobDefinition => d._tag === "JobDefinition")
+
   return {
     tablesToCreate, tablesToDrop, tablesToRename,
     columnsToAdd, columnsToRemove, columnsToAlter, columnsToRename,
@@ -303,6 +325,8 @@ export const diffSchema = (
     indexesToCreate, indexesToDrop,
     constraintsToAdd, constraintsToDrop,
     triggersToCreate, triggersToDrop,
+    jobsToCreate: jobDefs,
+    warnings: enumReorderWarnings,
   }
 }
 
@@ -432,6 +456,18 @@ const generateTriggerSql = (tableName: string, trg: import("../schema/types.js")
   return sql
 }
 
+const generateRlsPolicySql = (tableName: string, policy: RlsPolicyDef): string => {
+  let sql = `CREATE POLICY ${quoteIdentifier(policy.name)} ON ${quoteIdentifier(tableName)}`
+  if (policy.command) sql += ` FOR ${policy.command}`
+  if (policy.roles && policy.roles.length > 0) {
+    sql += ` TO ${policy.roles.join(", ")}`
+  }
+  if (policy.using) sql += ` USING (${policy.using})`
+  if (policy.check) sql += ` WITH CHECK (${policy.check})`
+  sql += ";"
+  return sql
+}
+
 const generateModernHypertableWith = (def: HypertableDefinition): string[] => {
   const config = def.hypertableConfig
   const parts: string[] = ["tsdb.hypertable"]
@@ -459,7 +495,50 @@ const generateModernHypertableWith = (def: HypertableDefinition): string[] => {
   return parts
 }
 
+export class HypertableConstraintError extends Error {
+  constructor(tableName: string, constraintName: string, timeColumn: string) {
+    super(
+      `Hypertable "${tableName}" constraint "${constraintName}" must include the time partitioning column "${timeColumn}". ` +
+      `TimescaleDB requires all UNIQUE and PRIMARY KEY constraints on hypertables to include the time column.`
+    )
+    this.name = "HypertableConstraintError"
+  }
+}
+
+const validateHypertableConstraints = (definitions: ReadonlyArray<SchemaDefinition>): void => {
+  const htDefs = definitions.filter((d): d is HypertableDefinition => d._tag === "Hypertable")
+
+  for (const ht of htDefs) {
+    const timeColumn = ht.hypertableConfig.timeColumn
+
+    // Check table-level constraints
+    for (const constraint of ht.constraints) {
+      if (constraint.type === "unique" || constraint.type === "primaryKey") {
+        if (!constraint.columns.includes(timeColumn)) {
+          throw new HypertableConstraintError(ht.name, constraint.name, timeColumn)
+        }
+      }
+    }
+
+    // Check column-level primary keys and unique constraints
+    const cols = Object.values(ht.columns) as ColumnDef[]
+    for (const col of cols) {
+      if (col.isPrimaryKey && col.name !== timeColumn) {
+        // Single-column PK that isn't the time column — this will fail in PG
+        // But only flag if there's no table-level PK that includes time column
+        const hasTablePK = ht.constraints.some((c) => c.type === "primaryKey")
+        if (!hasTablePK) {
+          throw new HypertableConstraintError(ht.name, `${col.name}_pkey`, timeColumn)
+        }
+      }
+    }
+  }
+}
+
 export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArray<SchemaDefinition>): { up: string[]; down: string[] } => {
+  // Validate hypertable constraints before generating SQL
+  validateHypertableConstraints(definitions)
+
   const up: string[] = []
   const down: string[] = []
 
@@ -472,6 +551,7 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
 
   for (const enumName of diff.enumsToDrop) {
     up.push(`DROP TYPE IF EXISTS ${quoteIdentifier(enumName)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped enum type ${quoteIdentifier(enumName)}`)
   }
 
   // Table renames BEFORE creates (so new name is available for column ops)
@@ -522,6 +602,18 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     for (const trg of def.triggers) {
       up.push(generateTriggerSql(tableName, trg))
       down.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.name)} ON ${quoteIdentifier(tableName)};`)
+    }
+
+    // RLS (M2)
+    if (def.enableRls) {
+      up.push(`ALTER TABLE ${quoteIdentifier(tableName)} ENABLE ROW LEVEL SECURITY;`)
+      down.push(`ALTER TABLE ${quoteIdentifier(tableName)} DISABLE ROW LEVEL SECURITY;`)
+    }
+    if (def.rlsPolicies) {
+      for (const policy of def.rlsPolicies) {
+        up.push(generateRlsPolicySql(tableName, policy))
+        down.push(`DROP POLICY IF EXISTS ${quoteIdentifier(policy.name)} ON ${quoteIdentifier(tableName)};`)
+      }
     }
   }
 
@@ -584,6 +676,44 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     if (config.retention) {
       up.push(`SELECT add_retention_policy('${tableName}', INTERVAL '${config.retention.dropAfter}');`)
     }
+
+    // Reorder policy (H5)
+    if (config.reorderPolicy) {
+      up.push(`SELECT add_reorder_policy('${tableName}', '${config.reorderPolicy.indexName}');`)
+      down.push(`SELECT remove_reorder_policy('${tableName}');`)
+    }
+
+    // Chunk operations (M5)
+    if (config.chunkOperations?.moveCompletedTo) {
+      up.push(`SELECT add_chunk_move_policy('${tableName}', '${config.chunkOperations.moveCompletedTo}');`)
+    }
+    if (config.enableChunkSkipping) {
+      up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (timescaledb.enable_chunk_skipping = true);`)
+    }
+
+    // Hypercore (H1) — set access method to columnar store
+    if (config.hypercore?.enabled) {
+      let hypercoreSql = `ALTER TABLE ${quoteIdentifier(tableName)} SET ACCESS METHOD hypercore`
+      up.push(`${hypercoreSql};`)
+      down.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET ACCESS METHOD heap;`)
+
+      // Hypercore-specific compression settings (segmentby, orderby)
+      const hcParts: string[] = []
+      if (config.hypercore.segmentby && config.hypercore.segmentby.length > 0) {
+        hcParts.push(`timescaledb.compress_segmentby = '${config.hypercore.segmentby.join(", ")}'`)
+      }
+      if (config.hypercore.orderby && config.hypercore.orderby.length > 0) {
+        const orderParts = config.hypercore.orderby.map((o) => {
+          let s = o.column
+          if (o.order) s += ` ${o.order}`
+          return s
+        })
+        hcParts.push(`timescaledb.compress_orderby = '${orderParts.join(", ")}'`)
+      }
+      if (hcParts.length > 0) {
+        up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (${hcParts.join(", ")});`)
+      }
+    }
   }
 
   for (const tableName of diff.tablesToDrop) {
@@ -637,11 +767,12 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     down.push(`-- Cannot auto-generate re-addition of default for column ${quoteIdentifier(col.column)} on ${quoteIdentifier(col.table)}`)
   }
 
-  // Enum ALTER TYPE ADD VALUE
+  // Enum ALTER TYPE ADD VALUE (irreversible — PostgreSQL cannot remove enum values)
   for (const enumAlt of diff.enumsToAddValues) {
     for (const val of enumAlt.newValues) {
       up.push(`ALTER TYPE ${quoteIdentifier(enumAlt.name)} ADD VALUE ${quoteString(val)};`)
     }
+    down.push(`-- Cannot remove enum values from ${quoteIdentifier(enumAlt.name)} (PostgreSQL limitation)`)
   }
 
   // Index changes on existing tables
@@ -669,6 +800,7 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
   // Trigger changes on existing tables
   for (const trg of diff.triggersToDrop) {
     up.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.triggerName)} ON ${quoteIdentifier(trg.table)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped trigger ${quoteIdentifier(trg.triggerName)} on ${quoteIdentifier(trg.table)}`)
   }
 
   for (const trg of diff.triggersToCreate) {
@@ -695,14 +827,19 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       selectParts.push(`${col.expression} AS ${quoteIdentifier(col.alias)}`)
     }
 
-    let fromClause = quoteIdentifier(cagg.sourceHypertable)
+    // H2: Support hierarchical CAGGs (source can be another CAGG view)
+    let fromClause = quoteIdentifier(cagg.sourceView ?? cagg.sourceHypertable)
     if (cagg.join) {
       fromClause += ` ${cagg.join.type} JOIN ${quoteIdentifier(cagg.join.table)} ON ${cagg.join.on}`
     }
 
     const groupByParts = ["\"bucket\"", ...cagg.groupBy.map(quoteIdentifier)]
 
-    let sql = `CREATE MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} WITH (timescaledb.continuous) AS\nSELECT ${selectParts.join(",\n  ")}\nFROM ${fromClause}`
+    // H3: WITH options — continuous + optional finalize
+    const withOpts = ["timescaledb.continuous"]
+    if (cagg.finalize === false) withOpts.push("timescaledb.finalize = false")
+
+    let sql = `CREATE MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} WITH (${withOpts.join(", ")}) AS\nSELECT ${selectParts.join(",\n  ")}\nFROM ${fromClause}`
     if (cagg.where) sql += `\nWHERE ${cagg.where}`
     sql += `\nGROUP BY ${groupByParts.join(", ")}`
     if (cagg.withNoData) sql += `\nWITH NO DATA`
@@ -711,18 +848,58 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     up.push(sql)
     down.push(`DROP MATERIALIZED VIEW IF EXISTS ${quoteIdentifier(cagg.viewName)};`)
 
-    if (cagg.refreshPolicy) {
+    // H3: materialized_only setting
+    if (cagg.materializedOnly !== undefined) {
+      up.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} SET (timescaledb.materialized_only = ${cagg.materializedOnly});`)
+    }
+
+    // H3: enable compression on CAGG
+    if (cagg.compress) {
+      up.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} SET (timescaledb.compress = true);`)
+      down.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} SET (timescaledb.compress = false);`)
+    }
+
+    // H6: Multiple refresh policies
+    const policies = cagg.refreshPolicies ?? (cagg.refreshPolicy ? [cagg.refreshPolicy] : [])
+    for (const policy of policies) {
       up.push(
         `SELECT add_continuous_aggregate_policy(${quoteString(cagg.viewName)},\n` +
-        `  start_offset => INTERVAL '${cagg.refreshPolicy.startOffset}',\n` +
-        `  end_offset => INTERVAL '${cagg.refreshPolicy.endOffset}',\n` +
-        `  schedule_interval => INTERVAL '${cagg.refreshPolicy.scheduleInterval}');`
+        `  start_offset => INTERVAL '${policy.startOffset}',\n` +
+        `  end_offset => INTERVAL '${policy.endOffset}',\n` +
+        `  schedule_interval => INTERVAL '${policy.scheduleInterval}');`
       )
+    }
+
+    // H3: retention policy on CAGG
+    if (cagg.retentionPolicy) {
+      up.push(`SELECT add_retention_policy(${quoteString(cagg.viewName)}, INTERVAL '${cagg.retentionPolicy.dropAfter}');`)
     }
   }
 
   for (const caggName of diff.caggsToDrop) {
     up.push(`DROP MATERIALIZED VIEW IF EXISTS ${quoteIdentifier(caggName)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped continuous aggregate ${quoteIdentifier(caggName)}`)
+  }
+
+  // Background jobs (M3)
+  for (const job of diff.jobsToCreate) {
+    const args: string[] = [
+      `'${job.functionName}'`,
+      `'${job.scheduleInterval}'`,
+    ]
+    if (job.config) {
+      args.push(`config => '${JSON.stringify(job.config)}'::jsonb`)
+    }
+    if (job.initialStart) {
+      args.push(`initial_start => '${job.initialStart}'::timestamptz`)
+    }
+    if (job.scheduled === false) {
+      args.push(`scheduled => false`)
+    }
+    if (job.fixedSchedule !== undefined) {
+      args.push(`fixed_schedule => ${job.fixedSchedule}`)
+    }
+    up.push(`SELECT add_job(${args.join(", ")});`)
   }
 
   return { up, down }

@@ -59,6 +59,65 @@ export const writeSnapshot = async (dir: string, snapshot: PersistedSnapshot): P
   await Bun.write(path, JSON.stringify(snapshot, null, 2))
 }
 
+/**
+ * Atomically write migration file, journal, and snapshot using temp files + rename.
+ * If the process crashes mid-write, no partial state is left behind.
+ */
+export const atomicWriteAll = async (
+  dir: string,
+  migrationFile: MigrationFile,
+  journal: MigrationJournal,
+  snapshot: PersistedSnapshot,
+): Promise<string> => {
+  const integrity = computeIntegrityHash(migrationFile)
+  const fileName = `${migrationFile.name}.ts`
+  const migPath = `${dir}/${fileName}`
+  const journalPath = `${dir}/${JOURNAL_FILE}`
+  const snapshotPath = `${dir}/${SNAPSHOT_FILE}`
+
+  const tmpMig = `${migPath}.tmp`
+  const tmpJournal = `${journalPath}.tmp`
+  const tmpSnapshot = `${snapshotPath}.tmp`
+
+  const { rename, unlink } = await import("node:fs/promises")
+
+  try {
+    // 1. Write all files to .tmp
+    const upArray = migrationFile.up.map((sql) => `    ${JSON.stringify(sql)},`).join("\n")
+    const downArray = migrationFile.down.map((sql) => `    ${JSON.stringify(sql)},`).join("\n")
+
+    let content = AI_WARNING_HEADER
+    content += `import type { MigrationFile } from "timescaledb-sdk/migration"\n\n`
+    content += `export default {\n`
+    content += `  name: ${JSON.stringify(migrationFile.name)},\n`
+    content += `  timestamp: ${migrationFile.timestamp},\n`
+    content += `  up: [\n${upArray}\n  ],\n`
+    content += `  down: [\n${downArray}\n  ],\n`
+    if (migrationFile.description) {
+      content += `  description: ${JSON.stringify(migrationFile.description)},\n`
+    }
+    content += `  integrity: ${JSON.stringify(integrity)},\n`
+    content += `} satisfies MigrationFile\n`
+
+    await Bun.write(tmpMig, content)
+    await Bun.write(tmpJournal, JSON.stringify(journal, null, 2))
+    await Bun.write(tmpSnapshot, JSON.stringify(snapshot, null, 2))
+
+    // 2. Rename all in sequence (each rename is atomic on POSIX)
+    await rename(tmpMig, migPath)
+    await rename(tmpJournal, journalPath)
+    await rename(tmpSnapshot, snapshotPath)
+
+    return migPath
+  } catch (e) {
+    // Clean up any leftover temp files
+    await unlink(tmpMig).catch(() => {})
+    await unlink(tmpJournal).catch(() => {})
+    await unlink(tmpSnapshot).catch(() => {})
+    throw e
+  }
+}
+
 export const generateMigrationName = (idx: number, description?: string): string => {
   const padded = String(idx).padStart(4, "0")
   if (!description) return padded

@@ -5,6 +5,12 @@ export const expr = (expression: string, opclass?: string): IndexColumn => ({
   opclass,
 })
 
+/** Create an index column reference with an operator class (e.g. gin_trgm_ops, jsonb_path_ops) */
+export const colWithOp = (column: string, opclass: string): IndexColumn => ({
+  expression: column,
+  opclass,
+})
+
 export const index = (
   name: string,
   columns: ReadonlyArray<IndexColumn>,

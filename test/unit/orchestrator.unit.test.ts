@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { generate, migrationFileToEffect, loadAndRun } from "../../src/migration/Orchestrator.js"
+import { SnapshotWarning, drainWarnings } from "../../src/migration/Snapshot.js"
 import { migrate } from "../../src/migration/Runner.js"
 import { readJournal, readSnapshot, writeJournal, writeMigrationFile, computeMigrationChecksum, computeIntegrityHash } from "../../src/migration/FileSystem.js"
 import { timestamptz, integer, doublePrecision, text, serial, boolean } from "../../src/schema/Column.js"
@@ -561,5 +562,86 @@ describe("end-to-end generate workflow", () => {
     const snapshot = await readSnapshot(dir)
     expect(snapshot!.definitions.tables[0]!.columns.find((c) => c.name === "full_name")).toBeDefined()
     expect(snapshot!.definitions.tables[0]!.columns.find((c) => c.name === "name")).toBeUndefined()
+  })
+})
+
+// =============================================================================
+// C1: Snapshot warning infrastructure tests
+// =============================================================================
+
+describe("Snapshot warnings (C1)", () => {
+  test("SnapshotWarning has correct structure", () => {
+    const w = new SnapshotWarning("constraints", "Permission denied querying constraints")
+    expect(w._tag).toBe("SnapshotWarning")
+    expect(w.query).toBe("constraints")
+    expect(w.message).toContain("Permission denied")
+  })
+
+  test("drainWarnings clears accumulated warnings", () => {
+    // drain any leftover from other tests
+    drainWarnings()
+    const drained = drainWarnings()
+    expect(drained.length).toBe(0)
+  })
+})
+
+// =============================================================================
+// C2: Atomic generate() tests
+// =============================================================================
+
+describe("Atomic generate() (C2)", () => {
+  test("generate() writes all 3 files atomically", async () => {
+    const users = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    const result = await generate({
+      definitions: [users],
+      migrationsDir: dir,
+      description: "initial",
+    })
+
+    expect(result).not.toBeNull()
+
+    // All 3 files should exist
+    const migFile = Bun.file(result!.filePath)
+    const journalFile = Bun.file(`${dir}/_journal.json`)
+    const snapshotFile = Bun.file(`${dir}/_snapshot.json`)
+
+    expect(await migFile.exists()).toBe(true)
+    expect(await journalFile.exists()).toBe(true)
+    expect(await snapshotFile.exists()).toBe(true)
+
+    // No temp files should remain
+    const tmpMig = Bun.file(`${result!.filePath}.tmp`)
+    const tmpJournal = Bun.file(`${dir}/_journal.json.tmp`)
+    const tmpSnapshot = Bun.file(`${dir}/_snapshot.json.tmp`)
+
+    expect(await tmpMig.exists()).toBe(false)
+    expect(await tmpJournal.exists()).toBe(false)
+    expect(await tmpSnapshot.exists()).toBe(false)
+  })
+
+  test("journal and snapshot are consistent after atomic write", async () => {
+    const users = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    await generate({
+      definitions: [users],
+      migrationsDir: dir,
+      description: "initial",
+    })
+
+    const journal = await readJournal(dir)
+    const snapshot = await readSnapshot(dir)
+
+    expect(journal.entries.length).toBe(1)
+    expect(journal.entries[0]!.name).toBe("0001_initial")
+    expect(snapshot).not.toBeNull()
+    expect(snapshot!.definitions.tables.length).toBe(1)
+    expect(snapshot!.definitions.tables[0]!.name).toBe("users")
   })
 })

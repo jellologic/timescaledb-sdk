@@ -1,4 +1,4 @@
-import type { CaggColumnDef, CaggDefinition, CaggJoinDef } from "./types.js"
+import type { CaggColumnDef, CaggDefinition, CaggJoinDef, CaggRefreshPolicy } from "./types.js"
 
 export const continuousAggregateView = (
   viewName: string,
@@ -11,18 +11,21 @@ export const continuousAggregateView = (
     join?: CaggJoinDef
     withNoData?: boolean
     materializedOnly?: boolean
-    refreshPolicy?: {
-      startOffset: string
-      endOffset: string
-      scheduleInterval: string
-    }
+    compress?: boolean
+    finalize?: boolean
+    retentionPolicy?: { dropAfter: string }
+    refreshPolicy?: CaggRefreshPolicy
+    refreshPolicies?: ReadonlyArray<CaggRefreshPolicy>
+    /** Use sourceView instead of sourceHypertable for hierarchical CAGGs */
+    sourceView?: string
   },
   options?: { schema?: string }
 ): CaggDefinition => ({
   _tag: "CaggDefinition",
   viewName,
   schema: options?.schema ?? "public",
-  sourceHypertable,
+  sourceHypertable: config.sourceView ?? sourceHypertable,
+  sourceView: config.sourceView,
   timeBucket: config.timeBucket,
   columns: config.columns,
   groupBy: config.groupBy,
@@ -30,7 +33,11 @@ export const continuousAggregateView = (
   join: config.join,
   materializedOnly: config.materializedOnly,
   withNoData: config.withNoData,
+  compress: config.compress,
+  finalize: config.finalize,
+  retentionPolicy: config.retentionPolicy,
   refreshPolicy: config.refreshPolicy,
+  refreshPolicies: config.refreshPolicies,
 })
 
 export const aggColumn = {

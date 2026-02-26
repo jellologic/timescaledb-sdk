@@ -110,6 +110,8 @@ export interface TableDefinition<
   readonly unlogged?: boolean
   readonly ifNotExists?: boolean
   readonly renamedFrom?: string
+  readonly enableRls?: boolean
+  readonly rlsPolicies?: ReadonlyArray<RlsPolicyDef>
 }
 
 export interface CompressionConfig {
@@ -128,6 +130,23 @@ export interface PartitioningConfig {
   readonly numberOfPartitions?: number
 }
 
+export interface ReorderPolicyConfig {
+  readonly indexName: string
+}
+
+export interface HypercoreConfig {
+  readonly enabled: boolean
+  readonly segmentby?: ReadonlyArray<string>
+  readonly orderby?: ReadonlyArray<{ column: string; order?: "ASC" | "DESC" }>
+}
+
+export interface ChunkOperationConfig {
+  /** Move completed chunks to a different tablespace */
+  readonly moveCompletedTo?: string
+  /** Enable chunk skipping for specific columns */
+  readonly enableSkipping?: boolean
+}
+
 export interface HypertableConfig {
   readonly timeColumn: string
   readonly chunkInterval?: string
@@ -138,6 +157,9 @@ export interface HypertableConfig {
   readonly useModernSyntax?: boolean
   readonly migrateData?: boolean
   readonly enableChunkSkipping?: boolean
+  readonly reorderPolicy?: ReorderPolicyConfig
+  readonly hypercore?: HypercoreConfig
+  readonly chunkOperations?: ChunkOperationConfig
 }
 
 export interface HypertableDefinition<
@@ -161,11 +183,18 @@ export interface CaggJoinDef {
   readonly on: string
 }
 
+export interface CaggRefreshPolicy {
+  readonly startOffset: string
+  readonly endOffset: string
+  readonly scheduleInterval: string
+}
+
 export interface CaggDefinition {
   readonly _tag: "CaggDefinition"
   readonly viewName: string
   readonly schema: string
   readonly sourceHypertable: string
+  readonly sourceView?: string
   readonly timeBucket: {
     readonly interval: string
     readonly column: string
@@ -177,11 +206,11 @@ export interface CaggDefinition {
   readonly join?: CaggJoinDef
   readonly materializedOnly?: boolean
   readonly withNoData?: boolean
-  readonly refreshPolicy?: {
-    readonly startOffset: string
-    readonly endOffset: string
-    readonly scheduleInterval: string
-  }
+  readonly compress?: boolean
+  readonly finalize?: boolean
+  readonly retentionPolicy?: { readonly dropAfter: string }
+  readonly refreshPolicy?: CaggRefreshPolicy
+  readonly refreshPolicies?: ReadonlyArray<CaggRefreshPolicy>
 }
 
 export type TriggerTiming = "BEFORE" | "AFTER" | "INSTEAD OF"
@@ -203,6 +232,25 @@ export interface EnumTypeDef {
   readonly name: string
   readonly schema: string
   readonly values: ReadonlyArray<string>
+}
+
+export interface RlsPolicyDef {
+  readonly _tag: "RlsPolicy"
+  readonly name: string
+  readonly command?: "ALL" | "SELECT" | "INSERT" | "UPDATE" | "DELETE"
+  readonly using?: string
+  readonly check?: string
+  readonly roles?: ReadonlyArray<string>
+}
+
+export interface JobDefinition {
+  readonly _tag: "JobDefinition"
+  readonly functionName: string
+  readonly scheduleInterval: string
+  readonly initialStart?: string
+  readonly scheduled?: boolean
+  readonly config?: Record<string, unknown>
+  readonly fixedSchedule?: boolean
 }
 
 export type InferColumnType<C> = C extends ColumnDef<infer T> ? T : never

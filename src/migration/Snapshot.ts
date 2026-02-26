@@ -1,7 +1,31 @@
 import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { MigrationError } from "../Error.js"
-import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot } from "./types.js"
+
+export class SnapshotWarning {
+  readonly _tag = "SnapshotWarning"
+  constructor(readonly query: string, readonly message: string) {}
+}
+
+const warnings: SnapshotWarning[] = []
+
+/** Get and clear accumulated snapshot warnings */
+export const drainWarnings = (): SnapshotWarning[] => warnings.splice(0)
+
+const isPermissionError = (e: unknown): boolean => {
+  const msg = String(e).toLowerCase()
+  return msg.includes("permission denied") || msg.includes("must be owner") || msg.includes("insufficient privilege")
+}
+
+/** Catch errors, logging permission issues as warnings instead of silently swallowing */
+const catchWithWarning = <A>(queryName: string, fallback: A) =>
+  Effect.catchAll((e: unknown) => {
+    if (isPermissionError(e)) {
+      warnings.push(new SnapshotWarning(queryName, `Permission denied querying ${queryName}: ${e}. Results may be incomplete.`))
+    }
+    return Effect.succeed(fallback)
+  })
 
 const parseIndexColumns = (indexdef: string): string[] => {
   // Extract columns from indexdef like: CREATE INDEX idx ON tbl USING btree (col1, col2)
@@ -61,17 +85,23 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
          WHERE i.tablename = $1 AND i.schemaname = $2
          GROUP BY i.indexname, i.indexdef`,
         [t.table_name, t.table_schema]
-      ).pipe(Effect.catchAll(() =>
+      ).pipe(Effect.catchAll((e) => {
+        if (isPermissionError(e)) {
+          warnings.push(new SnapshotWarning("indexes", `Permission denied querying indexes for ${t.table_schema}.${t.table_name}: ${e}`))
+        }
         // Fallback: parse columns from indexdef
-        client.execute<{ indexname: string; indexdef: string }>(
+        return client.execute<{ indexname: string; indexdef: string }>(
           `SELECT indexname, indexdef FROM pg_indexes
            WHERE tablename = $1 AND schemaname = $2`,
           [t.table_name, t.table_schema]
-        ).pipe(Effect.map((rows) => rows.map((r) => ({
-          ...r,
-          columns: parseIndexColumns(r.indexdef),
-        }))))
-      ))
+        ).pipe(
+          Effect.map((rows) => rows.map((r) => ({
+            ...r,
+            columns: parseIndexColumns(r.indexdef),
+          }))),
+          catchWithWarning("indexes-fallback", [] as any[])
+        )
+      }))
 
       // 2.3 — Constraint snapshot from pg_constraint
       const constraints = yield* client.execute<{
@@ -91,7 +121,7 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
          WHERE rel.relname = $1 AND nsp.nspname = $2
          GROUP BY con.conname, con.contype, con.oid`,
         [t.table_name, t.table_schema]
-      ).pipe(Effect.catchAll(() => Effect.succeed([] as any[])))
+      ).pipe(catchWithWarning(`constraints:${t.table_schema}.${t.table_name}`, [] as any[]))
 
       // 2.4 — Trigger snapshot from pg_trigger
       const triggers = yield* client.execute<{
@@ -129,7 +159,7 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
          AND evt IS NOT NULL
          GROUP BY t.tgname, t.tgtype, p.proname`,
         [t.table_name, t.table_schema]
-      ).pipe(Effect.catchAll(() => Effect.succeed([] as any[])))
+      ).pipe(catchWithWarning(`triggers:${t.table_schema}.${t.table_name}`, [] as any[]))
 
       tables.push({
         name: t.table_name,
@@ -181,15 +211,67 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
          ON h.hypertable_name = d.hypertable_name
          AND h.hypertable_schema = d.hypertable_schema
          AND d.dimension_number = 1`
-    ).pipe(Effect.catchAll(() => Effect.succeed([] as any)))
+    ).pipe(catchWithWarning("hypertables", [] as any))
 
-    const hypertables: HypertableSnapshot[] = htRows.map((h: any) => ({
-      name: h.hypertable_name,
-      schema: h.hypertable_schema,
-      timeColumn: h.time_column ?? "",
-      chunkInterval: h.chunk_interval ?? null,
-      compressionEnabled: h.compression_enabled,
-    }))
+    // H7: Query compression settings per hypertable
+    const compSettingsRows = yield* client.execute<{
+      hypertable_name: string
+      hypertable_schema: string
+      attname: string
+      segmentby_column_index: number | null
+      orderby_column_index: number | null
+      orderby_asc: boolean | null
+    }>(
+      `SELECT hypertable_name, hypertable_schema, attname,
+              segmentby_column_index, orderby_column_index, orderby_asc
+       FROM timescaledb_information.compression_settings
+       WHERE segmentby_column_index IS NOT NULL OR orderby_column_index IS NOT NULL`
+    ).pipe(catchWithWarning("compression_settings", [] as any[]))
+
+    const compSettingsMap = new Map<string, CompressionSettingSnapshot>()
+    for (const row of compSettingsRows as any[]) {
+      const key = `${row.hypertable_schema}.${row.hypertable_name}`
+      if (!compSettingsMap.has(key)) {
+        compSettingsMap.set(key, { segmentby: [], orderby: [] })
+      }
+      const settings = compSettingsMap.get(key)!
+      if (row.segmentby_column_index != null) {
+        (settings.segmentby as string[]).push(row.attname)
+      }
+      if (row.orderby_column_index != null) {
+        const dir = row.orderby_asc === false ? " DESC" : ""
+        ;(settings.orderby as string[]).push(`${row.attname}${dir}`)
+      }
+    }
+
+    // H1: Detect access method (hypercore vs heap) from chunks
+    const accessMethodRows = yield* client.execute<{
+      hypertable_name: string
+      hypertable_schema: string
+      access_method: string
+    }>(
+      `SELECT DISTINCT hypertable_name, hypertable_schema, access_method
+       FROM timescaledb_information.chunks
+       WHERE access_method = 'hypercore'`
+    ).pipe(catchWithWarning("chunks_access_method", [] as any[]))
+
+    const accessMethodMap = new Map<string, string>()
+    for (const row of accessMethodRows as any[]) {
+      accessMethodMap.set(`${row.hypertable_schema}.${row.hypertable_name}`, row.access_method)
+    }
+
+    const hypertables: HypertableSnapshot[] = htRows.map((h: any) => {
+      const key = `${h.hypertable_schema}.${h.hypertable_name}`
+      return {
+        name: h.hypertable_name,
+        schema: h.hypertable_schema,
+        timeColumn: h.time_column ?? "",
+        chunkInterval: h.chunk_interval ?? null,
+        compressionEnabled: h.compression_enabled,
+        compressionSettings: compSettingsMap.get(key),
+        accessMethod: accessMethodMap.get(key),
+      }
+    })
 
     // Get continuous aggregates
     const caggRows = yield* client.execute<{
@@ -199,7 +281,7 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
     }>(
       `SELECT view_name, view_schema, view_definition
        FROM timescaledb_information.continuous_aggregates`
-    ).pipe(Effect.catchAll(() => Effect.succeed([] as any)))
+    ).pipe(catchWithWarning("continuous_aggregates", [] as any))
 
     const continuousAggregates: CaggSnapshot[] = caggRows.map((c: any) => ({
       viewName: c.view_name,
@@ -220,7 +302,7 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
        JOIN pg_namespace n ON t.typnamespace = n.oid
        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
        GROUP BY t.typname, n.nspname`
-    ).pipe(Effect.catchAll(() => Effect.succeed([] as any[])))
+    ).pipe(catchWithWarning("enums", [] as any[]))
 
     const enums: EnumSnapshot[] = enumRows.map((e: any) => ({
       name: e.name,

@@ -1,5 +1,5 @@
 import type { ColumnBuilder } from "./Column.js"
-import type { ColumnDef, ConstraintDef, IndexDef, TableDefinition, TriggerDef } from "./types.js"
+import type { ColumnDef, ConstraintDef, IndexDef, RlsPolicyDef, TableDefinition, TriggerDef } from "./types.js"
 
 type ColumnMap<T extends Record<string, ColumnBuilder<any>>> = {
   [K in keyof T]: ReturnType<T[K]["build"]>
@@ -17,6 +17,8 @@ export const pgTable = <
     unlogged?: boolean
     ifNotExists?: boolean
     renamedFrom?: string
+    enableRls?: boolean
+    rlsPolicies?: ReadonlyArray<RlsPolicyDef>
   }
 ): TableDefinition<TName, ColumnMap<TColumns>> => {
   const builtColumns = {} as Record<string, ColumnDef<any>>
@@ -40,5 +42,7 @@ export const pgTable = <
     unlogged: options?.unlogged,
     ifNotExists: options?.ifNotExists,
     renamedFrom: options?.renamedFrom,
+    enableRls: options?.enableRls,
+    rlsPolicies: options?.rlsPolicies,
   }
 }

@@ -6,8 +6,8 @@ import type { SchemaDiff, SchemaDefinition } from "./Generator.js"
 import { diffSchema, generateMigrationSql } from "./Generator.js"
 import { definitionsToSnapshot, definitionsToPersistedSnapshot } from "./DefinitionsSnapshot.js"
 import {
-  readJournal, readSnapshot, writeJournal, writeSnapshot,
-  writeMigrationFile, loadAllMigrations, computeMigrationChecksum, generateMigrationName,
+  readJournal, readSnapshot, atomicWriteAll,
+  loadAllMigrations, computeMigrationChecksum, generateMigrationName,
 } from "./FileSystem.js"
 import { migrate, rollback, status } from "./Runner.js"
 import { ensureMigrationsTable, getAppliedMigrations } from "./Tracker.js"
@@ -67,10 +67,7 @@ export const generate = async (options: GenerateOptions): Promise<GenerateResult
     description,
   }
 
-  // Write migration file
-  const filePath = await writeMigrationFile(migrationsDir, migrationFile)
-
-  // Update journal
+  // Compute checksum and build new journal/snapshot
   const checksum = computeMigrationChecksum(migrationFile)
   const newJournal = {
     ...journal,
@@ -85,11 +82,10 @@ export const generate = async (options: GenerateOptions): Promise<GenerateResult
       },
     ],
   }
-  await writeJournal(migrationsDir, newJournal)
-
-  // Update snapshot
   const newSnapshot = definitionsToPersistedSnapshot(definitions)
-  await writeSnapshot(migrationsDir, newSnapshot)
+
+  // Atomically write migration file, journal, and snapshot
+  const filePath = await atomicWriteAll(migrationsDir, migrationFile, newJournal, newSnapshot)
 
   return { filePath, migrationName, up, down, diff }
 }

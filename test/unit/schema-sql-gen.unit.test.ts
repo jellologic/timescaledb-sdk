@@ -1,15 +1,18 @@
 import { test, expect, describe } from "bun:test"
-import { diffSchema, generateMigrationSql } from "../../src/migration/Generator.js"
+import { diffSchema, generateMigrationSql, HypertableConstraintError } from "../../src/migration/Generator.js"
 import type { SchemaSnapshot, EnumSnapshot } from "../../src/migration/types.js"
 import {
   timestamptz, integer, doublePrecision, text, serial, bigserial, boolean, varchar, uuid, numeric, jsonb, tsrange,
 } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
-import { expr, index, uniqueIndex, brinIndex, ginIndex } from "../../src/schema/IndexHelpers.js"
+import { expr, colWithOp, index, uniqueIndex, brinIndex, ginIndex } from "../../src/schema/IndexHelpers.js"
 import { check, unique, foreignKey, primaryKey, exclude, deferrable } from "../../src/schema/Constraint.js"
 import { pgEnum, enumColumn } from "../../src/schema/Enum.js"
 import { trigger } from "../../src/schema/Trigger.js"
+import { continuousAggregateView, aggColumn } from "../../src/schema/ContinuousAggregate.js"
+import { rlsPolicy } from "../../src/schema/Rls.js"
+import { backgroundJob } from "../../src/schema/Job.js"
 
 const emptySnapshot: SchemaSnapshot = {
   tables: [],
@@ -1471,5 +1474,614 @@ describe("SQL Generation — Column NOT NULL / DEFAULT Changes", () => {
 
     const { up } = generateMigrationSql(diff, [t])
     expect(up.some((s) => s.includes("DROP DEFAULT"))).toBe(true)
+  })
+})
+
+// =============================================================================
+// Batch 1 Tests: C3 — Hypertable constraint validation
+// =============================================================================
+
+describe("SQL Generation — Hypertable constraint validation (C3)", () => {
+  test("throws when UNIQUE constraint on hypertable missing time column", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: text("device_id").notNull(),
+      value: doublePrecision("value"),
+    }, { timeColumn: "time" }, () => [
+      unique("events_device_unique", ["device_id"]),
+    ])
+
+    const diff = diffSchema([events], emptySnapshot)
+    expect(() => generateMigrationSql(diff, [events])).toThrow(HypertableConstraintError)
+  })
+
+  test("throws when PRIMARY KEY constraint on hypertable missing time column", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      id: integer("id").notNull(),
+    }, { timeColumn: "time" }, () => [
+      primaryKey("events_pk", ["id"]),
+    ])
+
+    const diff = diffSchema([events], emptySnapshot)
+    expect(() => generateMigrationSql(diff, [events])).toThrow(HypertableConstraintError)
+  })
+
+  test("passes when UNIQUE constraint includes time column", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: text("device_id").notNull(),
+      value: doublePrecision("value"),
+    }, { timeColumn: "time" }, () => [
+      unique("events_device_time_unique", ["device_id", "time"]),
+    ])
+
+    const diff = diffSchema([events], emptySnapshot)
+    expect(() => generateMigrationSql(diff, [events])).not.toThrow()
+  })
+
+  test("passes when PRIMARY KEY includes time column", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      id: integer("id").notNull(),
+    }, { timeColumn: "time" }, () => [
+      primaryKey("events_pk", ["id", "time"]),
+    ])
+
+    const diff = diffSchema([events], emptySnapshot)
+    expect(() => generateMigrationSql(diff, [events])).not.toThrow()
+  })
+
+  test("CHECK constraints on hypertable do not require time column", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, { timeColumn: "time" }, () => [
+      check("value_positive", "value > 0"),
+    ])
+
+    const diff = diffSchema([events], emptySnapshot)
+    expect(() => generateMigrationSql(diff, [events])).not.toThrow()
+  })
+})
+
+// =============================================================================
+// Batch 1 Tests: C4 — Enum reordering detection
+// =============================================================================
+
+describe("SQL Generation — Enum reordering detection (C4)", () => {
+  test("detects enum value reordering as a warning", () => {
+    const statusEnum = pgEnum("status", ["active", "inactive", "pending"])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "status", schema: "public", values: ["pending", "active", "inactive"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([statusEnum], snapshot)
+    expect(diff.warnings.length).toBe(1)
+    expect(diff.warnings[0]!.name).toBe("status")
+    expect(diff.warnings[0]!.message).toContain("reordered")
+  })
+
+  test("no warning when enum values are in same order with additions", () => {
+    const statusEnum = pgEnum("status", ["active", "inactive", "pending", "archived"])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "status", schema: "public", values: ["active", "inactive", "pending"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([statusEnum], snapshot)
+    expect(diff.warnings.length).toBe(0)
+    expect(diff.enumsToAddValues.length).toBe(1)
+    expect(diff.enumsToAddValues[0]!.newValues).toEqual(["archived"])
+  })
+
+  test("no warning when enum values are identical", () => {
+    const statusEnum = pgEnum("status", ["active", "inactive"])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "status", schema: "public", values: ["active", "inactive"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([statusEnum], snapshot)
+    expect(diff.warnings.length).toBe(0)
+    expect(diff.enumsToAddValues.length).toBe(0)
+  })
+
+  test("detects reordering even when new values are also added", () => {
+    const statusEnum = pgEnum("status", ["inactive", "active", "pending", "new_value"])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "status", schema: "public", values: ["active", "inactive", "pending"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([statusEnum], snapshot)
+    expect(diff.warnings.length).toBe(1)
+    expect(diff.warnings[0]!.message).toContain("reordered")
+    // Still detects the new value
+    expect(diff.enumsToAddValues.length).toBe(1)
+  })
+})
+
+// =============================================================================
+// Batch 2 Tests: H1 — Hypercore support
+// =============================================================================
+
+describe("SQL Generation — Hypercore (H1)", () => {
+  test("generates ALTER TABLE SET ACCESS METHOD hypercore", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      hypercore: { enabled: true },
+    })
+
+    const up = genUp([events])
+    expect(up.some((s) => s.includes("SET ACCESS METHOD hypercore"))).toBe(true)
+  })
+
+  test("generates hypercore with segmentby and orderby settings", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: text("device_id").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      hypercore: {
+        enabled: true,
+        segmentby: ["device_id"],
+        orderby: [{ column: "time", order: "DESC" }],
+      },
+    })
+
+    const up = genUp([events])
+    expect(up.some((s) => s.includes("SET ACCESS METHOD hypercore"))).toBe(true)
+    expect(up.some((s) => s.includes("compress_segmentby = 'device_id'"))).toBe(true)
+    expect(up.some((s) => s.includes("compress_orderby = 'time DESC'"))).toBe(true)
+  })
+
+  test("generates down migration to revert to heap", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      hypercore: { enabled: true },
+    })
+
+    const diff = diffSchema([events], emptySnapshot)
+    const { down } = generateMigrationSql(diff, [events])
+    expect(down.some((s) => s.includes("SET ACCESS METHOD heap"))).toBe(true)
+  })
+})
+
+// =============================================================================
+// Batch 2 Tests: H2 — Hierarchical CAGGs
+// =============================================================================
+
+describe("SQL Generation — Hierarchical CAGGs (H2)", () => {
+  test("creates CAGG from another CAGG view", () => {
+    const hourly = continuousAggregateView("hourly_stats", "events", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+    })
+
+    const daily = continuousAggregateView("daily_stats", "hourly_stats", {
+      timeBucket: { interval: "1 day", column: "bucket" },
+      columns: [aggColumn.avg("avg_value", "avg_value")],
+      groupBy: [],
+      sourceView: "hourly_stats",
+    })
+
+    const diff = diffSchema([hourly, daily], emptySnapshot)
+    const { up } = generateMigrationSql(diff, [hourly, daily])
+
+    const dailySql = up.find((s) => s.includes("daily_stats"))
+    expect(dailySql).toBeDefined()
+    expect(dailySql).toContain('FROM "hourly_stats"')
+  })
+})
+
+// =============================================================================
+// Batch 2 Tests: H3 — CAGG configuration options
+// =============================================================================
+
+describe("SQL Generation — CAGG configuration (H3)", () => {
+  test("generates materialized_only setting", () => {
+    const cagg = continuousAggregateView("hourly_stats", "events", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+      materializedOnly: false,
+    })
+
+    const up = genUp([cagg])
+    expect(up.some((s) => s.includes("materialized_only = false"))).toBe(true)
+  })
+
+  test("generates compress on CAGG", () => {
+    const cagg = continuousAggregateView("hourly_stats", "events", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+      compress: true,
+    })
+
+    const diff = diffSchema([cagg], emptySnapshot)
+    const { up, down } = generateMigrationSql(diff, [cagg])
+    expect(up.some((s) => s.includes("timescaledb.compress = true"))).toBe(true)
+    expect(down.some((s) => s.includes("timescaledb.compress = false"))).toBe(true)
+  })
+
+  test("generates finalize=false option", () => {
+    const cagg = continuousAggregateView("hourly_stats", "events", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+      finalize: false,
+    })
+
+    const up = genUp([cagg])
+    const createSql = up.find((s) => s.includes("CREATE MATERIALIZED VIEW"))
+    expect(createSql).toContain("timescaledb.finalize = false")
+  })
+
+  test("generates retention policy on CAGG", () => {
+    const cagg = continuousAggregateView("hourly_stats", "events", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+      retentionPolicy: { dropAfter: "30 days" },
+    })
+
+    const up = genUp([cagg])
+    expect(up.some((s) => s.includes("add_retention_policy") && s.includes("30 days"))).toBe(true)
+  })
+})
+
+// =============================================================================
+// Batch 2 Tests: H5 — Reorder policies
+// =============================================================================
+
+describe("SQL Generation — Reorder policies (H5)", () => {
+  test("generates add_reorder_policy", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: text("device_id").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      reorderPolicy: { indexName: "events_device_id_time_idx" },
+    })
+
+    const up = genUp([events])
+    expect(up.some((s) => s.includes("add_reorder_policy") && s.includes("events_device_id_time_idx"))).toBe(true)
+  })
+
+  test("generates remove_reorder_policy in down", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      reorderPolicy: { indexName: "events_time_idx" },
+    })
+
+    const diff = diffSchema([events], emptySnapshot)
+    const { down } = generateMigrationSql(diff, [events])
+    expect(down.some((s) => s.includes("remove_reorder_policy"))).toBe(true)
+  })
+})
+
+// =============================================================================
+// Batch 2 Tests: H6 — Multiple refresh policies
+// =============================================================================
+
+describe("SQL Generation — Multiple refresh policies (H6)", () => {
+  test("generates multiple add_continuous_aggregate_policy calls", () => {
+    const cagg = continuousAggregateView("hourly_stats", "events", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+      refreshPolicies: [
+        { startOffset: "3 hours", endOffset: "1 hour", scheduleInterval: "1 hour" },
+        { startOffset: "1 day", endOffset: "3 hours", scheduleInterval: "6 hours" },
+      ],
+    })
+
+    const up = genUp([cagg])
+    const policyStatements = up.filter((s) => s.includes("add_continuous_aggregate_policy"))
+    expect(policyStatements.length).toBe(2)
+    expect(policyStatements[0]).toContain("3 hours")
+    expect(policyStatements[1]).toContain("1 day")
+  })
+
+  test("single refreshPolicy still works", () => {
+    const cagg = continuousAggregateView("hourly_stats", "events", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+      refreshPolicy: { startOffset: "3 hours", endOffset: "1 hour", scheduleInterval: "1 hour" },
+    })
+
+    const up = genUp([cagg])
+    const policyStatements = up.filter((s) => s.includes("add_continuous_aggregate_policy"))
+    expect(policyStatements.length).toBe(1)
+  })
+})
+
+// =============================================================================
+// Batch 3 Tests: M1 — Operator class support
+// =============================================================================
+
+describe("SQL Generation — Operator class support (M1)", () => {
+  test("colWithOp generates index column with operator class", () => {
+    const t = pgTable("documents", {
+      id: serial("id"),
+      content: text("content"),
+    }, () => [
+      ginIndex("documents_content_trgm_idx", [colWithOp("content", "gin_trgm_ops")]),
+    ])
+
+    const up = genUp([t])
+    expect(up.some((s) => s.includes("gin_trgm_ops"))).toBe(true)
+    expect(up.some((s) => s.includes("USING gin"))).toBe(true)
+  })
+
+  test("expr() with opclass generates expression with operator class", () => {
+    const t = pgTable("data", {
+      id: serial("id"),
+      metadata: jsonb("metadata"),
+    }, () => [
+      ginIndex("data_metadata_idx", [expr("metadata", "jsonb_path_ops")]),
+    ])
+
+    const up = genUp([t])
+    expect(up.some((s) => s.includes("jsonb_path_ops"))).toBe(true)
+  })
+})
+
+// =============================================================================
+// Batch 3 Tests: M2 — Row-Level Security
+// =============================================================================
+
+describe("SQL Generation — Row-Level Security (M2)", () => {
+  test("generates ENABLE ROW LEVEL SECURITY", () => {
+    const t = pgTable("secrets", {
+      id: serial("id"),
+      owner_id: integer("owner_id").notNull(),
+      data: text("data"),
+    }, undefined, { enableRls: true })
+
+    const up = genUp([t])
+    expect(up.some((s) => s.includes("ENABLE ROW LEVEL SECURITY"))).toBe(true)
+  })
+
+  test("generates DISABLE ROW LEVEL SECURITY in down", () => {
+    const t = pgTable("secrets", {
+      id: serial("id"),
+      data: text("data"),
+    }, undefined, { enableRls: true })
+
+    const diff = diffSchema([t], emptySnapshot)
+    const { down } = generateMigrationSql(diff, [t])
+    expect(down.some((s) => s.includes("DISABLE ROW LEVEL SECURITY"))).toBe(true)
+  })
+
+  test("generates CREATE POLICY with USING clause", () => {
+    const t = pgTable("secrets", {
+      id: serial("id"),
+      owner_id: integer("owner_id"),
+      data: text("data"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [
+        rlsPolicy("owner_access", {
+          command: "ALL",
+          using: "owner_id = current_user_id()",
+          roles: ["authenticated"],
+        }),
+      ],
+    })
+
+    const up = genUp([t])
+    expect(up.some((s) => s.includes('CREATE POLICY "owner_access"'))).toBe(true)
+    expect(up.some((s) => s.includes("FOR ALL"))).toBe(true)
+    expect(up.some((s) => s.includes("USING (owner_id = current_user_id())"))).toBe(true)
+    expect(up.some((s) => s.includes("TO authenticated"))).toBe(true)
+  })
+
+  test("generates CREATE POLICY with WITH CHECK clause", () => {
+    const t = pgTable("items", {
+      id: serial("id"),
+      org_id: integer("org_id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [
+        rlsPolicy("insert_policy", {
+          command: "INSERT",
+          check: "org_id = current_org_id()",
+        }),
+      ],
+    })
+
+    const up = genUp([t])
+    expect(up.some((s) => s.includes("FOR INSERT"))).toBe(true)
+    expect(up.some((s) => s.includes("WITH CHECK (org_id = current_org_id())"))).toBe(true)
+  })
+
+  test("generates DROP POLICY in down", () => {
+    const t = pgTable("secrets", {
+      id: serial("id"),
+      data: text("data"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [rlsPolicy("test_policy", { using: "true" })],
+    })
+
+    const diff = diffSchema([t], emptySnapshot)
+    const { down } = generateMigrationSql(diff, [t])
+    expect(down.some((s) => s.includes('DROP POLICY IF EXISTS "test_policy"'))).toBe(true)
+  })
+})
+
+// =============================================================================
+// Batch 3 Tests: M3 — Background jobs
+// =============================================================================
+
+describe("SQL Generation — Background jobs (M3)", () => {
+  test("generates add_job with basic config", () => {
+    const job = backgroundJob("my_custom_function", "1 hour")
+
+    const up = genUp([job])
+    expect(up.some((s) => s.includes("add_job") && s.includes("my_custom_function") && s.includes("1 hour"))).toBe(true)
+  })
+
+  test("generates add_job with config and initial_start", () => {
+    const job = backgroundJob("cleanup_old_data", "1 day", {
+      config: { table_name: "events", retention_days: 30 },
+      initialStart: "2024-01-01 00:00:00+00",
+    })
+
+    const up = genUp([job])
+    const jobSql = up.find((s) => s.includes("add_job"))
+    expect(jobSql).toBeDefined()
+    expect(jobSql).toContain("config =>")
+    expect(jobSql).toContain("initial_start =>")
+  })
+
+  test("generates add_job with scheduled=false", () => {
+    const job = backgroundJob("one_time_task", "1 hour", {
+      scheduled: false,
+    })
+
+    const up = genUp([job])
+    expect(up.some((s) => s.includes("scheduled => false"))).toBe(true)
+  })
+})
+
+// =============================================================================
+// Batch 3 Tests: M5 — Chunk operations
+// =============================================================================
+
+describe("SQL Generation — Chunk operations (M5)", () => {
+  test("generates chunk_move_policy for tablespace", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      chunkOperations: { moveCompletedTo: "slow_storage" },
+    })
+
+    const up = genUp([events])
+    expect(up.some((s) => s.includes("add_chunk_move_policy") && s.includes("slow_storage"))).toBe(true)
+  })
+
+  test("generates chunk skipping enable", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      enableChunkSkipping: true,
+    })
+
+    const up = genUp([events])
+    expect(up.some((s) => s.includes("enable_chunk_skipping = true"))).toBe(true)
+  })
+})
+
+// =============================================================================
+// Batch 3 Tests: M6 — Rollback quality
+// =============================================================================
+
+describe("SQL Generation — Rollback quality (M6)", () => {
+  test("enum value addition has down comment about irreversibility", () => {
+    const statusEnum = pgEnum("status", ["active", "inactive", "new_val"])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "status", schema: "public", values: ["active", "inactive"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([statusEnum], snapshot)
+    const { down } = generateMigrationSql(diff, [statusEnum])
+    expect(down.some((s) => s.includes("Cannot remove enum values"))).toBe(true)
+  })
+
+  test("enum drop has down comment", () => {
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "old_enum", schema: "public", values: ["a", "b"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([], snapshot)
+    const { down } = generateMigrationSql(diff, [])
+    expect(down.some((s) => s.includes("Cannot auto-generate recreation of dropped enum"))).toBe(true)
+  })
+
+  test("trigger drop has down comment", () => {
+    const t = pgTable("events", {
+      id: serial("id"),
+      time: timestamptz("time"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "events",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "time", dataType: "timestamp with time zone", isNullable: true, defaultValue: null },
+        ],
+        indexes: [],
+        triggers: [{ name: "old_trigger", timing: "AFTER", events: ["INSERT"], functionName: "notify_fn" }],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    const { down } = generateMigrationSql(diff, [t])
+    expect(down.some((s) => s.includes("Cannot auto-generate recreation of dropped trigger"))).toBe(true)
+  })
+
+  test("CAGG drop has down comment", () => {
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{ viewName: "old_cagg", viewSchema: "public", viewDefinition: "" }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([], snapshot)
+    const { down } = generateMigrationSql(diff, [])
+    expect(down.some((s) => s.includes("Cannot auto-generate recreation of dropped continuous aggregate"))).toBe(true)
   })
 })

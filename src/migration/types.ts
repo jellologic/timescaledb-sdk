@@ -68,12 +68,19 @@ export interface IndexSnapshot {
   readonly type: string
 }
 
+export interface CompressionSettingSnapshot {
+  readonly segmentby: ReadonlyArray<string>
+  readonly orderby: ReadonlyArray<string>
+}
+
 export interface HypertableSnapshot {
   readonly name: string
   readonly schema: string
   readonly timeColumn: string
   readonly chunkInterval: string | null
   readonly compressionEnabled: boolean
+  readonly compressionSettings?: CompressionSettingSnapshot
+  readonly accessMethod?: string
 }
 
 export interface CaggSnapshot {
