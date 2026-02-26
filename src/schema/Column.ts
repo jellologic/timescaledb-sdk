@@ -14,6 +14,7 @@ export class ColumnBuilder<T> {
   private _collation: string | undefined = undefined
   private _onDelete: ForeignKeyAction | undefined = undefined
   private _onUpdate: ForeignKeyAction | undefined = undefined
+  private _renamedFrom: string | undefined = undefined
 
   constructor(sqlType: SQLType | string, name: string) {
     this._name = name
@@ -93,6 +94,12 @@ export class ColumnBuilder<T> {
     return col
   }
 
+  renamedFrom(previousName: string): ColumnBuilder<T> {
+    const col = this._clone()
+    col._renamedFrom = previousName
+    return col
+  }
+
   build(): ColumnDef<T> {
     return {
       _type: undefined as any,
@@ -108,6 +115,7 @@ export class ColumnBuilder<T> {
       collation: this._collation,
       onDelete: this._onDelete,
       onUpdate: this._onUpdate,
+      renamedFrom: this._renamedFrom,
     }
   }
 
@@ -123,6 +131,7 @@ export class ColumnBuilder<T> {
     col._collation = this._collation
     col._onDelete = this._onDelete
     col._onUpdate = this._onUpdate
+    col._renamedFrom = this._renamedFrom
     return col
   }
 }

@@ -13,8 +13,10 @@ import {
 } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
-import { index, uniqueIndex, brinIndex, hashIndex, ginIndex, gistIndex, spgistIndex } from "../../src/schema/IndexHelpers.js"
+import { expr, index, uniqueIndex, brinIndex, hashIndex, ginIndex, gistIndex, spgistIndex } from "../../src/schema/IndexHelpers.js"
 import { check, unique, foreignKey, primaryKey, exclude, deferrable } from "../../src/schema/Constraint.js"
+import { pgEnum, enumColumn } from "../../src/schema/Enum.js"
+import { trigger } from "../../src/schema/Trigger.js"
 
 // ============================================
 // Column Type Factory Tests
@@ -355,6 +357,24 @@ describe("ColumnBuilder methods", () => {
     expect(col.onUpdate).toBe("RESTRICT")
   })
 
+  test(".renamedFrom() sets renamedFrom", () => {
+    const col = text("full_name").renamedFrom("name").build()
+    expect(col.renamedFrom).toBe("name")
+  })
+
+  test(".renamedFrom() is immutable", () => {
+    const base = text("full_name")
+    const renamed = base.renamedFrom("name")
+    expect(base.build().renamedFrom).toBeUndefined()
+    expect(renamed.build().renamedFrom).toBe("name")
+  })
+
+  test(".renamedFrom() composes with other methods", () => {
+    const col = text("full_name").notNull().renamedFrom("name").build()
+    expect(col.renamedFrom).toBe("name")
+    expect(col.isNotNull).toBe(true)
+  })
+
   test("chaining is immutable — original unchanged", () => {
     const base = text("name")
     const notNull = base.notNull()
@@ -511,6 +531,18 @@ describe("pgTable", () => {
     expect(table.columns.name.isNotNull).toBe(true)
   })
 
+  test("with renamedFrom option", () => {
+    const table = pgTable("accounts", {
+      id: serial("id"),
+    }, undefined, { renamedFrom: "users" })
+    expect(table.renamedFrom).toBe("users")
+  })
+
+  test("renamedFrom is undefined by default", () => {
+    const table = pgTable("users", { id: serial("id") })
+    expect(table.renamedFrom).toBeUndefined()
+  })
+
   test("column order preserved", () => {
     const table = pgTable("t", {
       a: integer("a"),
@@ -601,6 +633,13 @@ describe("hypertable", () => {
     expect(metrics.hypertableConfig.partitioning).toEqual([
       { column: "device_id", type: "hash", numberOfPartitions: 4 },
     ])
+  })
+
+  test("with renamedFrom option", () => {
+    const metrics = hypertable("sensor_data", {
+      time: timestamptz("time").notNull(),
+    }, { timeColumn: "time" }, undefined, { renamedFrom: "metrics" })
+    expect(metrics.renamedFrom).toBe("metrics")
   })
 
   test("runtime validation: invalid timeColumn throws", () => {
@@ -794,5 +833,177 @@ describe("Constraint", () => {
       { column: "room_id", operator: "=" },
     ], "cancelled = false")
     expect(c.excludeWhere).toBe("cancelled = false")
+  })
+})
+
+// ============================================
+// Expression-based Index Tests (Phase 1)
+// ============================================
+describe("Expression-based indexes", () => {
+  test("expr() creates IndexColumn object", () => {
+    const col = expr("lower(name)")
+    expect(col).toEqual({ expression: "lower(name)" })
+  })
+
+  test("expr() with opclass", () => {
+    const col = expr("lower(name)", "text_pattern_ops")
+    expect(col).toEqual({ expression: "lower(name)", opclass: "text_pattern_ops" })
+  })
+
+  test("index with expression columns", () => {
+    const idx = index("idx_lower_name", [expr("lower(name)")])
+    expect(idx.columns[0]).toEqual({ expression: "lower(name)" })
+  })
+
+  test("index with mixed string and expression columns", () => {
+    const idx = index("idx_mixed", ["id", expr("lower(name)")])
+    expect(idx.columns[0]).toBe("id")
+    expect(idx.columns[1]).toEqual({ expression: "lower(name)" })
+  })
+
+  test("existing string columns still work", () => {
+    const idx = index("idx_plain", ["col1", "col2"])
+    expect(idx.columns).toEqual(["col1", "col2"])
+  })
+
+  test("uniqueIndex with expression", () => {
+    const idx = uniqueIndex("idx_unique_expr", [expr("lower(email)")])
+    expect(idx.unique).toBe(true)
+    expect(idx.columns[0]).toEqual({ expression: "lower(email)" })
+  })
+
+  test("ginIndex with expression", () => {
+    const idx = ginIndex("idx_gin_expr", [expr("to_tsvector('english', body)")])
+    expect(idx.type).toBe("gin")
+  })
+})
+
+// ============================================
+// Enum Type Tests (Phase 2)
+// ============================================
+describe("Enum types", () => {
+  test("pgEnum creates EnumTypeDef", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+    expect(status._tag).toBe("EnumType")
+    expect(status.name).toBe("status")
+    expect(status.schema).toBe("public")
+    expect(status.values).toEqual(["active", "inactive"])
+  })
+
+  test("pgEnum with custom schema", () => {
+    const priority = pgEnum("priority", ["low", "medium", "high"] as const, { schema: "app" })
+    expect(priority.schema).toBe("app")
+  })
+
+  test("enumColumn creates ColumnBuilder with enum name as sqlType", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+    const col = enumColumn(status, "user_status").build()
+    expect(col.name).toBe("user_status")
+    expect(col.sqlType).toBe("status")
+  })
+
+  test("enumColumn supports .notNull()", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+    const col = enumColumn(status, "user_status").notNull().build()
+    expect(col.isNotNull).toBe(true)
+  })
+
+  test("enumColumn supports .default()", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+    const col = enumColumn(status, "user_status").default("active").build()
+    expect(col.defaultValue).toBe("active")
+  })
+})
+
+// ============================================
+// Trigger Tests (Phase 5)
+// ============================================
+describe("Trigger", () => {
+  test("creates trigger definition", () => {
+    const trg = trigger("trg_before_insert", {
+      timing: "BEFORE",
+      events: ["INSERT"],
+      forEach: "ROW",
+      functionName: "my_func",
+    })
+    expect(trg._tag).toBe("Trigger")
+    expect(trg.name).toBe("trg_before_insert")
+    expect(trg.timing).toBe("BEFORE")
+    expect(trg.events).toEqual(["INSERT"])
+    expect(trg.forEach).toBe("ROW")
+    expect(trg.functionName).toBe("my_func")
+  })
+
+  test("trigger with multiple events", () => {
+    const trg = trigger("trg_multi", {
+      timing: "AFTER",
+      events: ["INSERT", "UPDATE"],
+      forEach: "ROW",
+      functionName: "audit_func",
+    })
+    expect(trg.events).toEqual(["INSERT", "UPDATE"])
+  })
+
+  test("trigger with WHEN clause", () => {
+    const trg = trigger("trg_when", {
+      timing: "BEFORE",
+      events: ["UPDATE"],
+      forEach: "ROW",
+      functionName: "check_func",
+      when: "OLD.status IS DISTINCT FROM NEW.status",
+    })
+    expect(trg.when).toBe("OLD.status IS DISTINCT FROM NEW.status")
+  })
+
+  test("trigger with UPDATE OF columns", () => {
+    const trg = trigger("trg_cols", {
+      timing: "AFTER",
+      events: ["UPDATE"],
+      forEach: "ROW",
+      functionName: "notify_func",
+      columns: ["name", "email"],
+    })
+    expect(trg.columns).toEqual(["name", "email"])
+  })
+
+  test("trigger with STATEMENT granularity", () => {
+    const trg = trigger("trg_stmt", {
+      timing: "AFTER",
+      events: ["TRUNCATE"],
+      forEach: "STATEMENT",
+      functionName: "log_truncate",
+    })
+    expect(trg.forEach).toBe("STATEMENT")
+  })
+
+  test("trigger in pgTable extras", () => {
+    const table = pgTable("users", {
+      id: serial("id"),
+      name: text("name"),
+    }, () => [
+      trigger("trg_audit", {
+        timing: "AFTER",
+        events: ["INSERT", "UPDATE", "DELETE"],
+        forEach: "ROW",
+        functionName: "audit_trigger",
+      }),
+    ])
+    expect(table.triggers.length).toBe(1)
+    expect(table.triggers[0]!.name).toBe("trg_audit")
+  })
+
+  test("trigger in hypertable extras", () => {
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, { timeColumn: "time" }, () => [
+      trigger("trg_notify", {
+        timing: "AFTER",
+        events: ["INSERT"],
+        forEach: "ROW",
+        functionName: "notify_new_data",
+      }),
+    ])
+    expect(metrics.triggers.length).toBe(1)
   })
 })

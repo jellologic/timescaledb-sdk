@@ -2,6 +2,19 @@ import type { Effect } from "effect"
 import type { MigrationError } from "../Error.js"
 import type { TimescaleClient } from "../Client.js"
 
+export interface MigrationFile {
+  readonly name: string
+  readonly timestamp: number
+  readonly up: ReadonlyArray<string>
+  readonly down: ReadonlyArray<string>
+  readonly description?: string
+  readonly integrity?: string
+}
+
+export interface LoadMigrationOptions {
+  readonly trustOverride?: boolean
+}
+
 export interface Migration {
   readonly name: string
   readonly up: Effect.Effect<void, MigrationError, TimescaleClient>

@@ -6,8 +6,10 @@ import {
 } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
-import { index, uniqueIndex, brinIndex, ginIndex } from "../../src/schema/IndexHelpers.js"
+import { expr, index, uniqueIndex, brinIndex, ginIndex } from "../../src/schema/IndexHelpers.js"
 import { check, unique, foreignKey, primaryKey, exclude, deferrable } from "../../src/schema/Constraint.js"
+import { pgEnum, enumColumn } from "../../src/schema/Enum.js"
+import { trigger } from "../../src/schema/Trigger.js"
 
 const emptySnapshot: SchemaSnapshot = {
   tables: [],
@@ -458,5 +460,489 @@ describe("SQL Generation — ALTER TABLE", () => {
     const diff = diffSchema([], snapshot)
     const { up } = generateMigrationSql(diff, [])
     expect(up[0]).toContain('DROP TABLE IF EXISTS "old_table"')
+  })
+})
+
+// ============================================
+// SQL Generation — Rename Operations
+// ============================================
+describe("SQL Generation — Table Renames", () => {
+  test("table with renamedFrom produces ALTER TABLE RENAME", () => {
+    const accounts = pgTable("accounts", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    }, undefined, { renamedFrom: "users" })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([accounts], snapshot)
+    expect(diff.tablesToRename).toEqual([{ oldName: "users", newName: "accounts" }])
+    expect(diff.tablesToCreate).toEqual([])
+    expect(diff.tablesToDrop).toEqual([])
+
+    const { up, down } = generateMigrationSql(diff, [accounts])
+    expect(up).toContain('ALTER TABLE "users" RENAME TO "accounts";')
+    expect(down).toContain('ALTER TABLE "accounts" RENAME TO "users";')
+  })
+
+  test("stale rename hint is ignored (old name not in snapshot)", () => {
+    const accounts = pgTable("accounts", {
+      id: serial("id"),
+    }, undefined, { renamedFrom: "users" })
+
+    const diff = diffSchema([accounts], emptySnapshot)
+    expect(diff.tablesToRename).toEqual([])
+    expect(diff.tablesToCreate).toEqual(["accounts"])
+  })
+
+  test("table rename + column changes on same table", () => {
+    const accounts = pgTable("accounts", {
+      id: serial("id"),
+      name: text("name").notNull(),
+      email: text("email").notNull(),
+    }, undefined, { renamedFrom: "users" })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([accounts], snapshot)
+    expect(diff.tablesToRename.length).toBe(1)
+    expect(diff.columnsToAdd.length).toBe(1)
+    expect(diff.columnsToAdd[0]!.table).toBe("accounts")
+    expect(diff.columnsToAdd[0]!.column).toBe("email")
+  })
+})
+
+describe("SQL Generation — Column Renames", () => {
+  test("column with renamedFrom produces ALTER TABLE RENAME COLUMN", () => {
+    const users = pgTable("users", {
+      id: serial("id"),
+      fullName: text("full_name").notNull().renamedFrom("name"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([users], snapshot)
+    expect(diff.columnsToRename).toEqual([{ table: "users", oldColumn: "name", newColumn: "full_name" }])
+    expect(diff.columnsToAdd).toEqual([])
+    expect(diff.columnsToRemove).toEqual([])
+
+    const { up, down } = generateMigrationSql(diff, [users])
+    expect(up).toContain('ALTER TABLE "users" RENAME COLUMN "name" TO "full_name";')
+    expect(down).toContain('ALTER TABLE "users" RENAME COLUMN "full_name" TO "name";')
+  })
+
+  test("no rename hint = drop + add (backward compatible)", () => {
+    const users = pgTable("users", {
+      id: serial("id"),
+      fullName: text("full_name").notNull(),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([users], snapshot)
+    expect(diff.columnsToRename).toEqual([])
+    expect(diff.columnsToAdd.length).toBe(1)
+    expect(diff.columnsToRemove.length).toBe(1)
+  })
+
+  test("stale column rename hint ignored", () => {
+    const users = pgTable("users", {
+      id: serial("id"),
+      fullName: text("full_name").notNull().renamedFrom("name"),
+    })
+
+    // Snapshot already has full_name (rename already happened)
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+          { name: "full_name", dataType: "text", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([users], snapshot)
+    expect(diff.columnsToRename).toEqual([])
+    expect(diff.columnsToAdd).toEqual([])
+    expect(diff.columnsToRemove).toEqual([])
+  })
+
+  test("column rename on renamed table works", () => {
+    const accounts = pgTable("accounts", {
+      id: serial("id"),
+      fullName: text("full_name").notNull().renamedFrom("name"),
+    }, undefined, { renamedFrom: "users" })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([accounts], snapshot)
+    expect(diff.tablesToRename).toEqual([{ oldName: "users", newName: "accounts" }])
+    expect(diff.columnsToRename).toEqual([{ table: "accounts", oldColumn: "name", newColumn: "full_name" }])
+
+    const { up } = generateMigrationSql(diff, [accounts])
+    const renameTableIdx = up.findIndex((s) => s.includes("RENAME TO"))
+    const renameColIdx = up.findIndex((s) => s.includes("RENAME COLUMN"))
+    expect(renameTableIdx).toBeGreaterThanOrEqual(0)
+    expect(renameColIdx).toBeGreaterThan(renameTableIdx)
+  })
+
+  test("rename SQL order: table renames before column renames before adds", () => {
+    const accounts = pgTable("accounts", {
+      id: serial("id"),
+      fullName: text("full_name").notNull().renamedFrom("name"),
+      email: text("email").notNull(),
+    }, undefined, { renamedFrom: "users" })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([accounts], snapshot)
+    const { up } = generateMigrationSql(diff, [accounts])
+
+    const renameTableIdx = up.findIndex((s) => s.includes("RENAME TO"))
+    const renameColIdx = up.findIndex((s) => s.includes("RENAME COLUMN"))
+    const addColIdx = up.findIndex((s) => s.includes("ADD COLUMN"))
+    expect(renameTableIdx).toBeLessThan(renameColIdx)
+    expect(renameColIdx).toBeLessThan(addColIdx)
+  })
+})
+
+// ============================================
+// SQL Generation — Expression-based Indexes (Phase 1)
+// ============================================
+describe("SQL Generation — Expression-based Indexes", () => {
+  test("expression index produces parenthesized expression", () => {
+    const t = pgTable("users", { name: text("name") }, () => [
+      index("idx_lower_name", [expr("lower(name)")]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain("((lower(name)))")
+  })
+
+  test("expression with opclass", () => {
+    const t = pgTable("users", { name: text("name") }, () => [
+      index("idx_pattern", [expr("lower(name)", "text_pattern_ops")]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain("(lower(name)) text_pattern_ops")
+  })
+
+  test("mixed string and expression columns", () => {
+    const t = pgTable("events", {
+      id: integer("id"),
+      name: text("name"),
+    }, () => [
+      index("idx_mixed", ["id", expr("lower(name)")]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain('"id", (lower(name))')
+  })
+
+  test("existing string columns still produce quoted identifiers", () => {
+    const t = pgTable("users", { name: text("name") }, () => [
+      index("idx_name", ["name"]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain('("name")')
+  })
+})
+
+// ============================================
+// SQL Generation — Enum Types (Phase 2)
+// ============================================
+describe("SQL Generation — Enum Types", () => {
+  test("CREATE TYPE AS ENUM", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+    const up = genUp([status])
+    expect(up[0]).toContain('CREATE TYPE "status" AS ENUM')
+    expect(up[0]).toContain("'active', 'inactive'")
+  })
+
+  test("enum appears before CREATE TABLE", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+    const t = pgTable("users", {
+      id: serial("id"),
+      status: enumColumn(status, "status").notNull(),
+    })
+    const up = genUp([status, t])
+    const enumIdx = up.findIndex((s) => s.includes("CREATE TYPE"))
+    const tableIdx = up.findIndex((s) => s.includes("CREATE TABLE"))
+    expect(enumIdx).toBeLessThan(tableIdx)
+  })
+
+  test("DROP TYPE in down migration", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+    const down = genDown([status])
+    expect(down[0]).toContain('DROP TYPE IF EXISTS "status"')
+  })
+
+  test("enum with values containing apostrophes", () => {
+    const status = pgEnum("status", ["it's active", "normal"] as const)
+    const up = genUp([status])
+    expect(up[0]).toContain("'it''s active'")
+  })
+
+  test("table with enum column", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+    const t = pgTable("users", {
+      id: serial("id"),
+      status: enumColumn(status, "status").notNull().default("active"),
+    })
+    const up = genUp([status, t])
+    const tableSql = up.find((s) => s.includes("CREATE TABLE"))
+    expect(tableSql).toContain('"status" status NOT NULL')
+    expect(tableSql).toContain("DEFAULT 'active'")
+  })
+})
+
+// ============================================
+// SQL Generation — Modern Hypertable WITH Syntax (Phase 4)
+// ============================================
+describe("SQL Generation — Modern Hypertable WITH Syntax", () => {
+  test("modern syntax produces WITH clause", () => {
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      chunkInterval: "1 day",
+      useModernSyntax: true,
+    })
+
+    const up = genUp([metrics])
+    const createSql = up.find((s) => s.includes("CREATE TABLE"))
+    expect(createSql).toContain("tsdb.hypertable")
+    expect(createSql).toContain("tsdb.time_column = 'time'")
+    expect(createSql).toContain("tsdb.chunk_interval = '1 day'")
+    // Should NOT have create_hypertable call
+    expect(up.find((s) => s.includes("create_hypertable"))).toBeUndefined()
+  })
+
+  test("modern syntax with compression and retention", () => {
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      deviceId: integer("device_id").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      chunkInterval: "1 day",
+      useModernSyntax: true,
+      compression: {
+        segmentby: ["device_id"],
+        orderby: [{ column: "time", order: "DESC" }],
+        after: "30 days",
+      },
+      retention: { dropAfter: "365 days" },
+    })
+
+    const up = genUp([metrics])
+    const createSql = up.find((s) => s.includes("CREATE TABLE"))
+    expect(createSql).toContain("tsdb.segmentby = 'device_id'")
+    expect(createSql).toContain("tsdb.orderby = 'time DESC'")
+    expect(createSql).toContain("tsdb.compress_after = '30 days'")
+    expect(createSql).toContain("tsdb.retention_after = '365 days'")
+  })
+
+  test("legacy syntax unchanged when useModernSyntax not set", () => {
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+    }, { timeColumn: "time", chunkInterval: "1 day" })
+
+    const up = genUp([metrics])
+    expect(up.find((s) => s.includes("create_hypertable"))).toBeDefined()
+    const createSql = up.find((s) => s.includes("CREATE TABLE"))
+    expect(createSql).not.toContain("tsdb.hypertable")
+  })
+
+  test("migrateData in legacy syntax", () => {
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+    }, {
+      timeColumn: "time",
+      migrateData: true,
+    })
+
+    const up = genUp([metrics])
+    const htSql = up.find((s) => s.includes("create_hypertable"))
+    expect(htSql).toContain("migrate_data => TRUE")
+  })
+})
+
+// ============================================
+// SQL Generation — Triggers (Phase 5)
+// ============================================
+describe("SQL Generation — Triggers", () => {
+  test("BEFORE INSERT trigger", () => {
+    const t = pgTable("users", { id: serial("id"), name: text("name") }, () => [
+      trigger("trg_before_insert", {
+        timing: "BEFORE",
+        events: ["INSERT"],
+        forEach: "ROW",
+        functionName: "set_created_at",
+      }),
+    ])
+    const up = genUp([t])
+    const trgSql = up.find((s) => s.includes("CREATE TRIGGER"))
+    expect(trgSql).toContain('CREATE TRIGGER "trg_before_insert" BEFORE INSERT ON "users" FOR EACH ROW EXECUTE FUNCTION set_created_at()')
+  })
+
+  test("AFTER UPDATE trigger with columns", () => {
+    const t = pgTable("users", { id: serial("id"), name: text("name"), email: text("email") }, () => [
+      trigger("trg_after_update", {
+        timing: "AFTER",
+        events: ["UPDATE"],
+        forEach: "ROW",
+        functionName: "notify_change",
+        columns: ["name", "email"],
+      }),
+    ])
+    const up = genUp([t])
+    const trgSql = up.find((s) => s.includes("CREATE TRIGGER"))
+    expect(trgSql).toContain('AFTER UPDATE OF "name", "email" ON "users"')
+  })
+
+  test("trigger with multiple events", () => {
+    const t = pgTable("audit_log", { id: serial("id") }, () => [
+      trigger("trg_audit", {
+        timing: "AFTER",
+        events: ["INSERT", "DELETE"],
+        forEach: "ROW",
+        functionName: "audit_func",
+      }),
+    ])
+    const up = genUp([t])
+    const trgSql = up.find((s) => s.includes("CREATE TRIGGER"))
+    expect(trgSql).toContain("AFTER INSERT OR DELETE")
+  })
+
+  test("trigger with WHEN clause", () => {
+    const t = pgTable("orders", { id: serial("id"), status: text("status") }, () => [
+      trigger("trg_status_change", {
+        timing: "AFTER",
+        events: ["UPDATE"],
+        forEach: "ROW",
+        functionName: "notify_status",
+        when: "OLD.status IS DISTINCT FROM NEW.status",
+      }),
+    ])
+    const up = genUp([t])
+    const trgSql = up.find((s) => s.includes("CREATE TRIGGER"))
+    expect(trgSql).toContain("WHEN (OLD.status IS DISTINCT FROM NEW.status)")
+  })
+
+  test("INSTEAD OF trigger with STATEMENT", () => {
+    const t = pgTable("events", { id: serial("id") }, () => [
+      trigger("trg_instead", {
+        timing: "INSTEAD OF",
+        events: ["INSERT"],
+        forEach: "STATEMENT",
+        functionName: "redirect_insert",
+      }),
+    ])
+    const up = genUp([t])
+    const trgSql = up.find((s) => s.includes("CREATE TRIGGER"))
+    expect(trgSql).toContain("INSTEAD OF INSERT")
+    expect(trgSql).toContain("FOR EACH STATEMENT")
+  })
+
+  test("DROP TRIGGER in down migration", () => {
+    const t = pgTable("users", { id: serial("id") }, () => [
+      trigger("trg_test", {
+        timing: "BEFORE",
+        events: ["INSERT"],
+        forEach: "ROW",
+        functionName: "test_func",
+      }),
+    ])
+    const down = genDown([t])
+    const dropTrg = down.find((s) => s.includes("DROP TRIGGER"))
+    expect(dropTrg).toContain('DROP TRIGGER IF EXISTS "trg_test" ON "users"')
   })
 })
