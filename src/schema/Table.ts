@@ -11,7 +11,12 @@ export const pgTable = <
 >(
   name: TName,
   columns: TColumns,
-  extra?: (columns: ColumnMap<TColumns>) => Array<IndexDef | ConstraintDef>
+  extra?: (columns: ColumnMap<TColumns>) => Array<IndexDef | ConstraintDef>,
+  options?: {
+    schema?: string
+    unlogged?: boolean
+    ifNotExists?: boolean
+  }
 ): TableDefinition<TName, ColumnMap<TColumns>> => {
   const builtColumns = {} as Record<string, ColumnDef<any>>
   for (const [key, builder] of Object.entries(columns)) {
@@ -28,6 +33,8 @@ export const pgTable = <
     columns: builtColumns as ColumnMap<TColumns>,
     indexes,
     constraints,
-    schema: "public",
+    schema: options?.schema ?? "public",
+    unlogged: options?.unlogged,
+    ifNotExists: options?.ifNotExists,
   }
 }

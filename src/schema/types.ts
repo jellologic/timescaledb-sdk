@@ -5,12 +5,16 @@ export type SQLType =
   | "bigint"
   | "serial"
   | "bigserial"
+  | "smallint"
+  | "smallserial"
+  | "oid"
   | "text"
   | "varchar"
   | "boolean"
   | "double precision"
   | "real"
   | "numeric"
+  | "money"
   | "jsonb"
   | "json"
   | "uuid"
@@ -18,6 +22,27 @@ export type SQLType =
   | "bytea"
   | "date"
   | "time"
+  | "inet"
+  | "cidr"
+  | "macaddr"
+  | "point"
+  | "line"
+  | "lseg"
+  | "box"
+  | "path"
+  | "polygon"
+  | "circle"
+  | "tsvector"
+  | "tsquery"
+  | "xml"
+  | "int4range"
+  | "int8range"
+  | "tsrange"
+  | "tstzrange"
+  | "daterange"
+  | "numrange"
+
+export type ForeignKeyAction = "CASCADE" | "RESTRICT" | "SET NULL" | "SET DEFAULT" | "NO ACTION"
 
 export interface ColumnDef<T = unknown> {
   readonly _type: T
@@ -29,24 +54,39 @@ export interface ColumnDef<T = unknown> {
   readonly defaultValue: unknown | undefined
   readonly references: { table: string; column: string } | undefined
   readonly check: string | undefined
+  readonly generated?: { expression: string; type: "stored" } | { type: "identity"; mode: "always" | "byDefault" }
+  readonly collation?: string
+  readonly onDelete?: ForeignKeyAction
+  readonly onUpdate?: ForeignKeyAction
 }
 
 export interface IndexDef {
   readonly _tag: "Index"
   readonly name: string
   readonly columns: ReadonlyArray<string>
-  readonly type: "btree" | "brin" | "hash" | "gin" | "gist"
+  readonly type: "btree" | "brin" | "hash" | "gin" | "gist" | "spgist"
   readonly unique: boolean
   readonly where: string | undefined
+  readonly include?: ReadonlyArray<string>
+  readonly concurrently?: boolean
+  readonly fillfactor?: number
+  readonly nullsNotDistinct?: boolean
 }
 
 export interface ConstraintDef {
   readonly _tag: "Constraint"
   readonly name: string
-  readonly type: "check" | "unique" | "foreignKey" | "primaryKey"
+  readonly type: "check" | "unique" | "foreignKey" | "primaryKey" | "exclude"
   readonly columns: ReadonlyArray<string>
   readonly expression: string | undefined
   readonly references: { table: string; columns: ReadonlyArray<string> } | undefined
+  readonly onDelete?: ForeignKeyAction
+  readonly onUpdate?: ForeignKeyAction
+  readonly deferrable?: boolean
+  readonly initiallyDeferred?: boolean
+  readonly using?: string
+  readonly excludeElements?: ReadonlyArray<{ column: string; operator: string }>
+  readonly excludeWhere?: string
 }
 
 export interface TableDefinition<
@@ -60,6 +100,8 @@ export interface TableDefinition<
   readonly indexes: ReadonlyArray<IndexDef>
   readonly constraints: ReadonlyArray<ConstraintDef>
   readonly schema: string
+  readonly unlogged?: boolean
+  readonly ifNotExists?: boolean
 }
 
 export interface CompressionConfig {

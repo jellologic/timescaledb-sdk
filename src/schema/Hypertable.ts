@@ -12,8 +12,17 @@ export const hypertable = <
   name: TName,
   columns: TColumns,
   config: HypertableConfig & { timeColumn: Extract<keyof TColumns, string> },
-  extra?: (columns: ColumnMap<TColumns>) => Array<IndexDef | ConstraintDef>
+  extra?: (columns: ColumnMap<TColumns>) => Array<IndexDef | ConstraintDef>,
+  options?: {
+    schema?: string
+    unlogged?: boolean
+    ifNotExists?: boolean
+  }
 ): HypertableDefinition<TName, ColumnMap<TColumns>> => {
+  if (!(config.timeColumn in columns)) {
+    throw new Error(`timeColumn "${config.timeColumn}" not found in columns`)
+  }
+
   const builtColumns = {} as Record<string, ColumnDef<any>>
   for (const [key, builder] of Object.entries(columns)) {
     builtColumns[key] = builder.build()
@@ -29,7 +38,9 @@ export const hypertable = <
     columns: builtColumns as ColumnMap<TColumns>,
     indexes,
     constraints,
-    schema: "public",
+    schema: options?.schema ?? "public",
+    unlogged: options?.unlogged,
+    ifNotExists: options?.ifNotExists,
     hypertableConfig: config,
   }
 }

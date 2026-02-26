@@ -26,8 +26,8 @@
     "build": "rm -rf dist && bun build ./src/index.ts ./src/schema/index.ts ./src/query/index.ts ./src/hypertable/index.ts ./src/cagg/index.ts ./src/compression/index.ts ./src/retention/index.ts ./src/hyperfunctions/index.ts ./src/jobs/index.ts ./src/tiering/index.ts ./src/migration/index.ts ./src/Error.ts ./src/Client.ts ./src/Config.ts --outdir ./dist --root ./src --target node --splitting && tsc --project tsconfig.build.json",
     "dev": "bun run --watch src/index.ts",
     "test": "bun test",
-    "test:unit": "bun test test/unit/",
-    "test:integration": "bun test --preload ./test/setup/integration-preload.ts test/integration/",
+    "test:unit": "bun test test/**/*.unit.test.ts",
+    "test:integration": "bun test --preload ./test/setup/integration-preload.ts test/**/*.integration.test.ts",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build"
   },

@@ -4,9 +4,13 @@ export const index = (
   name: string,
   columns: ReadonlyArray<string>,
   opts?: {
-    type?: "btree" | "brin" | "hash" | "gin" | "gist"
+    type?: "btree" | "brin" | "hash" | "gin" | "gist" | "spgist"
     unique?: boolean
     where?: string
+    include?: ReadonlyArray<string>
+    concurrently?: boolean
+    fillfactor?: number
+    nullsNotDistinct?: boolean
   }
 ): IndexDef => ({
   _tag: "Index",
@@ -15,16 +19,30 @@ export const index = (
   type: opts?.type ?? "btree",
   unique: opts?.unique ?? false,
   where: opts?.where,
+  include: opts?.include,
+  concurrently: opts?.concurrently,
+  fillfactor: opts?.fillfactor,
+  nullsNotDistinct: opts?.nullsNotDistinct,
 })
 
-export const uniqueIndex = (name: string, columns: ReadonlyArray<string>, opts?: { where?: string }): IndexDef =>
-  index(name, columns, { unique: true, where: opts?.where })
+export const uniqueIndex = (
+  name: string,
+  columns: ReadonlyArray<string>,
+  opts?: { where?: string; include?: ReadonlyArray<string>; concurrently?: boolean; fillfactor?: number; nullsNotDistinct?: boolean }
+): IndexDef =>
+  index(name, columns, { unique: true, ...opts })
 
-export const brinIndex = (name: string, columns: ReadonlyArray<string>): IndexDef =>
-  index(name, columns, { type: "brin" })
+export const brinIndex = (name: string, columns: ReadonlyArray<string>, opts?: { where?: string; concurrently?: boolean }): IndexDef =>
+  index(name, columns, { type: "brin", ...opts })
 
-export const hashIndex = (name: string, columns: ReadonlyArray<string>): IndexDef =>
-  index(name, columns, { type: "hash" })
+export const hashIndex = (name: string, columns: ReadonlyArray<string>, opts?: { where?: string; concurrently?: boolean }): IndexDef =>
+  index(name, columns, { type: "hash", ...opts })
 
-export const ginIndex = (name: string, columns: ReadonlyArray<string>): IndexDef =>
-  index(name, columns, { type: "gin" })
+export const ginIndex = (name: string, columns: ReadonlyArray<string>, opts?: { where?: string; concurrently?: boolean }): IndexDef =>
+  index(name, columns, { type: "gin", ...opts })
+
+export const gistIndex = (name: string, columns: ReadonlyArray<string>, opts?: { where?: string; concurrently?: boolean }): IndexDef =>
+  index(name, columns, { type: "gist", ...opts })
+
+export const spgistIndex = (name: string, columns: ReadonlyArray<string>, opts?: { where?: string; concurrently?: boolean }): IndexDef =>
+  index(name, columns, { type: "spgist", ...opts })
