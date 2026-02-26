@@ -34,21 +34,25 @@ export const migrate = (
     yield* ensureMigrationsTable
     yield* acquireAdvisoryLock
 
-    const applied = yield* getAppliedMigrations
-    const appliedNames = new Set(applied.map((m) => m.name))
-    const pending = migrations.filter((m) => !appliedNames.has(m.name))
-    const results: string[] = []
+    return yield* Effect.ensuring(
+      Effect.gen(function* () {
+        const applied = yield* getAppliedMigrations
+        const appliedNames = new Set(applied.map((m) => m.name))
+        const pending = migrations.filter((m) => !appliedNames.has(m.name))
+        const results: string[] = []
 
-    for (const migration of pending) {
-      const start = Date.now()
-      yield* migration.up
-      const elapsed = Date.now() - start
-      yield* recordMigration(migration.name, `checksum-${migration.name}`, elapsed)
-      results.push(migration.name)
-    }
+        for (const migration of pending) {
+          const start = Date.now()
+          yield* migration.up
+          const elapsed = Date.now() - start
+          yield* recordMigration(migration.name, migration.checksum, elapsed)
+          results.push(migration.name)
+        }
 
-    yield* releaseAdvisoryLock
-    return results
+        return results
+      }),
+      Effect.orDie(releaseAdvisoryLock)
+    )
   }).pipe(
     Effect.mapError((e) => e instanceof MigrationError ? e : new MigrationError({ message: `Migration failed: ${e}`, cause: e }))
   )
@@ -61,24 +65,28 @@ export const rollback = (
     yield* ensureMigrationsTable
     yield* acquireAdvisoryLock
 
-    const applied = yield* getAppliedMigrations
-    const toRollback = applied.slice(-steps).reverse()
-    const migrationMap = new Map(migrations.map((m) => [m.name, m]))
-    const results: string[] = []
+    return yield* Effect.ensuring(
+      Effect.gen(function* () {
+        const applied = yield* getAppliedMigrations
+        const toRollback = applied.slice(-steps).reverse()
+        const migrationMap = new Map(migrations.map((m) => [m.name, m]))
+        const results: string[] = []
 
-    for (const record of toRollback) {
-      const migration = migrationMap.get(record.name)
-      if (!migration) {
-        yield* Effect.fail(new MigrationError({ message: `Migration ${record.name} not found in provided migrations` }))
-        return []
-      }
-      yield* migration.down
-      yield* removeMigrationRecord(record.name)
-      results.push(record.name)
-    }
+        for (const record of toRollback) {
+          const migration = migrationMap.get(record.name)
+          if (!migration) {
+            yield* Effect.fail(new MigrationError({ message: `Migration ${record.name} not found in provided migrations` }))
+            return []
+          }
+          yield* migration.down
+          yield* removeMigrationRecord(record.name)
+          results.push(record.name)
+        }
 
-    yield* releaseAdvisoryLock
-    return results
+        return results
+      }),
+      Effect.orDie(releaseAdvisoryLock)
+    )
   }).pipe(
     Effect.mapError((e) => e instanceof MigrationError ? e : new MigrationError({ message: `Rollback failed: ${e}`, cause: e }))
   )

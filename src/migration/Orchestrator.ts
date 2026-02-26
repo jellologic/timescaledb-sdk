@@ -10,6 +10,7 @@ import {
   writeMigrationFile, loadAllMigrations, computeMigrationChecksum, generateMigrationName,
 } from "./FileSystem.js"
 import { migrate, rollback, status } from "./Runner.js"
+import { ensureMigrationsTable, getAppliedMigrations } from "./Tracker.js"
 import type { SchemaSnapshot } from "./types.js"
 
 export interface GenerateOptions {
@@ -93,29 +94,42 @@ export const generate = async (options: GenerateOptions): Promise<GenerateResult
   return { filePath, migrationName, up, down, diff }
 }
 
+const executeSqlStatements = (file: MigrationFile, statements: ReadonlyArray<string>, direction: "up" | "down") =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    const exec = Effect.gen(function* () {
+      for (const sql of statements) {
+        yield* client.execute(sql)
+      }
+    })
+    // Wrap in transaction unless explicitly opted out
+    if (file.transactional === false) {
+      yield* exec
+    } else {
+      yield* client.withTransaction(exec)
+    }
+  }).pipe(
+    Effect.mapError((e) => e instanceof MigrationError ? e : new MigrationError({ message: `Migration ${file.name} ${direction} failed: ${e}`, cause: e }))
+  )
+
 export const migrationFileToEffect = (file: MigrationFile): Migration => ({
   name: file.name,
-  up: Effect.gen(function* () {
-    const client = yield* TimescaleClient
-    for (const sql of file.up) {
-      yield* client.execute(sql)
-    }
-  }).pipe(
-    Effect.mapError((e) => e instanceof MigrationError ? e : new MigrationError({ message: `Migration ${file.name} up failed: ${e}`, cause: e }))
-  ),
-  down: Effect.gen(function* () {
-    const client = yield* TimescaleClient
-    for (const sql of file.down) {
-      yield* client.execute(sql)
-    }
-  }).pipe(
-    Effect.mapError((e) => e instanceof MigrationError ? e : new MigrationError({ message: `Migration ${file.name} down failed: ${e}`, cause: e }))
-  ),
+  checksum: computeMigrationChecksum(file),
+  up: executeSqlStatements(file, file.up, "up"),
+  down: executeSqlStatements(file, file.down, "down"),
 })
+
+export interface RunOptions extends LoadMigrationOptions {
+  readonly dryRun?: boolean
+}
+
+export interface DryRunResult {
+  readonly migrations: ReadonlyArray<{ name: string; up: ReadonlyArray<string> }>
+}
 
 export const loadAndRun = (
   migrationsDir: string,
-  options?: LoadMigrationOptions
+  options?: RunOptions
 ): Effect.Effect<ReadonlyArray<string>, MigrationError, TimescaleClient> =>
   Effect.gen(function* () {
     const files = yield* Effect.tryPromise({
@@ -123,6 +137,16 @@ export const loadAndRun = (
       catch: (e) => new MigrationError({ message: `Failed to load migrations: ${e}`, cause: e }),
     })
     const migrations = files.map(migrationFileToEffect)
+
+    if (options?.dryRun) {
+      // In dry-run mode, determine pending and return their names without executing
+      yield* ensureMigrationsTable
+      const applied = yield* getAppliedMigrations
+      const appliedNames = new Set(applied.map((m) => m.name))
+      const pending = files.filter((f) => !appliedNames.has(f.name))
+      return pending.map((f) => f.name) as ReadonlyArray<string>
+    }
+
     return yield* migrate(migrations)
   })
 

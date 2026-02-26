@@ -451,5 +451,146 @@ describe("Integration — Edge Cases", () => {
   })
 })
 
+// ============================================
+// 5.7 — Integration Tests for New Diff Operations
+// ============================================
+describe("Integration — Index Diff Operations", () => {
+  test("add index to existing table → verify in pg_indexes", async () => {
+    const name = uniqueName("test_addidx")
+    const t1 = pgTable(name, { id: serial("id"), name: text("name") })
+    const t2 = pgTable(name, { id: serial("id"), name: text("name") }, () => [
+      index("idx_" + name + "_name", ["name"]),
+    ])
+
+    await run(Effect.gen(function* () {
+      yield* createTableFromDef(t1)
+
+      // Diff: add index
+      const snap = {
+        tables: [{ name, schema: "public", columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: true, defaultValue: null },
+        ], indexes: [] }],
+        hypertables: [],
+        continuousAggregates: [],
+        takenAt: new Date(),
+      }
+      const diff = diffSchema([t2], snap)
+      const { up } = generateMigrationSql(diff, [t2])
+
+      const client = yield* TimescaleClient
+      for (const sql of up) {
+        yield* client.execute(sql)
+      }
+
+      const indexes = yield* indexInfo(name)
+      expect(indexes.some((i) => i.indexname === "idx_" + name + "_name")).toBe(true)
+
+      yield* dropTableCascade(name)
+    }))
+  })
+
+  test("drop index from table → verify removed", async () => {
+    const name = uniqueName("test_dropidx")
+    const idxName = "idx_" + name + "_name"
+    const t1 = pgTable(name, { id: serial("id"), name: text("name") }, () => [
+      index(idxName, ["name"]),
+    ])
+    const t2 = pgTable(name, { id: serial("id"), name: text("name") })
+
+    await run(Effect.gen(function* () {
+      yield* createTableFromDef(t1)
+
+      // Verify index exists
+      let indexes = yield* indexInfo(name)
+      expect(indexes.some((i) => i.indexname === idxName)).toBe(true)
+
+      // Diff: remove index
+      const snap = {
+        tables: [{ name, schema: "public", columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: true, defaultValue: null },
+        ], indexes: [{ name: idxName, columns: ["name"], isUnique: false, type: "btree" }] }],
+        hypertables: [],
+        continuousAggregates: [],
+        takenAt: new Date(),
+      }
+      const diff = diffSchema([t2], snap)
+      const { up } = generateMigrationSql(diff, [t2])
+
+      const client = yield* TimescaleClient
+      for (const sql of up) {
+        yield* client.execute(sql)
+      }
+
+      indexes = yield* indexInfo(name)
+      expect(indexes.some((i) => i.indexname === idxName)).toBe(false)
+
+      yield* dropTableCascade(name)
+    }))
+  })
+})
+
+describe("Integration — Constraint Diff Operations", () => {
+  test("add constraint to existing table → verify in pg_constraint", async () => {
+    const name = uniqueName("test_addcon")
+    const t1 = pgTable(name, { id: serial("id"), age: integer("age") })
+    const t2 = pgTable(name, { id: serial("id"), age: integer("age") }, () => [
+      check("chk_" + name + "_age", "age >= 0"),
+    ])
+
+    await run(Effect.gen(function* () {
+      yield* createTableFromDef(t1)
+
+      const snap = {
+        tables: [{ name, schema: "public", columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "age", dataType: "integer", isNullable: true, defaultValue: null },
+        ], indexes: [], constraints: [] }],
+        hypertables: [],
+        continuousAggregates: [],
+        takenAt: new Date(),
+      }
+      const diff = diffSchema([t2], snap)
+      const { up } = generateMigrationSql(diff, [t2])
+
+      const client = yield* TimescaleClient
+      for (const sql of up) {
+        yield* client.execute(sql)
+      }
+
+      const constraints = yield* constraintInfo(name)
+      const chk = constraints.find((c) => c.constraint_type === "CHECK" && c.constraint_definition?.includes("age"))
+      expect(chk).toBeDefined()
+
+      yield* dropTableCascade(name)
+    }))
+  })
+})
+
+describe("Integration — NOT NULL Column Changes", () => {
+  test("add NOT NULL to column → verify in information_schema", async () => {
+    const name = uniqueName("test_notnull")
+    const t1 = pgTable(name, { id: serial("id"), name: text("name") })
+
+    await run(Effect.gen(function* () {
+      yield* createTableFromDef(t1)
+
+      // Verify column is nullable
+      let cols = yield* columnInfo(name)
+      expect(cols.find((c) => c.column_name === "name")?.is_nullable).toBe("YES")
+
+      // Apply SET NOT NULL
+      const client = yield* TimescaleClient
+      yield* client.execute(`ALTER TABLE "${name}" ALTER COLUMN "name" SET NOT NULL`)
+
+      cols = yield* columnInfo(name)
+      expect(cols.find((c) => c.column_name === "name")?.is_nullable).toBe("NO")
+
+      yield* dropTableCascade(name)
+    }))
+  })
+})
+
 // We need TimescaleClient import for the integration tests
 import { TimescaleClient } from "../../src/Client.js"

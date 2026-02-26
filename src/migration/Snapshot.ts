@@ -1,7 +1,22 @@
 import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { MigrationError } from "../Error.js"
-import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot } from "./types.js"
+
+const parseIndexColumns = (indexdef: string): string[] => {
+  // Extract columns from indexdef like: CREATE INDEX idx ON tbl USING btree (col1, col2)
+  const match = indexdef.match(/\(([^)]+)\)\s*(?:WHERE|$)/i)
+  if (!match) return []
+  return match[1]!.split(",").map((c) => c.trim().replace(/^"(.*)"$/, "$1"))
+}
+
+const conTypeMap: Record<string, ConstraintSnapshot["type"]> = {
+  c: "CHECK",
+  f: "FOREIGN KEY",
+  p: "PRIMARY KEY",
+  u: "UNIQUE",
+  x: "EXCLUDE",
+}
 
 export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, TimescaleClient> =
   Effect.gen(function* () {
@@ -30,14 +45,91 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
         [t.table_name, t.table_schema]
       )
 
+      // 2.2 — Index snapshot with columns from pg_index + pg_attribute
       const indexes = yield* client.execute<{
         indexname: string
         indexdef: string
+        columns: string[] | null
       }>(
-        `SELECT indexname, indexdef FROM pg_indexes
-         WHERE tablename = $1 AND schemaname = $2`,
+        `SELECT i.indexname, i.indexdef,
+                array_agg(a.attname ORDER BY x.n) as columns
+         FROM pg_indexes i
+         JOIN pg_class c ON c.relname = i.indexname
+         JOIN pg_index idx ON idx.indexrelid = c.oid
+         CROSS JOIN LATERAL unnest(idx.indkey) WITH ORDINALITY AS x(attnum, n)
+         JOIN pg_attribute a ON a.attrelid = idx.indrelid AND a.attnum = x.attnum
+         WHERE i.tablename = $1 AND i.schemaname = $2
+         GROUP BY i.indexname, i.indexdef`,
         [t.table_name, t.table_schema]
-      )
+      ).pipe(Effect.catchAll(() =>
+        // Fallback: parse columns from indexdef
+        client.execute<{ indexname: string; indexdef: string }>(
+          `SELECT indexname, indexdef FROM pg_indexes
+           WHERE tablename = $1 AND schemaname = $2`,
+          [t.table_name, t.table_schema]
+        ).pipe(Effect.map((rows) => rows.map((r) => ({
+          ...r,
+          columns: parseIndexColumns(r.indexdef),
+        }))))
+      ))
+
+      // 2.3 — Constraint snapshot from pg_constraint
+      const constraints = yield* client.execute<{
+        conname: string
+        contype: string
+        definition: string
+        columns: string[] | null
+      }>(
+        `SELECT con.conname, con.contype::text,
+                pg_get_constraintdef(con.oid) as definition,
+                array_agg(a.attname ORDER BY x.n) as columns
+         FROM pg_constraint con
+         JOIN pg_class rel ON rel.oid = con.conrelid
+         JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+         CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS x(attnum, n)
+         JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = x.attnum
+         WHERE rel.relname = $1 AND nsp.nspname = $2
+         GROUP BY con.conname, con.contype, con.oid`,
+        [t.table_name, t.table_schema]
+      ).pipe(Effect.catchAll(() => Effect.succeed([] as any[])))
+
+      // 2.4 — Trigger snapshot from pg_trigger
+      const triggers = yield* client.execute<{
+        tgname: string
+        timing: string
+        events: string
+        funcname: string
+      }>(
+        `SELECT t.tgname,
+                CASE WHEN t.tgtype::int & 2 = 2 THEN 'BEFORE'
+                     WHEN t.tgtype::int & 64 = 64 THEN 'INSTEAD OF'
+                     ELSE 'AFTER' END as timing,
+                string_agg(
+                  CASE WHEN evt = 4 THEN 'INSERT'
+                       WHEN evt = 8 THEN 'DELETE'
+                       WHEN evt = 16 THEN 'UPDATE'
+                       WHEN evt = 32 THEN 'TRUNCATE'
+                  END, ', '
+                ) as events,
+                p.proname as funcname
+         FROM pg_trigger t
+         JOIN pg_proc p ON p.oid = t.tgfoid
+         CROSS JOIN LATERAL unnest(ARRAY[
+           CASE WHEN t.tgtype::int & 4 = 4 THEN 4 END,
+           CASE WHEN t.tgtype::int & 8 = 8 THEN 8 END,
+           CASE WHEN t.tgtype::int & 16 = 16 THEN 16 END,
+           CASE WHEN t.tgtype::int & 32 = 32 THEN 32 END
+         ]) AS evt
+         WHERE t.tgrelid = (
+           SELECT c.oid FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE c.relname = $1 AND n.nspname = $2
+         )
+         AND NOT t.tgisinternal
+         AND evt IS NOT NULL
+         GROUP BY t.tgname, t.tgtype, p.proname`,
+        [t.table_name, t.table_schema]
+      ).pipe(Effect.catchAll(() => Effect.succeed([] as any[])))
 
       tables.push({
         name: t.table_name,
@@ -50,31 +142,52 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
         })),
         indexes: indexes.map((i): IndexSnapshot => ({
           name: i.indexname,
-          columns: [],
+          columns: i.columns ?? parseIndexColumns(i.indexdef),
           isUnique: i.indexdef.includes("UNIQUE"),
           type: i.indexdef.includes("USING btree") ? "btree" :
                 i.indexdef.includes("USING brin") ? "brin" :
                 i.indexdef.includes("USING hash") ? "hash" :
-                i.indexdef.includes("USING gin") ? "gin" : "btree",
+                i.indexdef.includes("USING gin") ? "gin" :
+                i.indexdef.includes("USING gist") ? "gist" : "btree",
+        })),
+        constraints: constraints.map((c): ConstraintSnapshot => ({
+          name: c.conname,
+          type: conTypeMap[c.contype] ?? "CHECK",
+          definition: c.definition,
+          columns: c.columns ?? [],
+        })),
+        triggers: triggers.map((t): TriggerSnapshot => ({
+          name: t.tgname,
+          timing: t.timing,
+          events: t.events.split(", "),
+          functionName: t.funcname,
         })),
       })
     }
 
-    // Get hypertables
+    // 2.1 — Hypertable snapshot with timeColumn and chunkInterval from dimensions
     const htRows = yield* client.execute<{
       hypertable_name: string
       hypertable_schema: string
       compression_enabled: boolean
+      time_column: string | null
+      chunk_interval: string | null
     }>(
-      `SELECT hypertable_name, hypertable_schema, compression_enabled
-       FROM timescaledb_information.hypertables`
+      `SELECT h.hypertable_name, h.hypertable_schema, h.compression_enabled,
+              d.column_name as time_column,
+              d.time_interval::text as chunk_interval
+       FROM timescaledb_information.hypertables h
+       LEFT JOIN timescaledb_information.dimensions d
+         ON h.hypertable_name = d.hypertable_name
+         AND h.hypertable_schema = d.hypertable_schema
+         AND d.dimension_number = 1`
     ).pipe(Effect.catchAll(() => Effect.succeed([] as any)))
 
     const hypertables: HypertableSnapshot[] = htRows.map((h: any) => ({
       name: h.hypertable_name,
       schema: h.hypertable_schema,
-      timeColumn: "",
-      chunkInterval: null,
+      timeColumn: h.time_column ?? "",
+      chunkInterval: h.chunk_interval ?? null,
       compressionEnabled: h.compression_enabled,
     }))
 
@@ -94,10 +207,32 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       viewDefinition: c.view_definition ?? "",
     }))
 
+    // 2.5 — Enum snapshot from pg_type
+    const enumRows = yield* client.execute<{
+      name: string
+      schema: string
+      values: string[]
+    }>(
+      `SELECT t.typname as name, n.nspname as schema,
+              array_agg(e.enumlabel ORDER BY e.enumsortorder) as values
+       FROM pg_type t
+       JOIN pg_enum e ON t.oid = e.enumtypid
+       JOIN pg_namespace n ON t.typnamespace = n.oid
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+       GROUP BY t.typname, n.nspname`
+    ).pipe(Effect.catchAll(() => Effect.succeed([] as any[])))
+
+    const enums: EnumSnapshot[] = enumRows.map((e: any) => ({
+      name: e.name,
+      schema: e.schema,
+      values: e.values ?? [],
+    }))
+
     return {
       tables,
       hypertables,
       continuousAggregates,
+      enums,
       takenAt: new Date(),
     }
   }).pipe(

@@ -1,8 +1,8 @@
 import { test, expect, describe } from "bun:test"
 import { diffSchema, generateMigrationSql } from "../../src/migration/Generator.js"
-import type { SchemaSnapshot } from "../../src/migration/types.js"
+import type { SchemaSnapshot, EnumSnapshot } from "../../src/migration/types.js"
 import {
-  timestamptz, integer, doublePrecision, text, serial, boolean, varchar, uuid, numeric, jsonb, tsrange,
+  timestamptz, integer, doublePrecision, text, serial, bigserial, boolean, varchar, uuid, numeric, jsonb, tsrange,
 } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
@@ -944,5 +944,532 @@ describe("SQL Generation — Triggers", () => {
     const down = genDown([t])
     const dropTrg = down.find((s) => s.includes("DROP TRIGGER"))
     expect(dropTrg).toContain('DROP TRIGGER IF EXISTS "trg_test" ON "users"')
+  })
+})
+
+// ============================================
+// 5.1 — Type Normalization (serial/bigserial)
+// ============================================
+describe("SQL Generation — Type Normalization", () => {
+  test("serial in definition vs integer in snapshot → no ALTER generated", () => {
+    const t = pgTable("users", {
+      id: serial("id"),
+      name: text("name"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: "nextval('users_id_seq'::regclass)" },
+          { name: "name", dataType: "text", isNullable: true, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.columnsToAlter).toEqual([])
+  })
+
+  test("bigserial in definition vs bigint in snapshot → no ALTER generated", () => {
+    const t = pgTable("counters", {
+      id: bigserial("id"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "counters",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "bigint", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.columnsToAlter).toEqual([])
+  })
+
+  test("actual type change (integer → text) → ALTER generated", () => {
+    const t = pgTable("users", {
+      id: serial("id"),
+      name: text("name"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "integer", isNullable: true, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.columnsToAlter.length).toBe(1)
+    expect(diff.columnsToAlter[0]!.newType).toBe("text")
+  })
+})
+
+// ============================================
+// 5.2 — Enum/CAGG Diffing
+// ============================================
+describe("SQL Generation — Enum Diffing", () => {
+  test("enum exists in both → no CREATE", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "status", schema: "public", values: ["active", "inactive"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([status], snapshot)
+    expect(diff.enumsToCreate).toEqual([])
+    expect(diff.enumsToDrop).toEqual([])
+  })
+
+  test("new enum → CREATE TYPE", () => {
+    const status = pgEnum("status", ["active", "inactive"] as const)
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([status], snapshot)
+    expect(diff.enumsToCreate.length).toBe(1)
+    expect(diff.enumsToCreate[0]!.name).toBe("status")
+  })
+
+  test("removed enum → DROP TYPE", () => {
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "old_status", schema: "public", values: ["a", "b"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([], snapshot)
+    expect(diff.enumsToDrop).toContain("old_status")
+  })
+
+  test("enum with new values → ALTER TYPE ADD VALUE", () => {
+    const status = pgEnum("status", ["active", "inactive", "pending"] as const)
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "status", schema: "public", values: ["active", "inactive"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([status], snapshot)
+    const { up } = generateMigrationSql(diff, [status])
+    expect(diff.enumsToCreate).toEqual([])
+    expect(diff.enumsToAddValues.length).toBe(1)
+    expect(diff.enumsToAddValues[0]!.newValues).toEqual(["pending"])
+    const alterSql = up.find((s) => s.includes("ALTER TYPE"))
+    expect(alterSql).toContain("ADD VALUE 'pending'")
+  })
+})
+
+describe("SQL Generation — CAGG Diffing", () => {
+  const makeCagg = (viewName: string) => ({
+    _tag: "CaggDefinition" as const,
+    viewName,
+    schema: "public",
+    sourceHypertable: "metrics",
+    timeBucket: { interval: "1 hour", column: "time" },
+    columns: [{ expression: "AVG(value)", alias: "avg_value" }],
+    groupBy: [] as string[],
+  })
+
+  test("CAGG exists in both → no CREATE", () => {
+    const cagg = makeCagg("hourly_metrics")
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{ viewName: "hourly_metrics", viewSchema: "public", viewDefinition: "" }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot)
+    expect(diff.caggsToCreate).toEqual([])
+    expect(diff.caggsToDrop).toEqual([])
+  })
+
+  test("new CAGG → CREATE MATERIALIZED VIEW", () => {
+    const cagg = makeCagg("hourly_metrics")
+
+    const diff = diffSchema([cagg], emptySnapshot)
+    expect(diff.caggsToCreate.length).toBe(1)
+    const { up } = generateMigrationSql(diff, [cagg])
+    expect(up.some((s) => s.includes("CREATE MATERIALIZED VIEW"))).toBe(true)
+  })
+
+  test("removed CAGG → DROP MATERIALIZED VIEW", () => {
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{ viewName: "old_agg", viewSchema: "public", viewDefinition: "" }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([], snapshot)
+    expect(diff.caggsToDrop).toContain("old_agg")
+    const { up } = generateMigrationSql(diff, [])
+    expect(up.some((s) => s.includes('DROP MATERIALIZED VIEW IF EXISTS "old_agg"'))).toBe(true)
+  })
+})
+
+// ============================================
+// 5.3 — Index/Constraint/Trigger Diffing
+// ============================================
+describe("SQL Generation — Index Diffing on Existing Tables", () => {
+  test("new index on existing table → CREATE INDEX", () => {
+    const t = pgTable("users", { id: serial("id"), name: text("name") }, () => [
+      index("idx_users_name", ["name"]),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: true, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.indexesToCreate.length).toBe(1)
+    expect(diff.indexesToCreate[0]!.index.name).toBe("idx_users_name")
+
+    const { up } = generateMigrationSql(diff, [t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain('"idx_users_name"')
+  })
+
+  test("removed index → DROP INDEX", () => {
+    const t = pgTable("users", { id: serial("id"), name: text("name") })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: true, defaultValue: null },
+        ],
+        indexes: [{ name: "idx_users_name", columns: ["name"], isUnique: false, type: "btree" }],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.indexesToDrop.length).toBe(1)
+    expect(diff.indexesToDrop[0]!.indexName).toBe("idx_users_name")
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes('DROP INDEX IF EXISTS "idx_users_name"'))).toBe(true)
+  })
+
+  test("changed index (different type) → DROP + CREATE", () => {
+    const t = pgTable("events", { time: timestamptz("time") }, () => [
+      brinIndex("idx_events_time", ["time"]),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "events",
+        schema: "public",
+        columns: [
+          { name: "time", dataType: "timestamp with time zone", isNullable: true, defaultValue: null },
+        ],
+        indexes: [{ name: "idx_events_time", columns: ["time"], isUnique: false, type: "btree" }],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.indexesToDrop.length).toBe(1)
+    expect(diff.indexesToCreate.length).toBe(1)
+  })
+})
+
+describe("SQL Generation — Constraint Diffing on Existing Tables", () => {
+  test("new constraint on existing table → ALTER TABLE ADD CONSTRAINT", () => {
+    const t = pgTable("users", { id: serial("id"), age: integer("age") }, () => [
+      check("chk_age", "age >= 0"),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "age", dataType: "integer", isNullable: true, defaultValue: null },
+        ],
+        indexes: [],
+        constraints: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.constraintsToAdd.length).toBe(1)
+    expect(diff.constraintsToAdd[0]!.constraint.name).toBe("chk_age")
+
+    const { up } = generateMigrationSql(diff, [t])
+    const addSql = up.find((s) => s.includes("ADD CONSTRAINT"))
+    expect(addSql).toContain('"chk_age"')
+    expect(addSql).toContain("CHECK (age >= 0)")
+  })
+
+  test("removed constraint → ALTER TABLE DROP CONSTRAINT", () => {
+    const t = pgTable("users", { id: serial("id"), age: integer("age") })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "age", dataType: "integer", isNullable: true, defaultValue: null },
+        ],
+        indexes: [],
+        constraints: [{ name: "chk_age", type: "CHECK", definition: "CHECK (age >= 0)", columns: ["age"] }],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.constraintsToDrop.length).toBe(1)
+    expect(diff.constraintsToDrop[0]!.constraintName).toBe("chk_age")
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes('DROP CONSTRAINT "chk_age"'))).toBe(true)
+  })
+})
+
+describe("SQL Generation — Trigger Diffing on Existing Tables", () => {
+  test("new trigger on existing table → CREATE TRIGGER", () => {
+    const t = pgTable("users", { id: serial("id") }, () => [
+      trigger("trg_audit", {
+        timing: "AFTER",
+        events: ["INSERT"],
+        forEach: "ROW",
+        functionName: "audit_func",
+      }),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+        triggers: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.triggersToCreate.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [t])
+    const trgSql = up.find((s) => s.includes("CREATE TRIGGER"))
+    expect(trgSql).toContain('"trg_audit"')
+  })
+
+  test("removed trigger → DROP TRIGGER", () => {
+    const t = pgTable("users", { id: serial("id") })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+        triggers: [{ name: "trg_audit", timing: "AFTER", events: ["INSERT"], functionName: "audit_func" }],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.triggersToDrop.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes('DROP TRIGGER IF EXISTS "trg_audit"'))).toBe(true)
+  })
+})
+
+// ============================================
+// 5.4 — Column NOT NULL / DEFAULT Changes
+// ============================================
+describe("SQL Generation — Column NOT NULL / DEFAULT Changes", () => {
+  test("column gains NOT NULL → ALTER COLUMN SET NOT NULL", () => {
+    const t = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: true, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.columnsToSetNotNull.length).toBe(1)
+    expect(diff.columnsToSetNotNull[0]!.column).toBe("name")
+
+    const { up, down } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes('SET NOT NULL'))).toBe(true)
+    expect(down.some((s) => s.includes('DROP NOT NULL'))).toBe(true)
+  })
+
+  test("column loses NOT NULL → ALTER COLUMN DROP NOT NULL", () => {
+    const t = pgTable("users", {
+      id: serial("id"),
+      name: text("name"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "name", dataType: "text", isNullable: false, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.columnsToDropNotNull.length).toBe(1)
+    expect(diff.columnsToDropNotNull[0]!.column).toBe("name")
+
+    const { up, down } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes('DROP NOT NULL'))).toBe(true)
+    expect(down.some((s) => s.includes('SET NOT NULL'))).toBe(true)
+  })
+
+  test("column gains DEFAULT → ALTER COLUMN SET DEFAULT", () => {
+    const t = pgTable("users", {
+      id: serial("id"),
+      status: text("status").default("active"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "status", dataType: "text", isNullable: true, defaultValue: null },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.columnsToSetDefault.length).toBe(1)
+    expect(diff.columnsToSetDefault[0]!.column).toBe("status")
+
+    const { up, down } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("SET DEFAULT 'active'"))).toBe(true)
+    expect(down.some((s) => s.includes("DROP DEFAULT"))).toBe(true)
+  })
+
+  test("column loses DEFAULT → ALTER COLUMN DROP DEFAULT", () => {
+    const t = pgTable("users", {
+      id: serial("id"),
+      status: text("status"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "users",
+        schema: "public",
+        columns: [
+          { name: "id", dataType: "integer", isNullable: false, defaultValue: null },
+          { name: "status", dataType: "text", isNullable: true, defaultValue: "'active'::text" },
+        ],
+        indexes: [],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.columnsToDropDefault.length).toBe(1)
+    expect(diff.columnsToDropDefault[0]!.column).toBe("status")
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("DROP DEFAULT"))).toBe(true)
   })
 })

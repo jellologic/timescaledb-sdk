@@ -4,12 +4,14 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { generate, migrationFileToEffect, loadAndRun } from "../../src/migration/Orchestrator.js"
+import { migrate } from "../../src/migration/Runner.js"
 import { readJournal, readSnapshot, writeJournal, writeMigrationFile, computeMigrationChecksum, computeIntegrityHash } from "../../src/migration/FileSystem.js"
 import { timestamptz, integer, doublePrecision, text, serial, boolean } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
 import { pgEnum, enumColumn } from "../../src/schema/Enum.js"
-import type { MigrationFile } from "../../src/migration/types.js"
+import type { MigrationFile, Migration } from "../../src/migration/types.js"
+import { MigrationError } from "../../src/Error.js"
 import { mockClient } from "../setup/test-layers.js"
 import { runTestWith } from "../helpers/effect-runner.js"
 
@@ -344,6 +346,162 @@ describe("LoadMigrationOptions flow", () => {
       layer
     )
     expect(applied).toEqual(["0001_create_stuff"])
+  })
+})
+
+// ============================================
+// 5.5 — Lock Release and Transaction Wrapping
+// ============================================
+describe("migrate() — advisory lock release on failure", () => {
+  test("migration failure → lock still released", async () => {
+    const lockReleased = { value: false }
+
+    const layer = mockClient({
+      execute: <A = unknown>(query: string, _params?: ReadonlyArray<unknown>) => {
+        if (query.includes("pg_try_advisory_lock")) {
+          return Effect.succeed([{ pg_try_advisory_lock: true }] as ReadonlyArray<A>)
+        }
+        if (query.includes("pg_advisory_unlock")) {
+          lockReleased.value = true
+          return Effect.succeed([{ pg_advisory_unlock: true }] as ReadonlyArray<A>)
+        }
+        if (query.includes("CREATE TABLE IF NOT EXISTS")) {
+          return Effect.succeed([] as ReadonlyArray<A>)
+        }
+        if (query.includes("SELECT * FROM") && query.includes("_timescaledb_sdk_migrations")) {
+          return Effect.succeed([] as ReadonlyArray<A>)
+        }
+        if (query.includes("DELIBERATE_FAIL")) {
+          return Effect.fail(new MigrationError({ message: "Deliberate failure" }))
+        }
+        return Effect.succeed([] as ReadonlyArray<A>)
+      },
+    })
+
+    const { TimescaleClient } = await import("../../src/Client.js")
+
+    const failingMigration: Migration = {
+      name: "0001_fail",
+      checksum: "abc123",
+      up: Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        yield* client.execute("DELIBERATE_FAIL")
+      }),
+      down: Effect.succeed(void 0),
+    }
+
+    const result = Effect.runPromise(
+      Effect.provide(migrate([failingMigration]), layer)
+    )
+
+    await expect(result).rejects.toThrow()
+    expect(lockReleased.value).toBe(true)
+  })
+})
+
+describe("migrationFileToEffect() — transaction wrapping", () => {
+  test("withTransaction is called when transactional is not false", async () => {
+    let transactionUsed = false
+
+    const layer = mockClient({
+      execute: <A = unknown>(_query: string, _params?: ReadonlyArray<unknown>) =>
+        Effect.succeed([] as ReadonlyArray<A>),
+      withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+        transactionUsed = true
+        return effect as any
+      },
+    })
+
+    const file: MigrationFile = {
+      name: "0001_test",
+      timestamp: 0,
+      up: ["SELECT 1;"],
+      down: [],
+    }
+
+    const migration = migrationFileToEffect(file)
+    await runTestWith(migration.up, layer)
+    expect(transactionUsed).toBe(true)
+  })
+
+  test("withTransaction is NOT called when transactional is false", async () => {
+    let transactionUsed = false
+
+    const layer = mockClient({
+      execute: <A = unknown>(_query: string, _params?: ReadonlyArray<unknown>) =>
+        Effect.succeed([] as ReadonlyArray<A>),
+      withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+        transactionUsed = true
+        return effect as any
+      },
+    })
+
+    const file: MigrationFile = {
+      name: "0001_test",
+      timestamp: 0,
+      up: ["SELECT 1;"],
+      down: [],
+      transactional: false,
+    }
+
+    const migration = migrationFileToEffect(file)
+    await runTestWith(migration.up, layer)
+    expect(transactionUsed).toBe(false)
+  })
+})
+
+// ============================================
+// 5.6 — Dry-run Mode
+// ============================================
+describe("loadAndRun() — dry-run mode", () => {
+  test("dryRun: true returns pending migration names without executing", async () => {
+    const migration: MigrationFile = {
+      name: "0001_create_stuff",
+      timestamp: 1700000000000,
+      up: ["CREATE TABLE stuff (id serial);"],
+      down: ["DROP TABLE stuff;"],
+    }
+
+    await writeMigrationFile(dir, migration)
+    const checksum = computeMigrationChecksum(migration)
+
+    await writeJournal(dir, {
+      version: 1,
+      entries: [{ index: 1, name: migration.name, timestamp: migration.timestamp, checksum }],
+    })
+
+    let executeCount = 0
+
+    const layer = mockClient({
+      execute: <A = unknown>(query: string, _params?: ReadonlyArray<unknown>) => {
+        if (query.includes("pg_try_advisory_lock")) {
+          return Effect.succeed([{ pg_try_advisory_lock: true }] as ReadonlyArray<A>)
+        }
+        if (query.includes("pg_advisory_unlock")) {
+          return Effect.succeed([{ pg_advisory_unlock: true }] as ReadonlyArray<A>)
+        }
+        if (query.includes("CREATE TABLE IF NOT EXISTS")) {
+          return Effect.succeed([] as ReadonlyArray<A>)
+        }
+        if (query.includes("SELECT * FROM") && query.includes("_timescaledb_sdk_migrations")) {
+          return Effect.succeed([] as ReadonlyArray<A>)
+        }
+        if (query.includes("CREATE TABLE stuff")) {
+          executeCount++
+        }
+        return Effect.succeed([] as ReadonlyArray<A>)
+      },
+    })
+
+    const result = await runTestWith(
+      loadAndRun(dir, { trustOverride: true, dryRun: true }),
+      layer
+    )
+
+    // Should return the pending migration name
+    expect(result).toEqual(["0001_create_stuff"])
+    // Should NOT have executed the actual migration SQL
+    expect(executeCount).toBe(0)
   })
 })
 

@@ -4,6 +4,14 @@ import { toSqlValue, quoteIdentifier, quoteString } from "../internal/sql.js"
 
 export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition
 
+const TYPE_ALIASES: Record<string, string> = {
+  "serial": "integer",
+  "bigserial": "bigint",
+  "smallserial": "smallint",
+}
+
+const normalizeType = (t: string): string => TYPE_ALIASES[t] ?? t
+
 export interface SchemaDiff {
   readonly tablesToCreate: ReadonlyArray<string>
   readonly tablesToDrop: ReadonlyArray<string>
@@ -12,11 +20,22 @@ export interface SchemaDiff {
   readonly columnsToRemove: ReadonlyArray<{ table: string; column: string }>
   readonly columnsToAlter: ReadonlyArray<{ table: string; column: string; oldType: string; newType: string }>
   readonly columnsToRename: ReadonlyArray<{ table: string; oldColumn: string; newColumn: string }>
+  readonly columnsToSetNotNull: ReadonlyArray<{ table: string; column: string }>
+  readonly columnsToDropNotNull: ReadonlyArray<{ table: string; column: string }>
+  readonly columnsToSetDefault: ReadonlyArray<{ table: string; column: string; defaultValue: unknown }>
+  readonly columnsToDropDefault: ReadonlyArray<{ table: string; column: string }>
   readonly hypertablesToCreate: ReadonlyArray<string>
   readonly enumsToCreate: ReadonlyArray<EnumTypeDef>
   readonly enumsToDrop: ReadonlyArray<string>
+  readonly enumsToAddValues: ReadonlyArray<{ name: string; newValues: ReadonlyArray<string> }>
   readonly caggsToCreate: ReadonlyArray<CaggDefinition>
   readonly caggsToDrop: ReadonlyArray<string>
+  readonly indexesToCreate: ReadonlyArray<{ table: string; index: import("../schema/types.js").IndexDef }>
+  readonly indexesToDrop: ReadonlyArray<{ table: string; indexName: string }>
+  readonly constraintsToAdd: ReadonlyArray<{ table: string; constraint: ConstraintDef }>
+  readonly constraintsToDrop: ReadonlyArray<{ table: string; constraintName: string }>
+  readonly triggersToCreate: ReadonlyArray<{ table: string; trigger: import("../schema/types.js").TriggerDef }>
+  readonly triggersToDrop: ReadonlyArray<{ table: string; triggerName: string }>
 }
 
 export const diffSchema = (
@@ -94,7 +113,7 @@ export const diffSchema = (
           isNotNull: col.isNotNull,
           defaultValue: col.defaultValue,
         })
-      } else if (existingCol.dataType !== col.sqlType) {
+      } else if (normalizeType(existingCol.dataType) !== normalizeType(col.sqlType)) {
         columnsToAlter.push({
           table: def.name,
           column: col.name,
@@ -116,13 +135,175 @@ export const diffSchema = (
     .filter((d): d is HypertableDefinition => d._tag === "Hypertable" && !snapshotHypertables.has(d.name))
     .map((d) => d.name)
 
-  const enumsToCreate = enumDefs
-  const enumsToDrop: string[] = []
+  const snapshotEnumNames = new Set((snapshot.enums ?? []).map((e) => e.name))
+  const enumsToCreate = enumDefs.filter((e) => !snapshotEnumNames.has(e.name))
+  const enumsToDrop = (snapshot.enums ?? [])
+    .filter((e) => !enumDefs.find((d) => d.name === e.name))
+    .map((e) => e.name)
 
-  const caggsToCreate = caggDefs
-  const caggsToDrop: string[] = []
+  // Detect enums with new values (ALTER TYPE ADD VALUE)
+  const enumsToAddValues: Array<{ name: string; newValues: string[] }> = []
+  for (const def of enumDefs) {
+    const existing = (snapshot.enums ?? []).find((e) => e.name === def.name)
+    if (!existing) continue
+    const existingValues = new Set(existing.values)
+    const newValues = def.values.filter((v) => !existingValues.has(v))
+    if (newValues.length > 0) {
+      enumsToAddValues.push({ name: def.name, newValues: [...newValues] })
+    }
+  }
 
-  return { tablesToCreate, tablesToDrop, tablesToRename, columnsToAdd, columnsToRemove, columnsToAlter, columnsToRename, hypertablesToCreate, enumsToCreate, enumsToDrop, caggsToCreate, caggsToDrop }
+  const snapshotCaggNames = new Set(snapshot.continuousAggregates.map((c) => c.viewName))
+  const caggsToCreate = caggDefs.filter((c) => !snapshotCaggNames.has(c.viewName))
+  const caggsToDrop = snapshot.continuousAggregates
+    .filter((c) => !caggDefs.find((d) => d.viewName === c.viewName))
+    .map((c) => c.viewName)
+
+  // Column NOT NULL and DEFAULT change detection
+  const columnsToSetNotNull: Array<{ table: string; column: string }> = []
+  const columnsToDropNotNull: Array<{ table: string; column: string }> = []
+  const columnsToSetDefault: Array<{ table: string; column: string; defaultValue: unknown }> = []
+  const columnsToDropDefault: Array<{ table: string; column: string }> = []
+
+  for (const def of tableDefs) {
+    const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
+    const existing = snapshot.tables.find((t) => t.name === snapshotName)
+    if (!existing) continue
+
+    const existingCols = new Map(existing.columns.map((c) => [c.name, c]))
+    const definedCols = Object.values(def.columns) as ColumnDef[]
+
+    for (const col of definedCols) {
+      const existingCol = existingCols.get(col.name)
+      if (!existingCol) continue
+
+      // NOT NULL changes
+      if (col.isNotNull && existingCol.isNullable) {
+        columnsToSetNotNull.push({ table: def.name, column: col.name })
+      } else if (!col.isNotNull && !existingCol.isNullable && !col.isPrimaryKey) {
+        columnsToDropNotNull.push({ table: def.name, column: col.name })
+      }
+
+      // DEFAULT changes
+      const defHasDefault = col.defaultValue !== undefined
+      const existingHasDefault = existingCol.defaultValue !== null
+      if (defHasDefault && !existingHasDefault) {
+        columnsToSetDefault.push({ table: def.name, column: col.name, defaultValue: col.defaultValue })
+      } else if (!defHasDefault && existingHasDefault) {
+        columnsToDropDefault.push({ table: def.name, column: col.name })
+      } else if (defHasDefault && existingHasDefault) {
+        const defStr = toSqlValue(col.defaultValue)
+        if (defStr !== existingCol.defaultValue) {
+          columnsToSetDefault.push({ table: def.name, column: col.name, defaultValue: col.defaultValue })
+        }
+      }
+    }
+  }
+
+  // Index diffing for existing tables
+  const indexesToCreate: Array<{ table: string; index: import("../schema/types.js").IndexDef }> = []
+  const indexesToDrop: Array<{ table: string; indexName: string }> = []
+
+  for (const def of tableDefs) {
+    if (tablesToCreate.includes(def.name)) continue // skip new tables, indexes handled in CREATE TABLE
+    const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
+    const existing = snapshot.tables.find((t) => t.name === snapshotName)
+    if (!existing) continue
+
+    const existingIndexes = new Map(existing.indexes.map((i) => [i.name, i]))
+    const definedIndexes = new Map(def.indexes.map((i) => [i.name, i]))
+
+    // New indexes
+    for (const [name, idx] of definedIndexes) {
+      if (!existingIndexes.has(name)) {
+        indexesToCreate.push({ table: def.name, index: idx })
+      } else {
+        // Check if index changed (different columns or type)
+        const existingIdx = existingIndexes.get(name)!
+        const defCols = idx.columns.map((c) => typeof c === "string" ? c : c.expression)
+        const existCols = existingIdx.columns
+        if (
+          idx.type !== existingIdx.type ||
+          idx.unique !== existingIdx.isUnique ||
+          JSON.stringify(defCols) !== JSON.stringify(existCols)
+        ) {
+          indexesToDrop.push({ table: def.name, indexName: name })
+          indexesToCreate.push({ table: def.name, index: idx })
+        }
+      }
+    }
+
+    // Removed indexes
+    for (const [name] of existingIndexes) {
+      if (!definedIndexes.has(name)) {
+        indexesToDrop.push({ table: def.name, indexName: name })
+      }
+    }
+  }
+
+  // Constraint diffing for existing tables
+  const constraintsToAdd: Array<{ table: string; constraint: ConstraintDef }> = []
+  const constraintsToDrop: Array<{ table: string; constraintName: string }> = []
+
+  for (const def of tableDefs) {
+    if (tablesToCreate.includes(def.name)) continue
+    const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
+    const existing = snapshot.tables.find((t) => t.name === snapshotName)
+    if (!existing || !existing.constraints) continue
+
+    const existingConstraints = new Map(existing.constraints.map((c) => [c.name, c]))
+    const definedConstraints = new Map(def.constraints.map((c) => [c.name, c]))
+
+    for (const [name, constraint] of definedConstraints) {
+      if (!existingConstraints.has(name)) {
+        constraintsToAdd.push({ table: def.name, constraint })
+      }
+    }
+
+    for (const [name] of existingConstraints) {
+      if (!definedConstraints.has(name)) {
+        constraintsToDrop.push({ table: def.name, constraintName: name })
+      }
+    }
+  }
+
+  // Trigger diffing for existing tables
+  const triggersToCreate: Array<{ table: string; trigger: import("../schema/types.js").TriggerDef }> = []
+  const triggersToDrop: Array<{ table: string; triggerName: string }> = []
+
+  for (const def of tableDefs) {
+    if (tablesToCreate.includes(def.name)) continue
+    const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
+    const existing = snapshot.tables.find((t) => t.name === snapshotName)
+    if (!existing || !existing.triggers) continue
+
+    const existingTriggers = new Map(existing.triggers.map((t) => [t.name, t]))
+    const definedTriggers = new Map(def.triggers.map((t) => [t.name, t]))
+
+    for (const [name, trg] of definedTriggers) {
+      if (!existingTriggers.has(name)) {
+        triggersToCreate.push({ table: def.name, trigger: trg })
+      }
+    }
+
+    for (const [name] of existingTriggers) {
+      if (!definedTriggers.has(name)) {
+        triggersToDrop.push({ table: def.name, triggerName: name })
+      }
+    }
+  }
+
+  return {
+    tablesToCreate, tablesToDrop, tablesToRename,
+    columnsToAdd, columnsToRemove, columnsToAlter, columnsToRename,
+    columnsToSetNotNull, columnsToDropNotNull, columnsToSetDefault, columnsToDropDefault,
+    hypertablesToCreate,
+    enumsToCreate, enumsToDrop, enumsToAddValues,
+    caggsToCreate, caggsToDrop,
+    indexesToCreate, indexesToDrop,
+    constraintsToAdd, constraintsToDrop,
+    triggersToCreate, triggersToDrop,
+  }
 }
 
 const generateColumnSql = (c: ColumnDef): string => {
@@ -432,6 +613,67 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
   for (const col of diff.columnsToAlter) {
     up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.newType};`)
     down.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.oldType};`)
+  }
+
+  // Column NOT NULL changes
+  for (const col of diff.columnsToSetNotNull) {
+    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} SET NOT NULL;`)
+    down.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} DROP NOT NULL;`)
+  }
+
+  for (const col of diff.columnsToDropNotNull) {
+    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} DROP NOT NULL;`)
+    down.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} SET NOT NULL;`)
+  }
+
+  // Column DEFAULT changes
+  for (const col of diff.columnsToSetDefault) {
+    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} SET DEFAULT ${toSqlValue(col.defaultValue)};`)
+    down.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} DROP DEFAULT;`)
+  }
+
+  for (const col of diff.columnsToDropDefault) {
+    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} DROP DEFAULT;`)
+    down.push(`-- Cannot auto-generate re-addition of default for column ${quoteIdentifier(col.column)} on ${quoteIdentifier(col.table)}`)
+  }
+
+  // Enum ALTER TYPE ADD VALUE
+  for (const enumAlt of diff.enumsToAddValues) {
+    for (const val of enumAlt.newValues) {
+      up.push(`ALTER TYPE ${quoteIdentifier(enumAlt.name)} ADD VALUE ${quoteString(val)};`)
+    }
+  }
+
+  // Index changes on existing tables
+  for (const idx of diff.indexesToDrop) {
+    up.push(`DROP INDEX IF EXISTS ${quoteIdentifier(idx.indexName)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped index ${quoteIdentifier(idx.indexName)}`)
+  }
+
+  for (const idx of diff.indexesToCreate) {
+    up.push(generateIndexSql(idx.table, idx.index))
+    down.push(`DROP INDEX IF EXISTS ${quoteIdentifier(idx.index.name)};`)
+  }
+
+  // Constraint changes on existing tables
+  for (const con of diff.constraintsToDrop) {
+    up.push(`ALTER TABLE ${quoteIdentifier(con.table)} DROP CONSTRAINT ${quoteIdentifier(con.constraintName)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped constraint ${quoteIdentifier(con.constraintName)}`)
+  }
+
+  for (const con of diff.constraintsToAdd) {
+    up.push(`ALTER TABLE ${quoteIdentifier(con.table)} ADD ${generateConstraintSql(con.constraint)};`)
+    down.push(`ALTER TABLE ${quoteIdentifier(con.table)} DROP CONSTRAINT ${quoteIdentifier(con.constraint.name)};`)
+  }
+
+  // Trigger changes on existing tables
+  for (const trg of diff.triggersToDrop) {
+    up.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.triggerName)} ON ${quoteIdentifier(trg.table)};`)
+  }
+
+  for (const trg of diff.triggersToCreate) {
+    up.push(generateTriggerSql(trg.table, trg.trigger))
+    down.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.trigger.name)} ON ${quoteIdentifier(trg.table)};`)
   }
 
   // Continuous aggregates
