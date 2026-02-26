@@ -148,6 +148,16 @@ export interface ChunkOperationConfig {
   readonly enableSkipping?: boolean
 }
 
+export interface TieringConfig {
+  /** Move chunks older than this interval to object storage */
+  readonly tierAfter: string
+  /** Optionally untier chunks newer than this interval */
+  readonly untierBefore?: string
+}
+
+/** Modern columnstore config (TimescaleDB 2.18+). Alias for compression settings. */
+export type ColumnstoreConfig = CompressionConfig
+
 export interface HypertableConfig {
   readonly timeColumn: string
   readonly chunkInterval?: string
@@ -161,6 +171,12 @@ export interface HypertableConfig {
   readonly reorderPolicy?: ReorderPolicyConfig
   readonly hypercore?: HypercoreConfig
   readonly chunkOperations?: ChunkOperationConfig
+  /** Modern columnstore config (alias for compression, uses timescaledb.columnstore syntax in 2.18+) */
+  readonly columnstore?: ColumnstoreConfig
+  /** Data tiering to object storage (S3) */
+  readonly tiering?: TieringConfig
+  /** Use modern timescaledb.columnstore syntax instead of timescaledb.compress */
+  readonly useModernColumnstoreSyntax?: boolean
 }
 
 export interface HypertableDefinition<

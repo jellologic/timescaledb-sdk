@@ -61,6 +61,9 @@ export interface SchemaDiff {
   readonly hypercoreSettingsToAlter: ReadonlyArray<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: ReadonlyArray<string> }>
   readonly chunkIntervalsToAlter: ReadonlyArray<{ table: string; interval: string }>
   readonly compressionSettingsToAlter: ReadonlyArray<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: string }>
+  readonly tieringToAdd: ReadonlyArray<{ table: string; tierAfter: string }>
+  readonly tieringToRemove: ReadonlyArray<string>
+  readonly caggMigrations: ReadonlyArray<string>
   readonly warnings: ReadonlyArray<{ name: string; message: string }>
 }
 
@@ -448,6 +451,9 @@ export const diffSchema = (
   const reorderPoliciesToRemove: string[] = []
   const chunkIntervalsToAlter: Array<{ table: string; interval: string }> = []
   const compressionSettingsToAlter: Array<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: string }> = []
+  const tieringToAdd: Array<{ table: string; tierAfter: string }> = []
+  const tieringToRemove: string[] = []
+  const caggMigrations: string[] = []
 
   for (const htDef of htDefs) {
     if (hypertablesToCreate.includes(htDef.name)) continue // new hypertables handled in creation
@@ -500,6 +506,18 @@ export const diffSchema = (
           orderby: defOrderby || undefined,
         })
       }
+    }
+  }
+
+  // Tiering detection for existing hypertables
+  for (const htDef of htDefs) {
+    if (hypertablesToCreate.includes(htDef.name)) continue
+    const config = htDef.hypertableConfig
+    const existingPolicy = snapshotHtPolicyMap.get(htDef.name)
+    if (config.tiering?.tierAfter && !existingPolicy?.tierAfter) {
+      tieringToAdd.push({ table: htDef.name, tierAfter: config.tiering.tierAfter })
+    } else if (!config.tiering?.tierAfter && existingPolicy?.tierAfter) {
+      tieringToRemove.push(htDef.name)
     }
   }
 
@@ -612,6 +630,9 @@ export const diffSchema = (
     hypercoreToEnable, hypercoreToDisable, hypercoreSettingsToAlter,
     chunkIntervalsToAlter,
     compressionSettingsToAlter,
+    tieringToAdd,
+    tieringToRemove,
+    caggMigrations,
     warnings: enumReorderWarnings,
   }
 }
@@ -936,28 +957,31 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       }
     }
 
-    // Compression policy
-    if (config.compression) {
-      const compParts: string[] = [`timescaledb.compress`]
-      if (config.compression.segmentby && config.compression.segmentby.length > 0) {
-        compParts.push(`timescaledb.compress_segmentby = '${config.compression.segmentby.join(", ")}'`)
+    // Compression / columnstore policy
+    const compConfig = config.columnstore ?? config.compression
+    if (compConfig) {
+      const useModern = config.useModernColumnstoreSyntax === true
+      const prefix = useModern ? "timescaledb.columnstore" : "timescaledb.compress"
+      const compParts: string[] = [prefix]
+      if (compConfig.segmentby && compConfig.segmentby.length > 0) {
+        compParts.push(`${prefix}_segmentby = '${compConfig.segmentby.join(", ")}'`)
       }
-      if (config.compression.orderby && config.compression.orderby.length > 0) {
-        const orderParts = config.compression.orderby.map((o) => {
+      if (compConfig.orderby && compConfig.orderby.length > 0) {
+        const orderParts = compConfig.orderby.map((o) => {
           let s = o.column
           if (o.order) s += ` ${o.order}`
           if (o.nullsFirst !== undefined) s += o.nullsFirst ? " NULLS FIRST" : " NULLS LAST"
           return s
         })
-        compParts.push(`timescaledb.compress_orderby = '${orderParts.join(", ")}'`)
+        compParts.push(`${prefix}_orderby = '${orderParts.join(", ")}'`)
       }
-      if (config.compression.chunkTimeInterval) {
-        compParts.push(`timescaledb.compress_chunk_time_interval = '${config.compression.chunkTimeInterval}'`)
+      if (compConfig.chunkTimeInterval) {
+        compParts.push(`${prefix}_chunk_time_interval = '${compConfig.chunkTimeInterval}'`)
       }
       up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (${compParts.join(", ")});`)
 
-      if (config.compression.after) {
-        up.push(`SELECT add_compression_policy('${tableName}', INTERVAL '${config.compression.after}');`)
+      if (compConfig.after) {
+        up.push(`SELECT add_compression_policy('${tableName}', INTERVAL '${compConfig.after}');`)
       }
     }
 
@@ -1355,6 +1379,31 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     }
     if (parts.length > 0) {
       up.push(`ALTER TABLE ${quoteIdentifier(cs.table)} SET (${parts.join(", ")});`)
+    }
+  }
+
+  // Data tiering
+  for (const t of diff.tieringToAdd) {
+    up.push(`SELECT add_tiering_policy('${t.table}', INTERVAL '${t.tierAfter}');`)
+    down.push(`SELECT remove_tiering_policy('${t.table}');`)
+  }
+
+  for (const table of diff.tieringToRemove) {
+    up.push(`SELECT remove_tiering_policy('${table}');`)
+    down.push(`-- Cannot auto-generate recreation of removed tiering policy on '${table}'`)
+  }
+
+  // CAGG migrations
+  for (const viewName of diff.caggMigrations) {
+    up.push(`CALL cagg_migrate(${quoteString(viewName)});`)
+  }
+
+  // Tiering for new hypertables
+  for (const tableName of diff.hypertablesToCreate) {
+    const def = tableDefs.find((d) => d.name === tableName) as HypertableDefinition | undefined
+    if (def?.hypertableConfig.tiering?.tierAfter) {
+      up.push(`SELECT add_tiering_policy('${tableName}', INTERVAL '${def.hypertableConfig.tiering.tierAfter}');`)
+      down.push(`SELECT remove_tiering_policy('${tableName}');`)
     }
   }
 

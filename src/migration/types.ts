@@ -70,6 +70,7 @@ export interface HypertablePolicySnapshot {
   readonly compressionPolicy?: { readonly after: string }
   readonly retentionPolicy?: { readonly dropAfter: string }
   readonly reorderPolicy?: { readonly indexName: string }
+  readonly tierAfter?: string
 }
 
 export interface SchemaSnapshot {

@@ -5,8 +5,14 @@ import type { JoinClause } from "./Join.js"
 import type { WhereCondition } from "./Where.js"
 import type { Statement } from "./types.js"
 import type { TableDefinition, ColumnDef } from "../schema/types.js"
+import type { CteClause } from "./Cte.js"
 import { TimescaleClient } from "../Client.js"
 import { QueryError } from "../Error.js"
+
+export type SetOperation = {
+  readonly type: "UNION" | "UNION ALL" | "INTERSECT" | "INTERSECT ALL" | "EXCEPT" | "EXCEPT ALL"
+  readonly query: SelectBuilder<any>
+}
 
 export class SelectBuilder<T = Record<string, unknown>> {
   private readonly _table: string
@@ -19,6 +25,8 @@ export class SelectBuilder<T = Record<string, unknown>> {
   private _offset: number | undefined
   private _having: WhereCondition | undefined
   private _distinct: boolean = false
+  private _ctes: CteClause[] = []
+  private _setOps: SetOperation[] = []
 
   constructor(table: TableDefinition | string) {
     this._table = typeof table === "string" ? table : table.name
@@ -86,6 +94,30 @@ export class SelectBuilder<T = Record<string, unknown>> {
     return b
   }
 
+  with(...ctes: CteClause[]): SelectBuilder<T> {
+    const b = this._clone()
+    b._ctes = [...this._ctes, ...ctes]
+    return b
+  }
+
+  union(other: SelectBuilder<any>, all: boolean = false): SelectBuilder<T> {
+    const b = this._clone()
+    b._setOps = [...this._setOps, { type: all ? "UNION ALL" : "UNION", query: other }]
+    return b
+  }
+
+  intersect(other: SelectBuilder<any>, all: boolean = false): SelectBuilder<T> {
+    const b = this._clone()
+    b._setOps = [...this._setOps, { type: all ? "INTERSECT ALL" : "INTERSECT", query: other }]
+    return b
+  }
+
+  except(other: SelectBuilder<any>, all: boolean = false): SelectBuilder<T> {
+    const b = this._clone()
+    b._setOps = [...this._setOps, { type: all ? "EXCEPT ALL" : "EXCEPT", query: other }]
+    return b
+  }
+
   toSql(): Statement {
     const params: unknown[] = []
     let paramIdx = 1
@@ -99,6 +131,24 @@ export class SelectBuilder<T = Record<string, unknown>> {
       return result
     }
 
+    let sql = ""
+
+    // CTEs
+    if (this._ctes.length > 0) {
+      const cteParts = this._ctes.map((c) => {
+        const cteSql = resolvePlaceholders(c.sql, c.params)
+        const quoteCteName = `"${c.name.replace(/"/g, '""')}"`
+        if (c.materialized === true) {
+          return `${quoteCteName} AS MATERIALIZED (${cteSql})`
+        }
+        if (c.materialized === false) {
+          return `${quoteCteName} AS NOT MATERIALIZED (${cteSql})`
+        }
+        return `${quoteCteName} AS (${cteSql})`
+      })
+      sql += `WITH ${cteParts.join(", ")} `
+    }
+
     // SELECT columns
     const selectCols = this._columns.length > 0
       ? this._columns.map((c) => {
@@ -109,7 +159,7 @@ export class SelectBuilder<T = Record<string, unknown>> {
         }).join(", ")
       : "*"
 
-    let sql = `SELECT ${this._distinct ? "DISTINCT " : ""}${selectCols} FROM "${this._table}"`
+    sql += `SELECT ${this._distinct ? "DISTINCT " : ""}${selectCols} FROM "${this._table}"`
 
     // JOINs
     for (const j of this._joins) {
@@ -158,6 +208,13 @@ export class SelectBuilder<T = Record<string, unknown>> {
       sql += ` OFFSET ${this._offset}`
     }
 
+    // Set operations
+    for (const op of this._setOps) {
+      const otherStmt = op.query.toSql()
+      const otherSql = resolvePlaceholders(otherStmt.sql, otherStmt.params)
+      sql += ` ${op.type} ${otherSql}`
+    }
+
     return { sql, params }
   }
 
@@ -180,6 +237,8 @@ export class SelectBuilder<T = Record<string, unknown>> {
     b._offset = this._offset
     b._having = this._having
     b._distinct = this._distinct
+    b._ctes = [...this._ctes]
+    b._setOps = [...this._setOps]
     return b
   }
 }

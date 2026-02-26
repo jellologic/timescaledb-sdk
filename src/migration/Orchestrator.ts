@@ -94,8 +94,16 @@ const executeSqlStatements = (file: MigrationFile, statements: ReadonlyArray<str
   Effect.gen(function* () {
     const client = yield* TimescaleClient
     const exec = Effect.gen(function* () {
-      for (const sql of statements) {
-        yield* client.execute(sql)
+      for (let i = 0; i < statements.length; i++) {
+        const sql = statements[i]!
+        yield* client.execute(sql).pipe(
+          Effect.mapError((e) =>
+            new MigrationError({
+              message: `Migration ${file.name} ${direction} failed at statement ${i + 1}/${statements.length}: ${sql!.slice(0, 200)}`,
+              cause: e,
+            })
+          )
+        )
       }
     })
     // Wrap in transaction unless explicitly opted out
@@ -117,10 +125,22 @@ export const migrationFileToEffect = (file: MigrationFile): Migration => ({
 
 export interface RunOptions extends LoadMigrationOptions {
   readonly dryRun?: boolean
+  /** Advisory lock timeout in milliseconds. Default: no timeout. */
+  readonly lockTimeoutMs?: number
 }
 
 export interface DryRunResult {
   readonly migrations: ReadonlyArray<{ name: string; up: ReadonlyArray<string> }>
+}
+
+export const dryRunSql = async (
+  migrationsDir: string,
+  options?: LoadMigrationOptions
+): Promise<DryRunResult> => {
+  const files = await loadAllMigrations(migrationsDir, options)
+  return {
+    migrations: files.map((f) => ({ name: f.name, up: [...f.up] })),
+  }
 }
 
 export const loadAndRun = (

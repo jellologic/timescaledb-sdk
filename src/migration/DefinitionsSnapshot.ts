@@ -146,12 +146,13 @@ export const definitionsToSnapshot = (
 
   // Extract hypertable policies from definitions
   const hypertablePolicies: HypertablePolicySnapshot[] = htDefs
-    .filter((h) => h.hypertableConfig.compression?.after || h.hypertableConfig.retention || h.hypertableConfig.reorderPolicy)
+    .filter((h) => h.hypertableConfig.compression?.after || h.hypertableConfig.retention || h.hypertableConfig.reorderPolicy || h.hypertableConfig.tiering)
     .map((h) => ({
       hypertableName: h.name,
       compressionPolicy: h.hypertableConfig.compression?.after ? { after: h.hypertableConfig.compression.after } : undefined,
       retentionPolicy: h.hypertableConfig.retention ? { dropAfter: h.hypertableConfig.retention.dropAfter } : undefined,
       reorderPolicy: h.hypertableConfig.reorderPolicy ? { indexName: h.hypertableConfig.reorderPolicy.indexName } : undefined,
+      tierAfter: h.hypertableConfig.tiering?.tierAfter,
     }))
 
   return {
