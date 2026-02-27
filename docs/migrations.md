@@ -318,5 +318,6 @@ Migrations are tracked in a `_timescaledb_sdk_migrations` table created automati
 ## Next steps
 
 - [Schema](./schema.md) -- define tables, columns, and constraints
+- [Views](./views.md) -- views and materialized views tracked by migrations
 - [Error Handling](./error-handling.md) -- handle migration errors
 - [Getting Started](./getting-started.md) -- initial setup

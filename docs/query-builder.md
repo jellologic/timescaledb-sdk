@@ -351,3 +351,4 @@ const stmt = rawSql("SELECT * FROM users WHERE id = $1", [42])
 - [Where Conditions](./where-conditions.md) -- filtering operators and expressions
 - [Joins and Subqueries](./joins-and-subqueries.md) -- JOINs, CTEs, UNION
 - [Aggregates and Windows](./aggregates-windows.md) -- GROUP BY, window functions
+- [Views](./views.md) -- query views and materialized views
