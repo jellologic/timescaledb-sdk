@@ -80,3 +80,100 @@ describe("pgFunction", () => {
     expect(fn.definition.bodySource).toContain("a + b")
   })
 })
+
+describe("pgFunction.toSql()", () => {
+  test("generates CREATE FUNCTION SQL", () => {
+    const fn = pgFunction({
+      name: "calculate_tax",
+      params: {
+        amount: numeric("amount"),
+        rate: numeric("rate"),
+      },
+      returns: numeric("result"),
+      volatility: "IMMUTABLE",
+      body: (amount: number, rate: number): number => {
+        let tax = amount * rate
+        if (tax > 1000) {
+          return 1000
+        }
+        return tax
+      },
+    })
+
+    const sql = fn.toSql()
+    expect(sql).toContain('CREATE FUNCTION "calculate_tax"')
+    expect(sql).toContain("amount NUMERIC")
+    expect(sql).toContain("rate NUMERIC")
+    expect(sql).toContain("RETURNS NUMERIC")
+    expect(sql).toContain("LANGUAGE plpgsql")
+    expect(sql).toContain("IMMUTABLE")
+    expect(sql).toContain("tax := amount * rate;")
+    expect(sql).toContain("IF tax > 1000 THEN")
+    expect(sql).toContain("RETURN tax;")
+  })
+
+  test("generates CREATE OR REPLACE FUNCTION SQL", () => {
+    const fn = pgFunction({
+      name: "add",
+      params: { a: integer("a"), b: integer("b") },
+      returns: integer("result"),
+      body: (a: number, b: number): number => a + b,
+    })
+
+    const sql = fn.toCreateOrReplace()
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION "add"')
+  })
+
+  test("defaults to VOLATILE (not emitted)", () => {
+    const fn = pgFunction({
+      name: "now_plus",
+      params: {},
+      returns: integer("result"),
+      body: (): number => 1,
+    })
+
+    const sql = fn.toSql()
+    expect(sql).not.toContain("IMMUTABLE")
+    expect(sql).not.toContain("STABLE")
+    expect(sql).not.toContain("VOLATILE")
+  })
+
+  test("includes schema qualification when not public", () => {
+    const fn = pgFunction({
+      name: "my_func",
+      schema: "analytics",
+      params: { x: integer("x") },
+      returns: integer("result"),
+      body: (x: number): number => x + 1,
+    })
+
+    const sql = fn.toSql()
+    expect(sql).toContain('"analytics"."my_func"')
+  })
+
+  test("includes SECURITY DEFINER when specified", () => {
+    const fn = pgFunction({
+      name: "admin_func",
+      params: { x: integer("x") },
+      returns: integer("result"),
+      security: "DEFINER",
+      body: (x: number): number => x,
+    })
+
+    const sql = fn.toSql()
+    expect(sql).toContain("SECURITY DEFINER")
+  })
+
+  test("handles function with no params", () => {
+    const fn = pgFunction({
+      name: "get_one",
+      params: {},
+      returns: integer("result"),
+      body: (): number => 1,
+    })
+
+    const sql = fn.toSql()
+    expect(sql).toContain('"get_one"()')
+    expect(sql).toContain("RETURNS INTEGER")
+  })
+})
