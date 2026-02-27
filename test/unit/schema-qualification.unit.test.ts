@@ -404,7 +404,12 @@ describe("Schema qualification: hypercore", () => {
       [],
     )
 
-    expect(up.some((s) => s.includes('"analytics"."metrics"') && s.includes("hypercore"))).toBe(true)
+    const hcStmt = up.find((s) => s.includes("hypercore"))!
+    expect(hcStmt).toBeDefined()
+    expect(hcStmt).toContain('"analytics"."metrics"')
+    // Must be guarded by availability check
+    expect(hcStmt).toContain("DO $$ BEGIN IF EXISTS")
+    expect(hcStmt).toContain("pg_am WHERE amname = 'hypercore'")
   })
 })
 
