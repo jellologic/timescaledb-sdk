@@ -909,6 +909,26 @@ describe("SQL Generation — Expression-based Indexes", () => {
     expect(idxSql).toContain("(lower(name)) text_pattern_ops")
   })
 
+  test("inline opclass does not produce double parentheses (issue #19)", () => {
+    const t = pgTable("crawler_state", { key: text("key") }, () => [
+      index("crawler_state_key_prefix_idx", [expr("key varchar_pattern_ops")]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))!
+    expect(idxSql).toContain('"key" varchar_pattern_ops')
+    expect(idxSql).not.toContain("((")
+  })
+
+  test("simple column with separate opclass parameter", () => {
+    const t = pgTable("data", { metadata: text("metadata") }, () => [
+      index("data_metadata_idx", [expr("metadata", "jsonb_path_ops")]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))!
+    expect(idxSql).toContain('"metadata" jsonb_path_ops')
+    expect(idxSql).not.toContain("((")
+  })
+
   test("mixed string and expression columns", () => {
     const t = pgTable("events", {
       id: integer("id"),
@@ -1879,6 +1899,63 @@ describe("SQL Generation — Hypercore (H1)", () => {
     const diff = diffSchema([events], emptySnapshot)
     const { down } = generateMigrationSql(diff, [events])
     expect(down.some((s) => s.includes("SET ACCESS METHOD heap"))).toBe(true)
+  })
+
+  test("wraps SET ACCESS METHOD hypercore in pg_am availability check (issue #17)", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      hypercore: { enabled: true },
+    })
+
+    const up = genUp([events])
+    const hcStmt = up.find((s) => s.includes("SET ACCESS METHOD hypercore"))!
+    expect(hcStmt).toContain("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_am WHERE amname = 'hypercore')")
+    expect(hcStmt).toContain("END IF; END $$;")
+  })
+
+  test("hypercore settings are inside the availability guard (issue #17)", () => {
+    const events = hypertable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: text("device_id").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      hypercore: {
+        enabled: true,
+        segmentby: ["device_id"],
+        orderby: [{ column: "time", order: "DESC" }],
+      },
+    })
+
+    const up = genUp([events])
+    const hcStmt = up.find((s) => s.includes("SET ACCESS METHOD hypercore"))!
+    // Settings should be inside the same DO $$ block, not a separate statement
+    expect(hcStmt).toContain("compress_segmentby = 'device_id'")
+    expect(hcStmt).toContain("compress_orderby = 'time DESC'")
+    expect(hcStmt).toContain("DO $$ BEGIN IF EXISTS")
+  })
+
+  test("diff-driven hypercoreToEnable wraps in availability check", () => {
+    const baseDiff = diffSchema([], emptySnapshot)
+    const { up } = generateMigrationSql(
+      { ...baseDiff, hypercoreToEnable: [{ name: "metrics", schema: "public" }] },
+      [],
+    )
+    const hcStmt = up.find((s) => s.includes("SET ACCESS METHOD hypercore"))!
+    expect(hcStmt).toContain("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_am WHERE amname = 'hypercore')")
+  })
+
+  test("diff-driven hypercoreToDisable down migration wraps in availability check", () => {
+    const baseDiff = diffSchema([], emptySnapshot)
+    const { down } = generateMigrationSql(
+      { ...baseDiff, hypercoreToDisable: [{ name: "metrics", schema: "public" }] },
+      [],
+    )
+    const hcDown = down.find((s) => s.includes("SET ACCESS METHOD hypercore"))!
+    expect(hcDown).toContain("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_am WHERE amname = 'hypercore')")
   })
 })
 

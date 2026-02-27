@@ -1088,8 +1088,19 @@ const generateConstraintSql = (constraint: ConstraintDef): string => {
 
 const formatIndexColumn = (col: import("../schema/types.js").IndexColumn): string => {
   if (typeof col === "string") return quoteIdentifier(col)
-  const isSimpleColumn = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(col.expression)
-  let s = isSimpleColumn ? quoteIdentifier(col.expression) : `(${col.expression})`
+  const expr = col.expression.trim()
+  const isSimpleColumn = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(expr)
+  let s: string
+  if (isSimpleColumn) {
+    s = quoteIdentifier(expr)
+  } else if (/[^a-zA-Z0-9_\s]/.test(expr)) {
+    // Contains special characters (parens, operators, casts) — real expression, wrap in parens
+    s = `(${expr})`
+  } else {
+    // Only identifiers and whitespace — e.g. "key varchar_pattern_ops" (column + inline opclass)
+    const parts = expr.split(/\s+/)
+    s = `${quoteIdentifier(parts[0]!)} ${parts.slice(1).join(" ")}`
+  }
   if (col.opclass) s += ` ${col.opclass}`
   if (col.order) s += ` ${col.order}`
   if (col.nulls) s += ` NULLS ${col.nulls}`
@@ -1505,13 +1516,8 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       }
     }
 
-    // Hypercore (H1) — set access method to columnar store
+    // Hypercore (H1) — set access method to columnar store (guarded by availability check)
     if (config.hypercore?.enabled) {
-      let hypercoreSql = `ALTER TABLE ${htQn} SET ACCESS METHOD hypercore`
-      up.push(`${hypercoreSql};`)
-      down.push(`ALTER TABLE ${htQn} SET ACCESS METHOD heap;`)
-
-      // Hypercore-specific compression settings (segmentby, orderby)
       const hcParts: string[] = []
       if (config.hypercore.segmentby && config.hypercore.segmentby.length > 0) {
         hcParts.push(`timescaledb.compress_segmentby = '${config.hypercore.segmentby.join(", ")}'`)
@@ -1524,9 +1530,9 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
         })
         hcParts.push(`timescaledb.compress_orderby = '${orderParts.join(", ")}'`)
       }
-      if (hcParts.length > 0) {
-        up.push(`ALTER TABLE ${htQn} SET (${hcParts.join(", ")});`)
-      }
+      const hcSettingsSql = hcParts.length > 0 ? `\n    ALTER TABLE ${htQn} SET (${hcParts.join(", ")});` : ""
+      up.push(`DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_am WHERE amname = 'hypercore') THEN\n    ALTER TABLE ${htQn} SET ACCESS METHOD hypercore;${hcSettingsSql}\n  END IF; END $$;`)
+      down.push(`ALTER TABLE ${htQn} SET ACCESS METHOD heap;`)
     }
   }
 
@@ -2196,17 +2202,17 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     down.push(`ALTER MATERIALIZED VIEW ${qn} SET (timescaledb.compress = true);`)
   }
 
-  // Hypercore enable/disable
+  // Hypercore enable/disable (guarded by availability check)
   for (const ref of diff.hypercoreToEnable) {
     const tqn = qualifiedName(ref.name, ref.schema)
-    up.push(`ALTER TABLE ${tqn} SET ACCESS METHOD hypercore;`)
+    up.push(`DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_am WHERE amname = 'hypercore') THEN\n    ALTER TABLE ${tqn} SET ACCESS METHOD hypercore;\n  END IF; END $$;`)
     down.push(`ALTER TABLE ${tqn} SET ACCESS METHOD heap;`)
   }
 
   for (const ref of diff.hypercoreToDisable) {
     const tqn = qualifiedName(ref.name, ref.schema)
     up.push(`ALTER TABLE ${tqn} SET ACCESS METHOD heap;`)
-    down.push(`ALTER TABLE ${tqn} SET ACCESS METHOD hypercore;`)
+    down.push(`DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_am WHERE amname = 'hypercore') THEN\n    ALTER TABLE ${tqn} SET ACCESS METHOD hypercore;\n  END IF; END $$;`)
   }
 
   // Hypercore settings changes
