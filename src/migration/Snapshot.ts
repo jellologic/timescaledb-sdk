@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { MigrationError } from "../Error.js"
-import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, FunctionSnapshot } from "./types.js"
 
 export class SnapshotWarning {
   readonly _tag = "SnapshotWarning"
@@ -477,6 +477,63 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
 
     const hypertablePolicies = [...htPolicyMap.values()]
 
+    // User-defined PL/pgSQL and SQL functions
+    const functionRows = yield* client.execute<{
+      name: string
+      schema: string
+      params: string
+      return_type: string
+      language: string
+      volatility: string
+      security: string
+      body_hash: string
+    }>(
+      `SELECT
+        p.proname AS name,
+        n.nspname AS schema,
+        pg_get_function_arguments(p.oid) AS params,
+        pg_get_function_result(p.oid) AS return_type,
+        l.lanname AS language,
+        CASE p.provolatile
+          WHEN 'i' THEN 'IMMUTABLE'
+          WHEN 's' THEN 'STABLE'
+          ELSE 'VOLATILE'
+        END AS volatility,
+        CASE WHEN p.prosecdef THEN 'DEFINER' ELSE 'INVOKER' END AS security,
+        md5(p.prosrc) AS body_hash
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      JOIN pg_language l ON l.oid = p.prolang
+      WHERE n.nspname NOT LIKE 'pg_%'
+        AND n.nspname <> 'information_schema'
+        AND n.nspname NOT LIKE '_timescaledb_%'
+        AND l.lanname IN ('plpgsql', 'sql')
+        AND p.prokind = 'f'`
+    ).pipe(catchWithWarning("user_functions", [] as any[]))
+
+    const parseParams = (paramStr: string): Array<{ name: string; type: string }> => {
+      if (!paramStr || paramStr.trim() === "") return []
+      return paramStr.split(",").map((p) => {
+        const parts = p.trim().split(/\s+/)
+        if (parts.length >= 2) {
+          return { name: parts[0]!, type: parts.slice(1).join(" ") }
+        }
+        // No name, just type (positional parameter)
+        return { name: "", type: parts[0]! }
+      })
+    }
+
+    const functions: FunctionSnapshot[] = (functionRows as any[]).map((r) => ({
+      name: r.name,
+      schema: r.schema,
+      params: parseParams(r.params),
+      returnType: r.return_type,
+      language: r.language,
+      volatility: r.volatility,
+      security: r.security,
+      bodyHash: r.body_hash,
+    }))
+
     return {
       tables,
       hypertables,
@@ -486,6 +543,7 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       jobs,
       caggPolicies,
       hypertablePolicies,
+      functions,
       takenAt: new Date(),
     }
   }).pipe(

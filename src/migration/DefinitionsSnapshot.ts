@@ -1,5 +1,7 @@
 import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, CaggDefinition, ConstraintDef, TriggerDef, JobDefinition } from "../schema/types.js"
-import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot } from "./types.js"
+import type { FunctionDefinition } from "../functions/types.js"
+import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
+import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, FunctionSnapshot } from "./types.js"
 import type { SchemaDefinition } from "./Generator.js"
 
 export interface PersistedSnapshot {
@@ -75,6 +77,26 @@ const hypertableDefToSnapshot = (def: HypertableDefinition): HypertableSnapshot 
   }) : undefined,
 })
 
+const functionDefToSnapshot = (def: FunctionDefinition): FunctionSnapshot => {
+  const hasher = new Bun.CryptoHasher("sha256")
+  hasher.update(def.bodySource)
+  const bodyHash = hasher.digest("hex")
+
+  return {
+    name: def.name,
+    schema: def.schema,
+    params: def.params.map((p) => ({
+      name: p.name,
+      type: sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType),
+    })),
+    returnType: sqlTypeToPg(def.returnType),
+    language: def.language,
+    volatility: def.volatility,
+    security: def.security,
+    bodyHash,
+  }
+}
+
 const caggDefToSnapshot = (def: CaggDefinition): CaggSnapshot => ({
   viewName: def.viewName,
   viewSchema: def.schema,
@@ -94,6 +116,9 @@ export const definitionsToSnapshot = (
   )
   const enumDefs = definitions.filter(
     (d): d is EnumTypeDef => d._tag === "EnumType"
+  )
+  const functionDefs = definitions.filter(
+    (d): d is FunctionDefinition => d._tag === "Function"
   )
   const jobDefs = definitions.filter(
     (d): d is JobDefinition => d._tag === "JobDefinition"
@@ -164,6 +189,7 @@ export const definitionsToSnapshot = (
     jobs,
     caggPolicies,
     hypertablePolicies,
+    functions: functionDefs.map(functionDefToSnapshot),
     takenAt: new Date(),
   }
 }

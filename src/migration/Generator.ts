@@ -1,8 +1,11 @@
 import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, IndexDef, EnumTypeDef, CaggDefinition, RlsPolicyDef, JobDefinition } from "../schema/types.js"
+import type { FunctionDefinition } from "../functions/types.js"
+import { transpile } from "../functions/transpiler/index.js"
+import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
 import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot } from "./types.js"
 import { toSqlValue, quoteIdentifier, quoteString } from "../internal/sql.js"
 
-export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition
+export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition | FunctionDefinition
 
 const TYPE_ALIASES: Record<string, string> = {
   "serial": "integer",
@@ -67,6 +70,9 @@ export interface SchemaDiff {
   readonly retentionPoliciesToAlter: ReadonlyArray<{ table: string; dropAfter: string }>
   readonly caggRefreshPoliciesToAlter: ReadonlyArray<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }>
   readonly caggMigrations: ReadonlyArray<string>
+  readonly functionsToCreate: ReadonlyArray<FunctionDefinition>
+  readonly functionsToDrop: ReadonlyArray<string>
+  readonly functionsToReplace: ReadonlyArray<FunctionDefinition>
   readonly warnings: ReadonlyArray<{ name: string; message: string }>
 }
 
@@ -635,6 +641,38 @@ export const diffSchema = (
     }
   }
 
+  // Function diffing
+  const fnDefs = definitions.filter((d): d is FunctionDefinition => d._tag === "Function")
+  const snapshotFunctions = snapshot.functions ?? []
+  const snapshotFnMap = new Map(snapshotFunctions.map((f) => [f.name, f]))
+
+  const functionsToCreate: FunctionDefinition[] = []
+  const functionsToDrop: string[] = []
+  const functionsToReplace: FunctionDefinition[] = []
+
+  for (const fnDef of fnDefs) {
+    const existing = snapshotFnMap.get(fnDef.name)
+    if (!existing) {
+      functionsToCreate.push(fnDef)
+    } else {
+      // Compare body hashes
+      const hasher = new Bun.CryptoHasher("sha256")
+      hasher.update(fnDef.bodySource)
+      const currentHash = hasher.digest("hex")
+      if (currentHash !== existing.bodyHash) {
+        functionsToReplace.push(fnDef)
+      }
+    }
+  }
+
+  // Functions in snapshot but not in definitions → drop
+  const definedFnNames = new Set(fnDefs.map((f) => f.name))
+  for (const [name] of snapshotFnMap) {
+    if (!definedFnNames.has(name)) {
+      functionsToDrop.push(name)
+    }
+  }
+
   return {
     tablesToCreate, tablesToDrop, tablesToRename,
     columnsToAdd, columnsToRemove, columnsToAlter, columnsToRename,
@@ -663,6 +701,9 @@ export const diffSchema = (
     retentionPoliciesToAlter,
     caggRefreshPoliciesToAlter,
     caggMigrations,
+    functionsToCreate,
+    functionsToDrop,
+    functionsToReplace,
     warnings: enumReorderWarnings,
   }
 }
@@ -1164,6 +1205,50 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
   for (const con of diff.constraintsToAdd) {
     up.push(`ALTER TABLE ${quoteIdentifier(con.table)} ADD ${generateConstraintSql(con.constraint)};`)
     down.push(`ALTER TABLE ${quoteIdentifier(con.table)} DROP CONSTRAINT ${quoteIdentifier(con.constraint.name)};`)
+  }
+
+  // Function changes (after table creation, before triggers)
+  for (const fnDef of diff.functionsToCreate ?? []) {
+    const qualifiedName =
+      fnDef.schema === "public"
+        ? quoteIdentifier(fnDef.name)
+        : `${quoteIdentifier(fnDef.schema)}.${quoteIdentifier(fnDef.name)}`
+    const paramList = fnDef.params
+      .map((p) => `${p.name} ${sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType)}`)
+      .join(", ")
+    const returnType = sqlTypeToPg(fnDef.returnType)
+    const body = transpile(fnDef.bodySource, [...fnDef.params], fnDef.returnType)
+
+    let sql = `CREATE FUNCTION ${qualifiedName}(${paramList})\nRETURNS ${returnType}\nLANGUAGE plpgsql`
+    if (fnDef.volatility !== "VOLATILE") sql += `\n${fnDef.volatility}`
+    if (fnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`DROP FUNCTION IF EXISTS ${qualifiedName}(${paramList});`)
+  }
+
+  for (const fnDef of diff.functionsToReplace ?? []) {
+    const qualifiedName =
+      fnDef.schema === "public"
+        ? quoteIdentifier(fnDef.name)
+        : `${quoteIdentifier(fnDef.schema)}.${quoteIdentifier(fnDef.name)}`
+    const paramList = fnDef.params
+      .map((p) => `${p.name} ${sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType)}`)
+      .join(", ")
+    const returnType = sqlTypeToPg(fnDef.returnType)
+    const body = transpile(fnDef.bodySource, [...fnDef.params], fnDef.returnType)
+
+    let sql = `CREATE OR REPLACE FUNCTION ${qualifiedName}(${paramList})\nRETURNS ${returnType}\nLANGUAGE plpgsql`
+    if (fnDef.volatility !== "VOLATILE") sql += `\n${fnDef.volatility}`
+    if (fnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`-- Cannot auto-restore previous version of function ${qualifiedName}`)
+  }
+
+  for (const fnName of diff.functionsToDrop ?? []) {
+    up.push(`DROP FUNCTION IF EXISTS ${quoteIdentifier(fnName)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped function ${quoteIdentifier(fnName)}`)
   }
 
   // Trigger changes on existing tables

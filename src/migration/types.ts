@@ -82,6 +82,7 @@ export interface SchemaSnapshot {
   readonly jobs?: ReadonlyArray<JobSnapshot>
   readonly caggPolicies?: ReadonlyArray<CaggPolicySnapshot>
   readonly hypertablePolicies?: ReadonlyArray<HypertablePolicySnapshot>
+  readonly functions?: ReadonlyArray<FunctionSnapshot>
   readonly takenAt: Date
 }
 
@@ -151,4 +152,15 @@ export interface TriggerSnapshot {
   readonly timing: string
   readonly events: ReadonlyArray<string>
   readonly functionName: string
+}
+
+export interface FunctionSnapshot {
+  readonly name: string
+  readonly schema: string
+  readonly params: ReadonlyArray<{ name: string; type: string }>
+  readonly returnType: string
+  readonly language: string
+  readonly volatility: string
+  readonly security: string
+  readonly bodyHash: string
 }
