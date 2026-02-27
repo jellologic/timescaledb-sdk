@@ -27,7 +27,7 @@ type OnConflictConfig = {
 }
 
 export class InsertBuilder<
-  TTable extends TableDefinition | string = string,
+  TTable extends TableDefinition | ViewDefinition<any, any, true> | string = string,
   TResult = Record<string, unknown>
 > {
   private readonly _table: string

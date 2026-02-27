@@ -11,7 +11,7 @@ import { tableRef } from "./_internal.js"
 type ColumnOrExpr = ColumnDef<any, any, any> | Expression<any>
 
 export class DeleteBuilder<
-  TTable extends TableDefinition | string = string,
+  TTable extends TableDefinition | ViewDefinition<any, any, true> | string = string,
   TResult = Record<string, unknown>
 > {
   private readonly _table: string

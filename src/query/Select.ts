@@ -22,8 +22,8 @@ export type FromSource =
   | { kind: "subquery"; sql: string; params: unknown[]; alias: string }
 
 export class SelectBuilder<
-  TTable extends TableDefinition | string = string,
-  TResult = TTable extends TableDefinition ? InferSelect<TTable> : Record<string, unknown>
+  TTable extends TableDefinition | ViewDefinition | MaterializedViewDefinition | string = string,
+  TResult = TTable extends { columns: Record<string, ColumnDef<any>> } ? InferSelect<TTable> : Record<string, unknown>
 > {
   private readonly _table: string
   private _columns: Array<string | Expression<any>> = []
