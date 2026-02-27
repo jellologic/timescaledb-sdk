@@ -20,6 +20,7 @@ export const jobNotifyFunction: TriggerFunctionDefinition = {
   language: "plpgsql",
   bodySource: "(NEW, OLD, TG_OP) => { PERFORM pg_notify(...); RETURN NEW; }",
   bodyFn: () => {},
+  rawBody: "BEGIN\n  PERFORM pg_notify('_tsdb_sdk_job_' || NEW.queue, json_build_object('id', NEW.id, 'status', NEW.status)::text);\n  RETURN NEW;\nEND;",
 }
 
 // ---------------------------------------------------------------------------
@@ -57,7 +58,7 @@ export const jobQueue = pgTable("_tsdb_sdk_job_queue", {
   // Dequeue index: fast candidate selection
   index("_tsdb_sdk_job_queue_dequeue_idx",
     [expr("queue"), asc("priority"), asc("created_at")],
-    { where: `"status" = 'waiting' AND "scheduled_at" <= NOW()` }),
+    { where: `"status" = 'waiting'` }),
 
   // Delayed jobs index
   index("_tsdb_sdk_job_queue_delayed_idx",

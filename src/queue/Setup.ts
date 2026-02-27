@@ -92,13 +92,9 @@ const generateCreateIndex = (tableName: string, idx: IndexDef): string => {
 }
 
 const generateTriggerFunctionSql = (def: TriggerFunctionDefinition): string => {
-  // Raw PL/pgSQL body — the transpiler cannot handle PERFORM pg_notify(...)
-  return `CREATE OR REPLACE FUNCTION ${quoteIdentifier(def.name)}() RETURNS trigger AS $$
-BEGIN
-  PERFORM pg_notify('_tsdb_sdk_job_' || NEW.queue, json_build_object('id', NEW.id, 'status', NEW.status)::text);
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql`
+  // Use rawBody from definition — the transpiler cannot handle PERFORM pg_notify(...)
+  const body = def.rawBody ?? "BEGIN\n  RETURN NEW;\nEND;"
+  return `CREATE OR REPLACE FUNCTION ${quoteIdentifier(def.name)}() RETURNS trigger AS $$\n${body}\n$$ LANGUAGE plpgsql`
 }
 
 const generateDropTrigger = (tableName: string, triggerName: string): string =>

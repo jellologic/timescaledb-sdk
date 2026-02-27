@@ -1255,6 +1255,52 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     down.push(`-- Cannot auto-generate recreation of dropped enum type ${quoteIdentifier(enumName)}`)
   }
 
+  // Trigger functions must be created BEFORE tables that reference them via triggers
+  for (const trigFnDef of diff.triggerFunctionsToCreate ?? []) {
+    const qualifiedName =
+      trigFnDef.schema === "public"
+        ? quoteIdentifier(trigFnDef.name)
+        : `${quoteIdentifier(trigFnDef.schema)}.${quoteIdentifier(trigFnDef.name)}`
+    const triggerParams = [
+      { name: "NEW", sqlType: "RECORD" },
+      { name: "OLD", sqlType: "RECORD" },
+      { name: "TG_OP", sqlType: "TEXT" },
+    ]
+    const body = trigFnDef.rawBody ?? transpile(trigFnDef.bodySource, triggerParams, "TRIGGER")
+
+    let sql = `CREATE FUNCTION ${qualifiedName}()\nRETURNS TRIGGER\nLANGUAGE plpgsql`
+    if (trigFnDef.volatility !== "VOLATILE") sql += `\n${trigFnDef.volatility}`
+    if (trigFnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`DROP FUNCTION IF EXISTS ${qualifiedName}();`)
+  }
+
+  for (const trigFnDef of diff.triggerFunctionsToReplace ?? []) {
+    const qualifiedName =
+      trigFnDef.schema === "public"
+        ? quoteIdentifier(trigFnDef.name)
+        : `${quoteIdentifier(trigFnDef.schema)}.${quoteIdentifier(trigFnDef.name)}`
+    const triggerParams = [
+      { name: "NEW", sqlType: "RECORD" },
+      { name: "OLD", sqlType: "RECORD" },
+      { name: "TG_OP", sqlType: "TEXT" },
+    ]
+    const body = trigFnDef.rawBody ?? transpile(trigFnDef.bodySource, triggerParams, "TRIGGER")
+
+    let sql = `CREATE OR REPLACE FUNCTION ${qualifiedName}()\nRETURNS TRIGGER\nLANGUAGE plpgsql`
+    if (trigFnDef.volatility !== "VOLATILE") sql += `\n${trigFnDef.volatility}`
+    if (trigFnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`-- Cannot auto-restore previous version of trigger function ${qualifiedName}`)
+  }
+
+  for (const trigFnName of diff.triggerFunctionsToDrop ?? []) {
+    up.push(`DROP FUNCTION IF EXISTS ${quoteIdentifier(trigFnName)}();`)
+    down.push(`-- Cannot auto-generate recreation of dropped trigger function ${quoteIdentifier(trigFnName)}`)
+  }
+
   // Table renames BEFORE creates (so new name is available for column ops)
   for (const rename of diff.tablesToRename) {
     up.push(`ALTER TABLE ${quoteIdentifier(rename.oldName)} RENAME TO ${quoteIdentifier(rename.newName)};`)
@@ -1669,52 +1715,6 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
   for (const procName of diff.proceduresToDrop ?? []) {
     up.push(`DROP PROCEDURE IF EXISTS ${quoteIdentifier(procName)};`)
     down.push(`-- Cannot auto-generate recreation of dropped procedure ${quoteIdentifier(procName)}`)
-  }
-
-  // Trigger function changes
-  for (const trigFnDef of diff.triggerFunctionsToCreate ?? []) {
-    const qualifiedName =
-      trigFnDef.schema === "public"
-        ? quoteIdentifier(trigFnDef.name)
-        : `${quoteIdentifier(trigFnDef.schema)}.${quoteIdentifier(trigFnDef.name)}`
-    const triggerParams = [
-      { name: "NEW", sqlType: "RECORD" },
-      { name: "OLD", sqlType: "RECORD" },
-      { name: "TG_OP", sqlType: "TEXT" },
-    ]
-    const body = transpile(trigFnDef.bodySource, triggerParams, "TRIGGER")
-
-    let sql = `CREATE FUNCTION ${qualifiedName}()\nRETURNS TRIGGER\nLANGUAGE plpgsql`
-    if (trigFnDef.volatility !== "VOLATILE") sql += `\n${trigFnDef.volatility}`
-    if (trigFnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
-    sql += `\nAS $$\n${body}\n$$;`
-    up.push(sql)
-    down.push(`DROP FUNCTION IF EXISTS ${qualifiedName}();`)
-  }
-
-  for (const trigFnDef of diff.triggerFunctionsToReplace ?? []) {
-    const qualifiedName =
-      trigFnDef.schema === "public"
-        ? quoteIdentifier(trigFnDef.name)
-        : `${quoteIdentifier(trigFnDef.schema)}.${quoteIdentifier(trigFnDef.name)}`
-    const triggerParams = [
-      { name: "NEW", sqlType: "RECORD" },
-      { name: "OLD", sqlType: "RECORD" },
-      { name: "TG_OP", sqlType: "TEXT" },
-    ]
-    const body = transpile(trigFnDef.bodySource, triggerParams, "TRIGGER")
-
-    let sql = `CREATE OR REPLACE FUNCTION ${qualifiedName}()\nRETURNS TRIGGER\nLANGUAGE plpgsql`
-    if (trigFnDef.volatility !== "VOLATILE") sql += `\n${trigFnDef.volatility}`
-    if (trigFnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
-    sql += `\nAS $$\n${body}\n$$;`
-    up.push(sql)
-    down.push(`-- Cannot auto-restore previous version of trigger function ${qualifiedName}`)
-  }
-
-  for (const trigFnName of diff.triggerFunctionsToDrop ?? []) {
-    up.push(`DROP FUNCTION IF EXISTS ${quoteIdentifier(trigFnName)}();`)
-    down.push(`-- Cannot auto-generate recreation of dropped trigger function ${quoteIdentifier(trigFnName)}`)
   }
 
   // Trigger changes on existing tables

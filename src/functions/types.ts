@@ -37,6 +37,7 @@ export interface TriggerFunctionDefinition {
   readonly language: FunctionLanguage
   readonly bodySource: string
   readonly bodyFn: (...args: any[]) => any
+  readonly rawBody?: string
 }
 
 export interface ProcedureDefinition {
