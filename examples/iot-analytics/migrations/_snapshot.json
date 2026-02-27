@@ -1,0 +1,243 @@
+{
+  "version": 1,
+  "definitions": {
+    "tables": [
+      {
+        "name": "devices",
+        "schema": "public",
+        "columns": [
+          {
+            "name": "id",
+            "dataType": "serial",
+            "isNullable": false,
+            "defaultValue": null
+          },
+          {
+            "name": "device_id",
+            "dataType": "varchar(128)",
+            "isNullable": false,
+            "defaultValue": null
+          },
+          {
+            "name": "name",
+            "dataType": "text",
+            "isNullable": false,
+            "defaultValue": null
+          },
+          {
+            "name": "location",
+            "dataType": "text",
+            "isNullable": true,
+            "defaultValue": null
+          },
+          {
+            "name": "status",
+            "dataType": "device_status",
+            "isNullable": true,
+            "defaultValue": null
+          },
+          {
+            "name": "metadata",
+            "dataType": "jsonb",
+            "isNullable": true,
+            "defaultValue": null
+          },
+          {
+            "name": "created_at",
+            "dataType": "timestamptz",
+            "isNullable": false,
+            "defaultValue": "now()"
+          }
+        ],
+        "indexes": [
+          {
+            "name": "uq_devices_device_id",
+            "columns": [
+              "device_id"
+            ],
+            "isUnique": true,
+            "type": "btree"
+          }
+        ],
+        "constraints": [],
+        "triggers": []
+      },
+      {
+        "name": "sensor_readings",
+        "schema": "public",
+        "columns": [
+          {
+            "name": "time",
+            "dataType": "timestamptz",
+            "isNullable": false,
+            "defaultValue": null
+          },
+          {
+            "name": "device_id",
+            "dataType": "varchar(128)",
+            "isNullable": false,
+            "defaultValue": null
+          },
+          {
+            "name": "temperature",
+            "dataType": "double precision",
+            "isNullable": true,
+            "defaultValue": null
+          },
+          {
+            "name": "humidity",
+            "dataType": "double precision",
+            "isNullable": true,
+            "defaultValue": null
+          },
+          {
+            "name": "battery_level",
+            "dataType": "double precision",
+            "isNullable": true,
+            "defaultValue": null
+          }
+        ],
+        "indexes": [
+          {
+            "name": "idx_readings_device_time",
+            "columns": [
+              "device_id",
+              "time"
+            ],
+            "isUnique": false,
+            "type": "btree"
+          }
+        ],
+        "constraints": [
+          {
+            "name": "chk_battery_range",
+            "type": "CHECK",
+            "definition": "",
+            "columns": []
+          }
+        ],
+        "triggers": []
+      },
+      {
+        "name": "alerts",
+        "schema": "public",
+        "columns": [
+          {
+            "name": "id",
+            "dataType": "serial",
+            "isNullable": false,
+            "defaultValue": null
+          },
+          {
+            "name": "device_id",
+            "dataType": "varchar(128)",
+            "isNullable": false,
+            "defaultValue": null
+          },
+          {
+            "name": "severity",
+            "dataType": "text",
+            "isNullable": false,
+            "defaultValue": null
+          },
+          {
+            "name": "message",
+            "dataType": "text",
+            "isNullable": true,
+            "defaultValue": null
+          },
+          {
+            "name": "acknowledged",
+            "dataType": "boolean",
+            "isNullable": false,
+            "defaultValue": "false"
+          },
+          {
+            "name": "created_at",
+            "dataType": "timestamptz",
+            "isNullable": false,
+            "defaultValue": "now()"
+          }
+        ],
+        "indexes": [
+          {
+            "name": "idx_alerts_device_created",
+            "columns": [
+              "device_id",
+              "created_at"
+            ],
+            "isUnique": false,
+            "type": "btree"
+          }
+        ],
+        "constraints": [],
+        "triggers": []
+      }
+    ],
+    "hypertables": [
+      {
+        "name": "sensor_readings",
+        "schema": "public",
+        "timeColumn": "time",
+        "chunkInterval": "7 days",
+        "compressionEnabled": true,
+        "compressionSettings": {
+          "segmentby": [
+            "device_id"
+          ],
+          "orderby": [
+            "time DESC"
+          ]
+        }
+      }
+    ],
+    "continuousAggregates": [
+      {
+        "viewName": "hourly_readings",
+        "viewSchema": "public",
+        "viewDefinition": ""
+      }
+    ],
+    "enums": [
+      {
+        "name": "device_status",
+        "schema": "public",
+        "values": [
+          "online",
+          "offline",
+          "maintenance"
+        ]
+      }
+    ],
+    "rlsPolicies": [],
+    "jobs": [],
+    "caggPolicies": [],
+    "hypertablePolicies": [
+      {
+        "hypertableName": "sensor_readings",
+        "compressionPolicy": {
+          "after": "30 days"
+        }
+      }
+    ],
+    "views": [],
+    "materializedViews": [],
+    "viewDependencies": [],
+    "functions": [],
+    "procedures": [],
+    "triggerFunctions": [],
+    "takenAt": "2026-02-27T14:13:59.818Z"
+  },
+  "enums": [
+    {
+      "name": "device_status",
+      "schema": "public",
+      "values": [
+        "online",
+        "offline",
+        "maintenance"
+      ]
+    }
+  ],
+  "generatedAt": "2026-02-27T14:13:59.818Z"
+}

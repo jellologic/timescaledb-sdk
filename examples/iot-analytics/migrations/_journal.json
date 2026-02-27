@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "index": 1,
+      "name": "0001_iot_analytics_schema",
+      "timestamp": 1772201612770,
+      "checksum": "0684b0b9f67e9253b0f9a29fc381b874d50e277f0b4016235108402b1c1e6e64",
+      "description": "IoT analytics schema"
+    },
+    {
+      "index": 2,
+      "name": "0002_iot_analytics_schema",
+      "timestamp": 1772201639815,
+      "checksum": "8ffaf7bd71f1935884b17d2876b6a8c8f26fde387b777f280bddf347fbeb40bc",
+      "description": "IoT analytics schema"
+    }
+  ]
+}
