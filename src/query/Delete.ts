@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { Expression } from "./Expression.js"
 import type { Statement, SelectionResult } from "./types.js"
 import type { WhereCondition } from "./Where.js"
-import type { TableDefinition, ColumnDef, InferSelect } from "../schema/types.js"
+import type { TableDefinition, ColumnDef, ViewDefinition, InferSelect } from "../schema/types.js"
 import type { CteClause } from "./Cte.js"
 import { TimescaleClient } from "../Client.js"
 import { QueryError } from "../Error.js"
@@ -154,8 +154,9 @@ export class DeleteBuilder<
 }
 
 // Overloaded factory
+export function deleteFrom<T extends ViewDefinition<any, any, true>>(table: T): DeleteBuilder<T>
 export function deleteFrom<T extends TableDefinition>(table: T): DeleteBuilder<T>
 export function deleteFrom(table: string): DeleteBuilder<string>
-export function deleteFrom(table: TableDefinition | string): DeleteBuilder<any, any> {
-  return new DeleteBuilder(table)
+export function deleteFrom(table: TableDefinition | ViewDefinition<any, any, true> | string): DeleteBuilder<any, any> {
+  return new DeleteBuilder(table as any)
 }

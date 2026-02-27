@@ -59,3 +59,8 @@ export class TieringError extends Data.TaggedError("TieringError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
+
+export class ViewError extends Data.TaggedError("ViewError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}

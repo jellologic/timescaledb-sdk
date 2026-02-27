@@ -47,7 +47,7 @@ export const generate = async (options: GenerateOptions): Promise<GenerateResult
 
   // Diff
   const diff = diffSchema(definitions, previousSnapshot)
-  const { up, down } = generateMigrationSql(diff, definitions)
+  const { up, down } = generateMigrationSql(diff, definitions, previousSnapshot)
 
   // No changes
   if (up.length === 0 && down.length === 0) {

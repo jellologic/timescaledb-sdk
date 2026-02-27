@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test"
 import {
   ConnectionError, QueryError, TransactionError, SchemaError,
   ValidationError, MigrationError, HypertableError, CompressionError,
-  ContinuousAggregateError, RetentionError, JobError, TieringError
+  ContinuousAggregateError, RetentionError, JobError, TieringError, ViewError
 } from "../../src/Error.js"
 
 describe("Error types", () => {
@@ -33,12 +33,13 @@ describe("Error types", () => {
       new RetentionError({ message: "t" }),
       new JobError({ message: "t" }),
       new TieringError({ message: "t" }),
+      new ViewError({ message: "t" }),
     ]
 
     const expectedTags = [
       "ConnectionError", "QueryError", "TransactionError", "SchemaError",
       "ValidationError", "MigrationError", "HypertableError", "CompressionError",
-      "ContinuousAggregateError", "RetentionError", "JobError", "TieringError"
+      "ContinuousAggregateError", "RetentionError", "JobError", "TieringError", "ViewError"
     ]
 
     errors.forEach((err, i) => {

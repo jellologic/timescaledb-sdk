@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { MigrationError } from "../Error.js"
-import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency } from "./types.js"
 
 export class SnapshotWarning {
   readonly _tag = "SnapshotWarning"
@@ -477,6 +477,119 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
 
     const hypertablePolicies = [...htPolicyMap.values()]
 
+    // Regular views from information_schema.views
+    const viewRows = yield* client.execute<{
+      table_name: string
+      table_schema: string
+      view_definition: string
+      check_option: string
+      is_updatable: string
+    }>(
+      `SELECT table_name, table_schema, view_definition, check_option, is_updatable
+       FROM information_schema.views
+       WHERE table_schema NOT IN ('pg_catalog', 'information_schema', '_timescaledb_catalog', '_timescaledb_internal', '_timescaledb_config', '_timescaledb_cache')
+       ORDER BY table_schema, table_name`
+    ).pipe(catchWithWarning("views", [] as any[]))
+
+    // Get CAGG view names to exclude them from materialized view results
+    const caggViewNames = new Set(caggRows.map((c: any) => c.view_name))
+
+    const views: ViewSnapshot[] = (viewRows as any[])
+      .filter((v) => !caggViewNames.has(v.table_name))
+      .map((v) => ({
+        name: v.table_name,
+        schema: v.table_schema,
+        viewDefinition: v.view_definition ?? "",
+        checkOption: v.check_option !== "NONE" ? v.check_option?.toLowerCase() : undefined,
+        security: undefined,
+      }))
+
+    // Materialized views from pg_matviews (excluding CAGGs)
+    const matViewRows = yield* client.execute<{
+      matviewname: string
+      schemaname: string
+      definition: string
+      hasindexes: boolean
+      ispopulated: boolean
+    }>(
+      `SELECT matviewname, schemaname, definition, hasindexes, ispopulated
+       FROM pg_matviews
+       WHERE schemaname NOT IN ('pg_catalog', 'information_schema', '_timescaledb_catalog', '_timescaledb_internal', '_timescaledb_config', '_timescaledb_cache')
+       ORDER BY schemaname, matviewname`
+    ).pipe(catchWithWarning("materialized_views", [] as any[]))
+
+    const materializedViews: MaterializedViewSnapshot[] = []
+    for (const mv of matViewRows as any[]) {
+      // Skip CAGGs — they have their own snapshot path
+      if (caggViewNames.has(mv.matviewname)) continue
+
+      // Get indexes for this materialized view
+      const mvIndexes = yield* client.execute<{
+        indexname: string
+        indexdef: string
+        columns: string[] | null
+      }>(
+        `SELECT i.indexname, i.indexdef,
+                array_agg(a.attname ORDER BY x.n) as columns
+         FROM pg_indexes i
+         JOIN pg_class c ON c.relname = i.indexname
+         JOIN pg_index idx ON idx.indexrelid = c.oid
+         CROSS JOIN LATERAL unnest(idx.indkey) WITH ORDINALITY AS x(attnum, n)
+         JOIN pg_attribute a ON a.attrelid = idx.indrelid AND a.attnum = x.attnum
+         WHERE i.tablename = $1 AND i.schemaname = $2
+         GROUP BY i.indexname, i.indexdef`,
+        [mv.matviewname, mv.schemaname]
+      ).pipe(catchWithWarning(`matview_indexes:${mv.schemaname}.${mv.matviewname}`, [] as any[]))
+
+      materializedViews.push({
+        name: mv.matviewname,
+        schema: mv.schemaname,
+        viewDefinition: mv.definition ?? "",
+        indexes: (mvIndexes as any[]).map((i): IndexSnapshot => ({
+          name: i.indexname,
+          columns: i.columns ?? parseIndexColumns(i.indexdef),
+          isUnique: i.indexdef.includes("UNIQUE"),
+          type: i.indexdef.includes("USING btree") ? "btree" :
+                i.indexdef.includes("USING brin") ? "brin" :
+                i.indexdef.includes("USING hash") ? "hash" :
+                i.indexdef.includes("USING gin") ? "gin" :
+                i.indexdef.includes("USING gist") ? "gist" : "btree",
+        })),
+        hasData: mv.ispopulated,
+      })
+    }
+
+    // View dependencies from pg_depend
+    const viewDepRows = yield* client.execute<{
+      view_name: string
+      view_schema: string
+      depends_on: string
+      depends_on_schema: string
+    }>(
+      `SELECT DISTINCT
+        dep_view.relname AS view_name,
+        dep_ns.nspname AS view_schema,
+        src_rel.relname AS depends_on,
+        src_ns.nspname AS depends_on_schema
+      FROM pg_depend d
+      JOIN pg_rewrite r ON r.oid = d.objid
+      JOIN pg_class dep_view ON dep_view.oid = r.ev_class
+      JOIN pg_namespace dep_ns ON dep_ns.oid = dep_view.relnamespace
+      JOIN pg_class src_rel ON src_rel.oid = d.refobjid
+      JOIN pg_namespace src_ns ON src_ns.oid = src_rel.relnamespace
+      WHERE d.classid = 'pg_rewrite'::regclass
+        AND d.deptype = 'n'
+        AND dep_view.relname != src_rel.relname
+        AND dep_ns.nspname NOT IN ('pg_catalog', 'information_schema')`
+    ).pipe(catchWithWarning("view_dependencies", [] as any[]))
+
+    const viewDependencies: ViewDependency[] = (viewDepRows as any[]).map((r) => ({
+      viewName: r.view_name,
+      viewSchema: r.view_schema,
+      dependsOn: r.depends_on,
+      dependsOnSchema: r.depends_on_schema,
+    }))
+
     return {
       tables,
       hypertables,
@@ -486,6 +599,9 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       jobs,
       caggPolicies,
       hypertablePolicies,
+      views,
+      materializedViews,
+      viewDependencies,
       takenAt: new Date(),
     }
   }).pipe(

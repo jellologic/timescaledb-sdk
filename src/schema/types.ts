@@ -280,9 +280,47 @@ export interface JobDefinition {
   readonly fixedSchedule?: boolean
 }
 
+export interface ViewDefinition<
+  TName extends string = string,
+  TColumns extends Record<string, ColumnDef<any>> = Record<string, ColumnDef<any>>,
+  TUpdatable extends boolean = boolean
+> {
+  readonly _tag: "View"
+  readonly name: TName
+  readonly columns: TColumns
+  readonly schema: string
+  readonly sql: string
+  readonly orReplace?: boolean
+  readonly checkOption?: "local" | "cascaded"
+  readonly security?: "definer" | "invoker"
+  readonly renamedFrom?: string
+  readonly cascadeOnDrop?: boolean
+  readonly recursive?: boolean
+  readonly updatable?: TUpdatable
+  readonly columnList?: ReadonlyArray<string>
+}
+
+export interface MaterializedViewDefinition<
+  TName extends string = string,
+  TColumns extends Record<string, ColumnDef<any>> = Record<string, ColumnDef<any>>
+> {
+  readonly _tag: "MaterializedView"
+  readonly name: TName
+  readonly columns: TColumns
+  readonly schema: string
+  readonly sql: string
+  readonly indexes: ReadonlyArray<IndexDef>
+  readonly withNoData?: boolean
+  readonly tablespace?: string
+  readonly storageParameters?: Record<string, string | number | boolean>
+  readonly renamedFrom?: string
+  readonly cascadeOnDrop?: boolean
+  readonly columnList?: ReadonlyArray<string>
+}
+
 export type InferColumnType<C> = C extends ColumnDef<infer T> ? T : never
 
-export type InferInsert<T extends TableDefinition> = {
+export type InferInsert<T extends { columns: Record<string, ColumnDef<any>> }> = {
   [K in keyof T["columns"] as T["columns"][K] extends ColumnDef<any, true, false>
     ? K : never]: InferColumnType<T["columns"][K]>
 } & {
@@ -290,7 +328,7 @@ export type InferInsert<T extends TableDefinition> = {
     ? never : K]?: InferColumnType<T["columns"][K]> | null
 }
 
-export type InferSelect<T extends TableDefinition> = {
+export type InferSelect<T extends { columns: Record<string, ColumnDef<any>> }> = {
   [K in keyof T["columns"]]: T["columns"][K] extends ColumnDef<infer V, true>
     ? V
     : T["columns"][K] extends ColumnDef<infer V> ? V | null : unknown

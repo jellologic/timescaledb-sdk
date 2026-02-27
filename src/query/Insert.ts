@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import type { Statement, SelectionResult } from "./types.js"
-import type { TableDefinition, ColumnDef, InferInsert, InferSelect } from "../schema/types.js"
+import type { TableDefinition, ColumnDef, ViewDefinition, InferInsert, InferSelect } from "../schema/types.js"
 import { Expression } from "./Expression.js"
 import type { WhereCondition } from "./Where.js"
 import type { CteClause } from "./Cte.js"
@@ -295,8 +295,9 @@ export class InsertBuilder<
 }
 
 // Overloaded factory
+export function insert<T extends ViewDefinition<any, any, true>>(table: T): InsertBuilder<T>
 export function insert<T extends TableDefinition>(table: T): InsertBuilder<T>
 export function insert(table: string): InsertBuilder<string>
-export function insert(table: TableDefinition | string): InsertBuilder<any, any> {
-  return new InsertBuilder(table)
+export function insert(table: TableDefinition | ViewDefinition<any, any, true> | string): InsertBuilder<any, any> {
+  return new InsertBuilder(table as any)
 }

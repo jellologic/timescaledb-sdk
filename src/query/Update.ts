@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { Expression } from "./Expression.js"
 import type { Statement, SelectionResult } from "./types.js"
 import type { WhereCondition } from "./Where.js"
-import type { TableDefinition, ColumnDef, InferSelect, InferColumnType } from "../schema/types.js"
+import type { TableDefinition, ColumnDef, ViewDefinition, InferSelect, InferColumnType } from "../schema/types.js"
 import type { CteClause } from "./Cte.js"
 import { TimescaleClient } from "../Client.js"
 import { QueryError } from "../Error.js"
@@ -178,8 +178,9 @@ export class UpdateBuilder<
 }
 
 // Overloaded factory
+export function update<T extends ViewDefinition<any, any, true>>(table: T): UpdateBuilder<T>
 export function update<T extends TableDefinition>(table: T): UpdateBuilder<T>
 export function update(table: string): UpdateBuilder<string>
-export function update(table: TableDefinition | string): UpdateBuilder<any, any> {
-  return new UpdateBuilder(table)
+export function update(table: TableDefinition | ViewDefinition<any, any, true> | string): UpdateBuilder<any, any> {
+  return new UpdateBuilder(table as any)
 }

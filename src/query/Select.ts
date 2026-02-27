@@ -4,7 +4,7 @@ import type { OrderByClause } from "./OrderBy.js"
 import type { JoinClause } from "./Join.js"
 import type { WhereCondition } from "./Where.js"
 import type { Statement, SelectionResult } from "./types.js"
-import type { TableDefinition, ColumnDef, InferSelect } from "../schema/types.js"
+import type { TableDefinition, ColumnDef, ViewDefinition, MaterializedViewDefinition, InferSelect } from "../schema/types.js"
 import type { CteClause } from "./Cte.js"
 import type { NamedWindowDef } from "./Window.js"
 import { buildNamedWindowSql } from "./Window.js"
@@ -47,7 +47,7 @@ export class SelectBuilder<
 
   private readonly _schema: string | undefined
 
-  constructor(table: TableDefinition | string) {
+  constructor(table: TableDefinition | ViewDefinition | MaterializedViewDefinition | string) {
     this._table = typeof table === "string" ? table : table.name
     this._schema = typeof table === "string" ? undefined : (table.schema !== "public" ? table.schema : undefined)
     this._fromSource = { kind: "table", name: this._table }
@@ -460,9 +460,11 @@ export class SelectBuilder<
 }
 
 // Overloaded factory function
+export function select<T extends ViewDefinition>(table: T): SelectBuilder<T, InferSelect<T>>
+export function select<T extends MaterializedViewDefinition>(table: T): SelectBuilder<T, InferSelect<T>>
 export function select<T extends TableDefinition>(table: T): SelectBuilder<T, InferSelect<T>>
 export function select(table: string): SelectBuilder<string, Record<string, unknown>>
-export function select(table: TableDefinition | string): SelectBuilder<any, any> {
+export function select(table: TableDefinition | ViewDefinition | MaterializedViewDefinition | string): SelectBuilder<any, any> {
   return new SelectBuilder(table)
 }
 
