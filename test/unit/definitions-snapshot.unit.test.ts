@@ -284,4 +284,49 @@ describe("definitionsToSnapshot — new snapshot fields (Batch 4F)", () => {
     expect(diff.jobsToCreate.length).toBe(0)
     expect(diff.jobsToDelete.length).toBe(0)
   })
+
+  test("snapshots tiering policy from definition", () => {
+    const ht = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      tiering: { tierAfter: "90 days" },
+    })
+
+    const snapshot = definitionsToSnapshot([ht])
+    expect(snapshot.hypertablePolicies!.length).toBe(1)
+    expect(snapshot.hypertablePolicies![0]!.tierAfter).toBe("90 days")
+  })
+
+  test("snapshots CAGG compression state from definition", () => {
+    const cagg = continuousAggregateView("hourly_avg", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: ["device_id"],
+      compress: true,
+    })
+
+    const snapshot = definitionsToSnapshot([cagg])
+    expect(snapshot.continuousAggregates.length).toBe(1)
+    expect(snapshot.continuousAggregates[0]!.compressionEnabled).toBe(true)
+    expect(snapshot.caggPolicies!.length).toBe(1)
+    expect(snapshot.caggPolicies![0]!.compressionEnabled).toBe(true)
+  })
+
+  test("round-trip with tiering produces empty diff", () => {
+    const ht = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      tiering: { tierAfter: "90 days" },
+    })
+
+    const snapshot = definitionsToSnapshot([ht])
+    const diff = diffSchema([ht], snapshot)
+
+    expect(diff.tieringToAdd.length).toBe(0)
+    expect(diff.tieringToRemove.length).toBe(0)
+  })
 })

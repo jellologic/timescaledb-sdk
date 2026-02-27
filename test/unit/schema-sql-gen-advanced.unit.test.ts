@@ -53,6 +53,9 @@ const emptyDiff: SchemaDiff = {
   compressionSettingsToAlter: [],
   tieringToAdd: [],
   tieringToRemove: [],
+  compressionPoliciesToAlter: [],
+  retentionPoliciesToAlter: [],
+  caggRefreshPoliciesToAlter: [],
   caggMigrations: [],
   warnings: [],
 }
@@ -165,7 +168,7 @@ describe("Modern Columnstore Syntax", () => {
     const columnstoreStmt = up.find((s) => s.includes("timescaledb.columnstore"))
     expect(columnstoreStmt).toBeDefined()
     expect(columnstoreStmt).toContain("timescaledb.columnstore_segmentby")
-    const policyStmt = up.find((s) => s.includes("add_compression_policy"))
+    const policyStmt = up.find((s) => s.includes("add_columnstore_policy"))
     expect(policyStmt).toBeDefined()
   })
 

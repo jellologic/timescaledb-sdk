@@ -29,6 +29,13 @@ export class TimeWeightAggExpression extends Expression<unknown> {
   last(): Expression<number> {
     return new Expression<number>(`last_val(${this.sql})`, this.params)
   }
+
+  integral(unit?: string): Expression<number> {
+    const args = unit
+      ? `${this.sql}, '${unit}'`
+      : this.sql
+    return new Expression<number>(`integral(${args})`, this.params)
+  }
 }
 
 export const timeWeight = (

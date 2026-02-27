@@ -63,6 +63,9 @@ export interface SchemaDiff {
   readonly compressionSettingsToAlter: ReadonlyArray<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: string }>
   readonly tieringToAdd: ReadonlyArray<{ table: string; tierAfter: string }>
   readonly tieringToRemove: ReadonlyArray<string>
+  readonly compressionPoliciesToAlter: ReadonlyArray<{ table: string; after: string }>
+  readonly retentionPoliciesToAlter: ReadonlyArray<{ table: string; dropAfter: string }>
+  readonly caggRefreshPoliciesToAlter: ReadonlyArray<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }>
   readonly caggMigrations: ReadonlyArray<string>
   readonly warnings: ReadonlyArray<{ name: string; message: string }>
 }
@@ -453,6 +456,8 @@ export const diffSchema = (
   const compressionSettingsToAlter: Array<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: string }> = []
   const tieringToAdd: Array<{ table: string; tierAfter: string }> = []
   const tieringToRemove: string[] = []
+  const compressionPoliciesToAlter: Array<{ table: string; after: string }> = []
+  const retentionPoliciesToAlter: Array<{ table: string; dropAfter: string }> = []
   const caggMigrations: string[] = []
 
   for (const htDef of htDefs) {
@@ -465,6 +470,8 @@ export const diffSchema = (
       compressionPoliciesToAdd.push({ table: htDef.name, after: config.compression.after })
     } else if (!config.compression?.after && existingPolicy?.compressionPolicy) {
       compressionPoliciesToRemove.push(htDef.name)
+    } else if (config.compression?.after && existingPolicy?.compressionPolicy && config.compression.after !== existingPolicy.compressionPolicy.after) {
+      compressionPoliciesToAlter.push({ table: htDef.name, after: config.compression.after })
     }
 
     // Retention policy
@@ -472,6 +479,8 @@ export const diffSchema = (
       retentionPoliciesToAdd.push({ table: htDef.name, dropAfter: config.retention.dropAfter })
     } else if (!config.retention && existingPolicy?.retentionPolicy) {
       retentionPoliciesToRemove.push(htDef.name)
+    } else if (config.retention && existingPolicy?.retentionPolicy && config.retention.dropAfter !== existingPolicy.retentionPolicy.dropAfter) {
+      retentionPoliciesToAlter.push({ table: htDef.name, dropAfter: config.retention.dropAfter })
     }
 
     // Reorder policy
@@ -533,6 +542,7 @@ export const diffSchema = (
 
   const caggRefreshPoliciesToAdd: Array<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }> = []
   const caggRefreshPoliciesToRemove: string[] = []
+  const caggRefreshPoliciesToAlter: Array<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }> = []
   const caggRetentionPoliciesToAdd: Array<{ viewName: string; dropAfter: string }> = []
   const caggRetentionPoliciesToRemove: string[] = []
   const caggCompressionToEnable: string[] = []
@@ -551,6 +561,13 @@ export const diffSchema = (
       }
     } else if (defPolicies.length === 0 && existingRefresh.length > 0) {
       caggRefreshPoliciesToRemove.push(cagg.viewName)
+    } else if (defPolicies.length === 1 && existingRefresh.length === 1) {
+      // Detect changed intervals on single refresh policy
+      const defP = defPolicies[0]!
+      const exP = existingRefresh[0]!
+      if (defP.startOffset !== exP.startOffset || defP.endOffset !== exP.endOffset || defP.scheduleInterval !== exP.scheduleInterval) {
+        caggRefreshPoliciesToAlter.push({ viewName: cagg.viewName, ...defP })
+      }
     }
 
     // Retention policy
@@ -632,6 +649,9 @@ export const diffSchema = (
     compressionSettingsToAlter,
     tieringToAdd,
     tieringToRemove,
+    compressionPoliciesToAlter,
+    retentionPoliciesToAlter,
+    caggRefreshPoliciesToAlter,
     caggMigrations,
     warnings: enumReorderWarnings,
   }
@@ -946,6 +966,11 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     }
     up.push(`SELECT create_hypertable(${args.join(", ")});`)
 
+    // Integer time column: set_integer_now_func
+    if (config.integerNowFunc) {
+      up.push(`SELECT set_integer_now_func('${tableName}', '${config.integerNowFunc}');`)
+    }
+
     // Space partitioning dimensions
     if (config.partitioning) {
       for (const part of config.partitioning) {
@@ -981,7 +1006,8 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (${compParts.join(", ")});`)
 
       if (compConfig.after) {
-        up.push(`SELECT add_compression_policy('${tableName}', INTERVAL '${compConfig.after}');`)
+        const policyFn = useModern ? "add_columnstore_policy" : "add_compression_policy"
+        up.push(`SELECT ${policyFn}('${tableName}', INTERVAL '${compConfig.after}');`)
       }
     }
 
@@ -1148,9 +1174,11 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
 
     const groupByParts = ["\"bucket\"", ...cagg.groupBy.map(quoteIdentifier)]
 
-    // H3: WITH options — continuous + optional finalize
+    // H3: WITH options — continuous + optional finalize + CAGG options
     const withOpts = ["timescaledb.continuous"]
     if (cagg.finalize === false) withOpts.push("timescaledb.finalize = false")
+    if (cagg.createGroupIndexes === false) withOpts.push("timescaledb.create_group_indexes = false")
+    if (cagg.invalidateUsing === "wal") withOpts.push("timescaledb.invalidate_using = 'wal'")
 
     let sql = `CREATE MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} WITH (${withOpts.join(", ")}) AS\nSELECT ${selectParts.join(",\n  ")}\nFROM ${fromClause}`
     if (cagg.where) sql += `\nWHERE ${cagg.where}`
@@ -1380,6 +1408,29 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     if (parts.length > 0) {
       up.push(`ALTER TABLE ${quoteIdentifier(cs.table)} SET (${parts.join(", ")});`)
     }
+  }
+
+  // Compression policy interval alteration (remove + re-add)
+  for (const p of diff.compressionPoliciesToAlter) {
+    up.push(`SELECT remove_compression_policy('${p.table}');`)
+    up.push(`SELECT add_compression_policy('${p.table}', INTERVAL '${p.after}');`)
+  }
+
+  // Retention policy interval alteration (remove + re-add)
+  for (const p of diff.retentionPoliciesToAlter) {
+    up.push(`SELECT remove_retention_policy('${p.table}');`)
+    up.push(`SELECT add_retention_policy('${p.table}', INTERVAL '${p.dropAfter}');`)
+  }
+
+  // CAGG refresh policy alteration (remove + re-add with if_not_exists)
+  for (const p of diff.caggRefreshPoliciesToAlter) {
+    up.push(`SELECT remove_continuous_aggregate_policy(${quoteString(p.viewName)});`)
+    up.push(
+      `SELECT add_continuous_aggregate_policy(${quoteString(p.viewName)},\n` +
+      `  start_offset => INTERVAL '${p.startOffset}',\n` +
+      `  end_offset => INTERVAL '${p.endOffset}',\n` +
+      `  schedule_interval => INTERVAL '${p.scheduleInterval}');`
+    )
   }
 
   // Data tiering

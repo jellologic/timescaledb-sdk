@@ -28,6 +28,22 @@ export class HeartbeatAggExpression extends Expression<unknown> {
   uptimePct(): Expression<number> {
     return new Expression<number>(`uptime(${this.sql})`, this.params)
   }
+
+  liveRanges(): Expression<unknown> {
+    return new Expression<unknown>(`live_ranges(${this.sql})`, this.params)
+  }
+
+  deadRanges(): Expression<unknown> {
+    return new Expression<unknown>(`dead_ranges(${this.sql})`, this.params)
+  }
+
+  uptime(): Expression<unknown> {
+    return new Expression<unknown>(`uptime(${this.sql})`, this.params)
+  }
+
+  downtime(): Expression<unknown> {
+    return new Expression<unknown>(`downtime(${this.sql})`, this.params)
+  }
 }
 
 export const heartbeatAgg = (

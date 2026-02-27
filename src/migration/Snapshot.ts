@@ -278,15 +278,20 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       }
     })
 
-    // Get continuous aggregates (with materialized_only)
+    // Get continuous aggregates (with materialized_only + compression state)
     const caggRows = yield* client.execute<{
       view_name: string
       view_schema: string
       view_definition: string
       materialized_only: boolean | null
+      compression_enabled: boolean | null
     }>(
-      `SELECT view_name, view_schema, view_definition, materialized_only
-       FROM timescaledb_information.continuous_aggregates`
+      `SELECT ca.view_name, ca.view_schema, ca.view_definition, ca.materialized_only,
+              h.compression_enabled
+       FROM timescaledb_information.continuous_aggregates ca
+       LEFT JOIN timescaledb_information.hypertables h
+         ON h.hypertable_name = ca.materialization_hypertable_name
+         AND h.hypertable_schema = ca.materialization_hypertable_schema`
     ).pipe(catchWithWarning("continuous_aggregates", [] as any))
 
     const continuousAggregates: CaggSnapshot[] = caggRows.map((c: any) => ({
@@ -294,7 +299,7 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       viewSchema: c.view_schema,
       viewDefinition: c.view_definition ?? "",
       materializedOnly: c.materialized_only ?? undefined,
-      compressionEnabled: undefined,
+      compressionEnabled: c.compression_enabled ?? undefined,
     }))
 
     // 2.5 — Enum snapshot from pg_type
@@ -411,11 +416,11 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       const cfg = row.config as any
       ;(entry as any).retentionPolicy = { dropAfter: cfg?.drop_after ?? "" }
     }
-    // Detect CAGG compression from the cagg materialized hypertable
+    // Populate CAGG compression state from the joined hypertable query
     for (const cagg of caggRows as any[]) {
       const name = cagg.view_name
       if (caggPolicyMap.has(name)) {
-        // compressionEnabled already tracked via snapshot
+        ;(caggPolicyMap.get(name) as any).compressionEnabled = cagg.compression_enabled ?? false
       }
     }
     const caggPolicies = [...caggPolicyMap.values()]
@@ -449,6 +454,27 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
         entry.reorderPolicy = { indexName: cfg?.index_name ?? "" }
       }
     }
+
+    // Tiering policies
+    const tieringPolicyRows = yield* client.execute<{
+      hypertable_name: string
+      config: Record<string, unknown> | null
+    }>(
+      `SELECT hypertable_name, config
+       FROM timescaledb_information.jobs
+       WHERE proc_name = 'policy_tiering'`
+    ).pipe(catchWithWarning("tiering_policies", [] as any[]))
+
+    for (const row of tieringPolicyRows as any[]) {
+      const name = row.hypertable_name
+      if (!htPolicyMap.has(name)) {
+        htPolicyMap.set(name, { hypertableName: name })
+      }
+      const entry = htPolicyMap.get(name)! as any
+      const cfg = row.config as any
+      entry.tierAfter = cfg?.tier_after ?? cfg?.move_after ?? ""
+    }
+
     const hypertablePolicies = [...htPolicyMap.values()]
 
     return {

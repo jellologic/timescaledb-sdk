@@ -151,8 +151,6 @@ export interface ChunkOperationConfig {
 export interface TieringConfig {
   /** Move chunks older than this interval to object storage */
   readonly tierAfter: string
-  /** Optionally untier chunks newer than this interval */
-  readonly untierBefore?: string
 }
 
 /** Modern columnstore config (TimescaleDB 2.18+). Alias for compression settings. */
@@ -177,6 +175,8 @@ export interface HypertableConfig {
   readonly tiering?: TieringConfig
   /** Use modern timescaledb.columnstore syntax instead of timescaledb.compress */
   readonly useModernColumnstoreSyntax?: boolean
+  /** For integer-based time columns, set the function that returns "now" */
+  readonly integerNowFunc?: string
 }
 
 export interface HypertableDefinition<
@@ -228,6 +228,10 @@ export interface CaggDefinition {
   readonly retentionPolicy?: { readonly dropAfter: string }
   readonly refreshPolicy?: CaggRefreshPolicy
   readonly refreshPolicies?: ReadonlyArray<CaggRefreshPolicy>
+  /** Create group indexes on the CAGG (default: true) */
+  readonly createGroupIndexes?: boolean
+  /** Use WAL-based invalidation (v2.22+) */
+  readonly invalidateUsing?: "wal"
 }
 
 export type TriggerTiming = "BEFORE" | "AFTER" | "INSTEAD OF"
