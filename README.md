@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6.svg)](https://www.typescriptlang.org/)
 
-`@jellologic/timescaledb-sdk` gives you a fully typed, modular interface for every TimescaleDB feature: hypertables, continuous aggregates, compression, retention policies, 15+ hyperfunctions, background jobs, data tiering, and schema migrations. All operations compose as Effect values with automatic dependency injection, resource safety, and structured error handling.
+`@jellologic/timescaledb-sdk` gives you a fully typed, modular interface for every TimescaleDB feature: hypertables, continuous aggregates, compression, retention policies, 25+ hyperfunctions, background jobs, data tiering, job queues, bulk operations, and schema migrations. All operations compose as Effect values with automatic dependency injection, resource safety, and structured error handling.
 
 ---
 
@@ -46,8 +46,7 @@ Define a hypertable, query it with time_bucket, and execute with Effect:
 import { hypertable, timestamptz, text, doublePrecision, jsonb } from "@jellologic/timescaledb-sdk/schema"
 import { select, gt, desc } from "@jellologic/timescaledb-sdk/query"
 import { timeBucket } from "@jellologic/timescaledb-sdk/hyperfunctions"
-import { enableCompression, addCompressionPolicy } from "@jellologic/timescaledb-sdk/compression"
-import { TimescaleClient, TimescaleConfig } from "@jellologic/timescaledb-sdk"
+import { TimescaleClient, layerFromConfig, layerFromEnv } from "@jellologic/timescaledb-sdk"
 import { Effect } from "effect"
 
 // 1. Define your hypertable schema
@@ -77,13 +76,10 @@ const program = Effect.gen(function* () {
 })
 
 // 4. Provide layers and run
-const configLayer = TimescaleConfig.layerFromEnv
-const clientLayer = TimescaleClient.layerFromConfig
-
 Effect.runPromise(
   program.pipe(
-    Effect.provide(clientLayer),
-    Effect.provide(configLayer),
+    Effect.provide(layerFromConfig),
+    Effect.provide(layerFromEnv),
   )
 )
 ```
@@ -228,18 +224,21 @@ timeBucket("1 hour", "time", { timezone: "America/New_York" })
 
 | Category | Functions |
 |---|---|
-| Time Bucketing | `timeBucket`, `timeBucketGapfill` |
+| Time Bucketing | `timeBucket`, `timeBucketGapfill`, `timeBucketRange` |
 | Gap Filling | `locf`, `interpolate` |
 | Ordered Accessors | `first`, `last` |
-| Percentile Estimation | `percentileAgg`, `approxPercentile`, `uddsketch`, `tdigest` |
+| Percentile Estimation | `percentileAgg`, `approxPercentile`, `approxPercentileRank`, `uddsketch`, `tdigest` |
 | Counter Analytics | `counterAgg` |
-| Statistical Aggregates | `statsAgg` |
+| Statistical Aggregates | `statsAgg`, `statsAgg2D` |
 | Financial Aggregates | `candlestickAgg` |
 | Gauge Metrics | `gaugeAgg` |
-| State Tracking | `stateAgg` |
+| Heartbeat Monitoring | `heartbeatAgg` |
+| State Tracking | `stateAgg`, `compactStateAgg`, `timelineAgg` |
 | Time-Weighted Stats | `timeWeight` |
+| Frequency Analysis | `freqAgg` |
 | Cardinality | `approxCountDistinct`, `hyperloglog` |
 | Distribution | `histogram` |
+| Downsampling | `lttb` |
 | Two-Step Aggregation | `rollup` |
 
 ---
@@ -451,7 +450,7 @@ const call = calculateDiscount.call(99.99, 150)
 | `@jellologic/timescaledb-sdk/cagg` | Continuous aggregate creation, refresh, and lifecycle management |
 | `@jellologic/timescaledb-sdk/compression` | Compression policies, chunk compression, segment-by/order-by config |
 | `@jellologic/timescaledb-sdk/retention` | Retention policies and manual chunk dropping |
-| `@jellologic/timescaledb-sdk/hyperfunctions` | 15+ time-series functions: time_bucket, gapfill, percentile, stats, and more |
+| `@jellologic/timescaledb-sdk/hyperfunctions` | 25+ time-series functions: time_bucket, gapfill, percentile, stats, and more |
 | `@jellologic/timescaledb-sdk/jobs` | Background job scheduling, alteration, and management |
 | `@jellologic/timescaledb-sdk/tiering` | Data tiering across tablespaces with automated policies |
 | `@jellologic/timescaledb-sdk/migration` | Schema diffing, migration generation, execution, and rollback |
