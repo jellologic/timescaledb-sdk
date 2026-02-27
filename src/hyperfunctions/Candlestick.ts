@@ -57,6 +57,18 @@ export class CandlestickAggExpression extends Expression<unknown> {
   closeTime(): Expression<Date> {
     return new Expression<Date>(`close_time(${this.sql})`, this.params)
   }
+
+  rollup(): CandlestickAggExpression {
+    return CandlestickAggExpression._fromSql(`rollup(${this.sql})`, this.params)
+  }
+
+  /** @internal */
+  static _fromSql(sql: string, params: ReadonlyArray<unknown>): CandlestickAggExpression {
+    const expr = Object.create(CandlestickAggExpression.prototype) as CandlestickAggExpression
+    Object.defineProperty(expr, "sql", { value: sql, writable: false })
+    Object.defineProperty(expr, "params", { value: params, writable: false })
+    return expr
+  }
 }
 
 export const candlestickAgg = (

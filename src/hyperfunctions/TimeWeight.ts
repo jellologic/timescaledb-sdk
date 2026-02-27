@@ -13,8 +13,6 @@ export class TimeWeightAggExpression extends Expression<unknown> {
     val: ColumnDef<number> | Expression<number> | string,
     method?: "linear" | "LOCF"
   ) {
-    const args = [colRef(ts), colRef(val)]
-    if (method) args.push(`'${method}'`)
     super(`time_weight('${method ?? "linear"}', ${colRef(ts)}, ${colRef(val)})`)
   }
 
@@ -35,6 +33,18 @@ export class TimeWeightAggExpression extends Expression<unknown> {
       ? `${this.sql}, '${unit}'`
       : this.sql
     return new Expression<number>(`integral(${args})`, this.params)
+  }
+
+  rollup(): TimeWeightAggExpression {
+    return TimeWeightAggExpression._fromSql(`rollup(${this.sql})`, this.params)
+  }
+
+  /** @internal */
+  static _fromSql(sql: string, params: ReadonlyArray<unknown>): TimeWeightAggExpression {
+    const expr = Object.create(TimeWeightAggExpression.prototype) as TimeWeightAggExpression
+    Object.defineProperty(expr, "sql", { value: sql, writable: false })
+    Object.defineProperty(expr, "params", { value: params, writable: false })
+    return expr
   }
 }
 

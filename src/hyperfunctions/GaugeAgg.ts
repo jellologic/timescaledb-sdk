@@ -30,6 +30,49 @@ export class GaugeAggExpression extends Expression<unknown> {
   irate(): Expression<number> {
     return new Expression<number>(`irate_left(${this.sql})`, this.params)
   }
+
+  slope(): Expression<number> {
+    return new Expression<number>(`slope(${this.sql})`, this.params)
+  }
+
+  intercept(): Expression<number> {
+    return new Expression<number>(`intercept(${this.sql})`, this.params)
+  }
+
+  corr(): Expression<number> {
+    return new Expression<number>(`corr(${this.sql})`, this.params)
+  }
+
+  numChanges(): Expression<number> {
+    return new Expression<number>(`num_changes(${this.sql})`, this.params)
+  }
+
+  numElements(): Expression<number> {
+    return new Expression<number>(`num_elements(${this.sql})`, this.params)
+  }
+
+  numResets(): Expression<number> {
+    return new Expression<number>(`num_resets(${this.sql})`, this.params)
+  }
+
+  rolling(): GaugeAggExpression {
+    return GaugeAggExpression._fromSql(`rolling(${this.sql})`, this.params)
+  }
+
+  withBounds(start: string, end: string): GaugeAggExpression {
+    return GaugeAggExpression._fromSql(
+      `with_bounds(${this.sql}, tstzrange('${start}'::timestamptz, '${end}'::timestamptz))`,
+      this.params,
+    )
+  }
+
+  /** @internal */
+  static _fromSql(sql: string, params: ReadonlyArray<unknown>): GaugeAggExpression {
+    const expr = Object.create(GaugeAggExpression.prototype) as GaugeAggExpression
+    Object.defineProperty(expr, "sql", { value: sql, writable: false })
+    Object.defineProperty(expr, "params", { value: params, writable: false })
+    return expr
+  }
 }
 
 export const gaugeAgg = (
