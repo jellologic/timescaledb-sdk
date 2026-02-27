@@ -156,6 +156,24 @@ export function sqlTypeToPg(sqlType: string): string {
   return trimmed.toUpperCase()
 }
 
+// ─── PG built-in variables ──────────────────────────────────────────
+
+/** PL/pgSQL built-in variables that should not be declared. */
+export const PG_BUILTIN_VARIABLES: Record<string, string> = {
+  FOUND: "BOOLEAN",
+  NEW: "RECORD",
+  OLD: "RECORD",
+  TG_NAME: "TEXT",
+  TG_WHEN: "TEXT",
+  TG_LEVEL: "TEXT",
+  TG_OP: "TEXT",
+  TG_RELID: "OID",
+  TG_TABLE_NAME: "TEXT",
+  TG_TABLE_SCHEMA: "TEXT",
+  TG_NARGS: "INTEGER",
+  TG_ARGV: "TEXT[]",
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
 const ARITHMETIC_OPS = new Set(["+", "-", "*", "/", "%", "**"])
@@ -297,9 +315,35 @@ function walkStatement(stmt: PgStatement, types: Map<string, string>): void {
       break
     }
 
+    case "SelectInto": {
+      // Variable type depends on the query — default to TEXT
+      if (!types.has(stmt.variable)) {
+        types.set(stmt.variable, "TEXT")
+      }
+      break
+    }
+
+    case "ForQuery": {
+      // Loop variable is a RECORD type
+      types.set(stmt.variable, "RECORD")
+      walkStatements(stmt.body, types)
+      break
+    }
+
+    case "DoWhile": {
+      walkStatements(stmt.body, types)
+      break
+    }
+
     case "Return":
     case "Throw":
     case "ExpressionStatement":
+    case "RaiseNotice":
+    case "Break":
+    case "Continue":
+    case "ExecuteSql":
+    case "ReturnNext":
+    case "ReturnQuery":
       // No variable declarations to register
       break
   }
@@ -325,7 +369,7 @@ function inferExprType(expr: PgExpr, types: Map<string, string>): string {
     }
 
     case "Identifier": {
-      return types.get(expr.name) ?? "TEXT"
+      return types.get(expr.name) ?? PG_BUILTIN_VARIABLES[expr.name] ?? "TEXT"
     }
 
     case "Binary": {
@@ -389,6 +433,17 @@ function inferExprType(expr: PgExpr, types: Map<string, string>): string {
     case "NullishCoalescing": {
       // Type of ?? is type of left operand
       return inferExprType(expr.left, types)
+    }
+
+    case "TypeCast": {
+      return expr.targetType
+    }
+
+    case "ArrayLiteral": {
+      if (expr.elements.length > 0) {
+        return inferExprType(expr.elements[0]!, types) + "[]"
+      }
+      return "TEXT[]"
     }
   }
 }

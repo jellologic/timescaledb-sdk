@@ -1,8 +1,14 @@
 import { test, expect, describe } from "bun:test"
 import { pgFunction, pgTriggerFunction, pgProcedure } from "../../src/functions/index.js"
-import { numeric, integer } from "../../src/schema/Column.js"
+import { numeric, integer, text } from "../../src/schema/Column.js"
 import { trigger } from "../../src/schema/Trigger.js"
 import { backgroundJob } from "../../src/schema/Job.js"
+
+// Declare transpiler-recognized globals for use in function bodies
+declare function sql(query: string, ...args: any[]): any
+declare function returnNext(value?: any): void
+declare function returnQuery(query: string): void
+declare const FOUND: boolean
 
 describe("End-to-end smoke test", () => {
   test("calculateTax: dual execution + SQL generation", () => {
@@ -122,6 +128,216 @@ describe("End-to-end smoke test", () => {
     expect(sql).toContain("FOREACH item IN ARRAY items LOOP")
     expect(sql).toContain("sum := sum + item;")
     expect(sql).toContain("END LOOP;")
+  })
+
+  test("function with compound assignments", () => {
+    const accum = pgFunction({
+      name: "accumulate",
+      params: { items: integer("items") },
+      returns: integer("result"),
+      body: (items: number[]): number => {
+        let sum = 0
+        let count = 0
+        for (const item of items) {
+          sum += item
+          count += 1
+        }
+        return sum
+      },
+    })
+
+    const sql = accum.toSql()
+    expect(sql).toContain("sum := sum + item;")
+    expect(sql).toContain("count := count + 1;")
+  })
+
+  test("function with console.log → RAISE NOTICE", () => {
+    const debugFn = pgFunction({
+      name: "debug_fn",
+      params: { x: integer("x") },
+      returns: integer("result"),
+      body: (x: number): number => {
+        console.log("entering function")
+        if (x < 0) {
+          console.warn("negative input")
+        }
+        return x
+      },
+    })
+
+    const sql = debugFn.toSql()
+    expect(sql).toContain("RAISE NOTICE '%', 'entering function';")
+    expect(sql).toContain("RAISE WARNING '%', 'negative input';")
+  })
+
+  test("trigger function with NEW.field assignment", () => {
+    const trigFn = pgTriggerFunction({
+      name: "set_timestamp",
+      body: (NEW: any) => {
+        NEW.updated_at = "now()"
+        return NEW
+      },
+    })
+
+    const sql = trigFn.toSql()
+    expect(sql).toContain("NEW.updated_at := 'now()';")
+    expect(sql).not.toContain("(NEW).updated_at")
+  })
+
+  test("function with break in while loop", () => {
+    const findFirst = pgFunction({
+      name: "find_first_positive",
+      params: { items: integer("items") },
+      returns: integer("result"),
+      body: (items: number[]): number => {
+        let result = 0
+        for (const item of items) {
+          if (item > 0) {
+            result = item
+            break
+          }
+        }
+        return result
+      },
+    })
+
+    const sql = findFirst.toSql()
+    expect(sql).toContain("EXIT;")
+  })
+
+  test("function with i++ statement", () => {
+    const counterFn = pgFunction({
+      name: "count_positive",
+      params: { items: integer("items") },
+      returns: integer("result"),
+      body: (items: number[]): number => {
+        let count = 0
+        for (const item of items) {
+          if (item > 0) {
+            count++
+          }
+        }
+        return count
+      },
+    })
+
+    const sql = counterFn.toSql()
+    expect(sql).toContain("count := count + 1;")
+  })
+
+  test("function with sql() passthrough", () => {
+    const cleanupFn = pgFunction({
+      name: "cleanup_data",
+      params: { days: integer("days") },
+      returns: integer("result"),
+      body: (days: number): number => {
+        sql("DELETE FROM old_data WHERE created_at < now() - interval '1 day' * $1")
+        return 0
+      },
+    })
+
+    const result = cleanupFn.toSql()
+    expect(result).toContain("EXECUTE")
+  })
+
+  test("function with array constructor", () => {
+    const arrayFn = pgFunction({
+      name: "make_array",
+      params: { x: integer("x") },
+      returns: integer("result"),
+      body: (x: number): number[] => {
+        return [1, 2, 3]
+      },
+    })
+
+    const sql = arrayFn.toSql()
+    expect(sql).toContain("ARRAY[1, 2, 3]")
+  })
+
+  // ─── Task A: LANGUAGE sql passthrough ───────────────────────────
+  test("LANGUAGE sql function with string body", () => {
+    const countUsers = pgFunction({
+      name: "count_users",
+      params: {},
+      returns: integer("count"),
+      language: "sql",
+      body: "SELECT count(*) FROM users",
+    })
+
+    const sql = countUsers.toSql()
+    expect(sql).toContain('CREATE FUNCTION "count_users"()')
+    expect(sql).toContain("RETURNS INTEGER")
+    expect(sql).toContain("LANGUAGE sql")
+    expect(sql).toContain("SELECT count(*) FROM users")
+    // Should NOT contain DECLARE/BEGIN/END
+    expect(sql).not.toContain("DECLARE")
+    expect(sql).not.toContain("BEGIN")
+    expect(sql).not.toContain("END;")
+  })
+
+  // ─── Task B: RETURNS SETOF ───────────────────────────────────
+  test("function with RETURNS SETOF", () => {
+    const fn = pgFunction({
+      name: "get_user_ids",
+      params: {},
+      returnsSetOf: integer("id"),
+      language: "sql",
+      body: "SELECT id FROM users",
+    })
+
+    const sql = fn.toSql()
+    expect(sql).toContain("RETURNS SETOF INTEGER")
+  })
+
+  // ─── Task B: RETURNS TABLE ──────────────────────────────────
+  test("function with RETURNS TABLE", () => {
+    const fn = pgFunction({
+      name: "get_users",
+      params: {},
+      returnsTable: { id: integer("id"), name: text("name") },
+      language: "sql",
+      body: "SELECT id, name FROM users",
+    })
+
+    const sql = fn.toSql()
+    expect(sql).toContain("RETURNS TABLE(id INTEGER, name TEXT)")
+  })
+
+  // ─── Task K: FOUND variable ────────────────────────────────
+  test("function using FOUND variable", () => {
+    const fn = pgFunction({
+      name: "check_exists",
+      params: { user_id: integer("user_id") },
+      returns: integer("result"),
+      body: (user_id: number): number => {
+        sql("SELECT 1 FROM users WHERE id = $1")
+        if (FOUND) {
+          return 1
+        }
+        return 0
+      },
+    })
+
+    const result = fn.toSql()
+    expect(result).toContain("IF FOUND THEN")
+    // FOUND should NOT appear in DECLARE block
+    expect(result).not.toMatch(/DECLARE[\s\S]*FOUND/)
+  })
+
+  // ─── Task M: RAISE with multiple args ──────────────────────
+  test("function with multi-arg console.log", () => {
+    const fn = pgFunction({
+      name: "debug_fn",
+      params: { name: text("name"), id: integer("id") },
+      returns: integer("result"),
+      body: (name: string, id: number): number => {
+        console.log("Processing user", name, "with id", id)
+        return id
+      },
+    })
+
+    const result = fn.toSql()
+    expect(result).toContain("RAISE NOTICE 'Processing user % with id %', name, id;")
   })
 
   test("function with error handling", () => {

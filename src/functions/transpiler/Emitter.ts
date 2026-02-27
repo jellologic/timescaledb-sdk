@@ -1,9 +1,11 @@
 import type { ParamDef } from "../types.js"
 import type {
   PgFunctionBody,
+  PgForRange,
   PgStatement,
   PgExpr,
 } from "./Parser.js"
+import { PG_BUILTIN_VARIABLES } from "./TypeResolver.js"
 
 // ─── Variable Collection ─────────────────────────────────────────────
 
@@ -27,22 +29,24 @@ function collectFromStatement(
   paramNames: Set<string>,
   vars: Set<string>,
 ): void {
+  const isSkipped = (name: string) => paramNames.has(name) || name in PG_BUILTIN_VARIABLES
+
   switch (stmt.kind) {
     case "VariableDeclaration":
-      if (!paramNames.has(stmt.name)) {
+      if (!isSkipped(stmt.name)) {
         vars.add(stmt.name)
       }
       break
 
     case "ForOf":
-      if (!paramNames.has(stmt.variable)) {
+      if (!isSkipped(stmt.variable)) {
         vars.add(stmt.variable)
       }
       collectFromStatements(stmt.body, paramNames, vars)
       break
 
     case "ForRange":
-      if (!paramNames.has(stmt.variable)) {
+      if (!isSkipped(stmt.variable)) {
         vars.add(stmt.variable)
       }
       collectFromStatements(stmt.body, paramNames, vars)
@@ -50,7 +54,7 @@ function collectFromStatement(
 
     case "DestructureObject":
       for (const prop of stmt.properties) {
-        if (!paramNames.has(prop)) {
+        if (!isSkipped(prop)) {
           vars.add(prop)
         }
       }
@@ -58,7 +62,7 @@ function collectFromStatement(
 
     case "DestructureArray":
       for (const elem of stmt.elements) {
-        if (!paramNames.has(elem)) {
+        if (!isSkipped(elem)) {
           vars.add(elem)
         }
       }
@@ -80,7 +84,7 @@ function collectFromStatement(
 
     case "TryCatch":
       collectFromStatements(stmt.tryBody, paramNames, vars)
-      if (stmt.catchVariable && !paramNames.has(stmt.catchVariable)) {
+      if (stmt.catchVariable && !isSkipped(stmt.catchVariable)) {
         vars.add(stmt.catchVariable)
       }
       collectFromStatements(stmt.catchBody, paramNames, vars)
@@ -92,11 +96,34 @@ function collectFromStatement(
       }
       break
 
+    case "DoWhile":
+      collectFromStatements(stmt.body, paramNames, vars)
+      break
+
+    case "ForQuery":
+      if (!isSkipped(stmt.variable)) {
+        vars.add(stmt.variable)
+      }
+      collectFromStatements(stmt.body, paramNames, vars)
+      break
+
+    case "SelectInto":
+      if (!isSkipped(stmt.variable)) {
+        vars.add(stmt.variable)
+      }
+      break
+
     // No variables declared in these:
     case "Return":
     case "Assignment":
     case "Throw":
     case "ExpressionStatement":
+    case "RaiseNotice":
+    case "Break":
+    case "Continue":
+    case "ExecuteSql":
+    case "ReturnNext":
+    case "ReturnQuery":
       break
   }
 }
@@ -131,6 +158,9 @@ function emitExpr(expr: PgExpr): string {
       return `${expr.callee}(${expr.arguments.map(emitExpr).join(", ")})`
 
     case "PropertyAccess":
+      if (expr.object.kind === "Identifier") {
+        return `${expr.object.name}.${expr.property}`
+      }
       return `(${emitExpr(expr.object)}).${expr.property}`
 
     case "ElementAccess":
@@ -144,6 +174,12 @@ function emitExpr(expr: PgExpr): string {
 
     case "NullishCoalescing":
       return `COALESCE(${emitExpr(expr.left)}, ${emitExpr(expr.right)})`
+
+    case "TypeCast":
+      return `${emitExpr(expr.expression)}::${expr.targetType}`
+
+    case "ArrayLiteral":
+      return `ARRAY[${expr.elements.map(emitExpr).join(", ")}]`
   }
 }
 
@@ -197,13 +233,36 @@ function emitBinary(operator: string, left: PgExpr, right: PgExpr): string {
     return `${emitExpr(left)} OR ${emitExpr(right)}`
   }
 
+  // Exponentiation: TS ** → PG ^
+  if (operator === "**") {
+    return `${emitExpr(left)} ^ ${emitExpr(right)}`
+  }
+
+  // Unsupported JS operators
+  if (operator === "in") {
+    throw new Error("Emitter: 'in' operator is not supported in PL/pgSQL")
+  }
+  if (operator === "instanceof") {
+    throw new Error("Emitter: 'instanceof' operator is not supported in PL/pgSQL")
+  }
+
   // All other operators pass through
   return `${emitExpr(left)} ${operator} ${emitExpr(right)}`
 }
 
 function emitUnary(operator: string, operand: PgExpr): string {
   if (operator === "!") {
+    // Handle Bun minification: !0 → TRUE, !1 → FALSE
+    if (operand.kind === "Literal" && operand.rawType === "number") {
+      return operand.value === 0 ? "TRUE" : "FALSE"
+    }
     return `NOT ${emitExpr(operand)}`
+  }
+  // Postfix ++/-- in expression position is not supported
+  if (operator.includes("(postfix)")) {
+    throw new Error(
+      "Emitter: postfix ++/-- in expression position is not supported in PL/pgSQL. Use as a standalone statement instead."
+    )
   }
   return `${operator}${emitExpr(operand)}`
 }
@@ -284,7 +343,43 @@ function emitStatement(stmt: PgStatement, indent: number): string {
       return emitDestructureArray(stmt, indent)
 
     case "ExpressionStatement":
-      return `${p}PERFORM ${emitExpr(stmt.expression)};`
+      if (stmt.expression.kind === "Call") {
+        return `${p}PERFORM ${emitExpr(stmt.expression)};`
+      }
+      return `${p}NULL; -- expression: ${emitExpr(stmt.expression)}`
+
+    case "RaiseNotice":
+      return emitRaise(stmt, p)
+
+    case "Break":
+      return stmt.label ? `${p}EXIT ${stmt.label};` : `${p}EXIT;`
+
+    case "Continue":
+      return stmt.label ? `${p}CONTINUE ${stmt.label};` : `${p}CONTINUE;`
+
+    case "ExecuteSql":
+      if (stmt.using.length > 0) {
+        return `${p}EXECUTE ${emitExpr(stmt.sql)} USING ${stmt.using.map(emitExpr).join(", ")};`
+      }
+      return `${p}EXECUTE ${emitExpr(stmt.sql)};`
+
+    case "SelectInto":
+      return emitSelectInto(stmt, p)
+
+    case "ForQuery":
+      return emitForQuery(stmt, indent)
+
+    case "DoWhile":
+      return emitDoWhile(stmt, indent)
+
+    case "ReturnNext":
+      if (stmt.expression) {
+        return `${p}RETURN NEXT ${emitExpr(stmt.expression)};`
+      }
+      return `${p}RETURN NEXT;`
+
+    case "ReturnQuery":
+      return `${p}RETURN QUERY ${emitExprAsSqlText(stmt.sql)};`
   }
 }
 
@@ -313,11 +408,12 @@ function emitIf(
 }
 
 function emitForOf(
-  stmt: { variable: string; iterable: PgExpr; body: PgStatement[] },
+  stmt: { variable: string; iterable: PgExpr; body: PgStatement[]; label?: string },
   indent: number,
 ): string {
   const p = pad(indent)
   const lines: string[] = []
+  if (stmt.label) lines.push(`${p}<<${stmt.label}>>`)
   lines.push(`${p}FOREACH ${stmt.variable} IN ARRAY ${emitExpr(stmt.iterable)} LOOP`)
   lines.push(emitStatements(stmt.body, indent + 1))
   lines.push(`${p}END LOOP;`)
@@ -325,23 +421,56 @@ function emitForOf(
 }
 
 function emitForRange(
-  stmt: { variable: string; start: PgExpr; end: PgExpr; body: PgStatement[] },
+  stmt: { variable: string; start: PgExpr; end: PgExpr; inclusive: boolean; reverse: boolean; step: PgExpr | undefined; body: PgStatement[]; label?: string },
   indent: number,
 ): string {
   const p = pad(indent)
   const lines: string[] = []
-  lines.push(`${p}FOR ${stmt.variable} IN ${emitExpr(stmt.start)}..${emitExpr(stmt.end)} - 1 LOOP`)
+  if (stmt.label) lines.push(`${p}<<${stmt.label}>>`)
+
+  const startExpr = emitExpr(stmt.start)
+  const endExpr = emitExpr(stmt.end)
+  const reverseKw = stmt.reverse ? "REVERSE " : ""
+
+  // For exclusive bounds (< or >), adjust the end value
+  let rangeEnd: string
+  if (stmt.inclusive) {
+    rangeEnd = endExpr
+  } else if (stmt.reverse) {
+    rangeEnd = `${endExpr} + 1`
+  } else {
+    rangeEnd = `${endExpr} - 1`
+  }
+
+  // In REVERSE, the range is start..end where start > end
+  let rangeStart: string
+  let rangeEndFinal: string
+  if (stmt.reverse) {
+    rangeStart = startExpr
+    rangeEndFinal = rangeEnd
+  } else {
+    rangeStart = startExpr
+    rangeEndFinal = rangeEnd
+  }
+
+  let stepClause = ""
+  if (stmt.step) {
+    stepClause = ` BY ${emitExpr(stmt.step)}`
+  }
+
+  lines.push(`${p}FOR ${stmt.variable} IN ${reverseKw}${rangeStart}..${rangeEndFinal}${stepClause} LOOP`)
   lines.push(emitStatements(stmt.body, indent + 1))
   lines.push(`${p}END LOOP;`)
   return lines.join("\n")
 }
 
 function emitWhile(
-  stmt: { condition: PgExpr; body: PgStatement[] },
+  stmt: { condition: PgExpr; body: PgStatement[]; label?: string },
   indent: number,
 ): string {
   const p = pad(indent)
   const lines: string[] = []
+  if (stmt.label) lines.push(`${p}<<${stmt.label}>>`)
   lines.push(`${p}WHILE ${emitExpr(stmt.condition)} LOOP`)
   lines.push(emitStatements(stmt.body, indent + 1))
   lines.push(`${p}END LOOP;`)
@@ -372,8 +501,8 @@ function emitSwitch(
 
   for (const c of stmt.cases) {
     if (c.value) {
-      // Filter out break/return-only cases to find statements
-      const bodyStmts = c.body.filter(s => s.kind !== "ExpressionStatement" || true)
+      // Filter out break statements (PG CASE doesn't use break)
+      const bodyStmts = c.body.filter(s => s.kind !== "Break")
       lines.push(`${p}  WHEN ${emitExpr(c.value)} THEN`)
       lines.push(emitStatements(bodyStmts, indent + 2))
     } else {
@@ -409,6 +538,91 @@ function emitDestructureArray(
     lines.push(`${p}${stmt.elements[i]} := (${emitExpr(stmt.source)})[${i + 1}];`)
   }
   return lines.join("\n")
+}
+
+function emitSelectInto(
+  stmt: { variable: string; sql: PgExpr },
+  p: string,
+): string {
+  // Use EXECUTE ... INTO to properly assign query results to a variable.
+  // This avoids the complexity of parsing SQL to insert INTO in the correct
+  // position (after SELECT expressions, before FROM).
+  const sqlText = emitExprAsSqlText(stmt.sql)
+  return `${p}EXECUTE '${sqlText.replace(/'/g, "''")}' INTO ${stmt.variable};`
+}
+
+/**
+ * Extract raw SQL text from an expression.
+ * For string literals, strips the wrapping quotes so we get bare SQL.
+ * For template strings, concatenates the parts as bare SQL with expression interpolation.
+ */
+function emitExprAsSqlText(expr: PgExpr): string {
+  if (expr.kind === "Literal" && expr.rawType === "string") {
+    return String(expr.value)
+  }
+  if (expr.kind === "TemplateString") {
+    return expr.parts.map(p => "text" in p ? p.text : emitExpr(p.expr)).join("")
+  }
+  // Fallback: use EXECUTE for dynamic SQL
+  return emitExpr(expr)
+}
+
+function emitForQuery(
+  stmt: { variable: string; query: PgExpr; body: PgStatement[]; label?: string },
+  indent: number,
+): string {
+  const p = pad(indent)
+  const lines: string[] = []
+  if (stmt.label) lines.push(`${p}<<${stmt.label}>>`)
+  const queryText = emitExprAsSqlText(stmt.query)
+  lines.push(`${p}FOR ${stmt.variable} IN ${queryText} LOOP`)
+  lines.push(emitStatements(stmt.body, indent + 1))
+  lines.push(`${p}END LOOP;`)
+  return lines.join("\n")
+}
+
+function emitDoWhile(
+  stmt: { condition: PgExpr; body: PgStatement[]; label?: string },
+  indent: number,
+): string {
+  const p = pad(indent)
+  const lines: string[] = []
+  if (stmt.label) lines.push(`${p}<<${stmt.label}>>`)
+  lines.push(`${p}LOOP`)
+  lines.push(emitStatements(stmt.body, indent + 1))
+  lines.push(`${p}  EXIT WHEN NOT (${emitExpr(stmt.condition)});`)
+  lines.push(`${p}END LOOP;`)
+  return lines.join("\n")
+}
+
+function emitRaise(
+  stmt: { level: "NOTICE" | "WARNING" | "EXCEPTION"; message: PgExpr; args: PgExpr[] },
+  p: string,
+): string {
+  if (stmt.args.length === 0) {
+    return `${p}RAISE ${stmt.level} '%', ${emitExpr(stmt.message)};`
+  }
+  // Multiple args: first is format string prefix, rest are values
+  // console.log("User", name, "created with id", id)
+  // → RAISE NOTICE 'User % created with id %', name, id;
+  const allExprs = [stmt.message, ...stmt.args]
+  const formatParts: string[] = []
+  const argExprs: PgExpr[] = []
+
+  for (const expr of allExprs) {
+    if (expr.kind === "Literal" && expr.rawType === "string") {
+      formatParts.push(String(expr.value).replace(/'/g, "''"))
+    } else {
+      formatParts.push("%")
+      argExprs.push(expr)
+    }
+  }
+
+  const formatStr = formatParts.join(" ")
+  if (argExprs.length === 0) {
+    return `${p}RAISE ${stmt.level} '${formatStr}';`
+  }
+  return `${p}RAISE ${stmt.level} '${formatStr}', ${argExprs.map(emitExpr).join(", ")};`
 }
 
 // ─── Top-Level Emitter ───────────────────────────────────────────────

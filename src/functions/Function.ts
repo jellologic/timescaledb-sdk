@@ -7,6 +7,7 @@ import type {
   FunctionVolatility,
   FunctionSecurity,
   FunctionDeployMode,
+  FunctionLanguage,
   ParamDef,
 } from "./types.js"
 
@@ -16,11 +17,14 @@ export interface PgFunctionConfig<
   readonly name: string
   readonly schema?: string
   readonly params: TParams
-  readonly returns: ColumnBuilder<any>
+  readonly returns?: ColumnBuilder<any>
+  readonly returnsSetOf?: ColumnBuilder<any>
+  readonly returnsTable?: Record<string, ColumnBuilder<any>>
   readonly volatility?: FunctionVolatility
   readonly security?: FunctionSecurity
   readonly deployMode?: FunctionDeployMode
-  readonly body: (...args: any[]) => any
+  readonly language?: FunctionLanguage
+  readonly body: ((...args: any[]) => any) | string
 }
 
 export interface PgFunctionInstance {
@@ -28,6 +32,13 @@ export interface PgFunctionInstance {
   call(...args: any[]): any
   toSql(): string
   toCreateOrReplace(): string
+}
+
+function toSqlLiteral(value: string | number | boolean | null): string {
+  if (value === null) return "NULL"
+  if (typeof value === "string") return `'${value.replace(/'/g, "''")}'`
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE"
+  return String(value)
 }
 
 function generateFunctionSql(def: FunctionDefinition, orReplace: boolean): string {
@@ -41,17 +52,30 @@ function generateFunctionSql(def: FunctionDefinition, orReplace: boolean): strin
 
   // Parameter list
   const paramList = def.params
-    .map((p) => `${p.name} ${sqlTypeToPg(p.sqlType as string)}`)
+    .map((p) => {
+      const modePrefix = p.mode && p.mode !== "IN" ? `${p.mode} ` : ""
+      let s = `${modePrefix}${p.name} ${sqlTypeToPg(p.sqlType as string)}`
+      if (p.defaultValue !== undefined) {
+        s += ` DEFAULT ${toSqlLiteral(p.defaultValue)}`
+      }
+      return s
+    })
     .join(", ")
 
   const createKeyword = orReplace ? "CREATE OR REPLACE FUNCTION" : "CREATE FUNCTION"
   lines.push(`${createKeyword} ${qualifiedName}(${paramList})`)
 
   // Return type
-  lines.push(`RETURNS ${sqlTypeToPg(def.returnType)}`)
+  if (def.returnType.startsWith("SETOF ")) {
+    lines.push(`RETURNS ${def.returnType}`)
+  } else if (def.returnType.startsWith("TABLE(")) {
+    lines.push(`RETURNS ${def.returnType}`)
+  } else {
+    lines.push(`RETURNS ${sqlTypeToPg(def.returnType)}`)
+  }
 
   // Language
-  lines.push("LANGUAGE plpgsql")
+  lines.push(`LANGUAGE ${def.language}`)
 
   // Volatility — only emit if not VOLATILE (the default)
   if (def.volatility !== "VOLATILE") {
@@ -63,12 +87,17 @@ function generateFunctionSql(def: FunctionDefinition, orReplace: boolean): strin
     lines.push("SECURITY DEFINER")
   }
 
-  // Transpile the body
-  const body = transpile(def.bodySource, [...def.params], def.returnType)
-
-  lines.push("AS $$")
-  lines.push(body)
-  lines.push("$$;")
+  // Body — for LANGUAGE sql, emit raw string; for plpgsql, transpile
+  if (def.language === "sql") {
+    lines.push("AS $$")
+    lines.push(def.bodySource)
+    lines.push("$$;")
+  } else {
+    const body = transpile(def.bodySource, [...def.params], def.returnType)
+    lines.push("AS $$")
+    lines.push(body)
+    lines.push("$$;")
+  }
 
   return lines.join("\n")
 }
@@ -81,30 +110,50 @@ export const pgFunction = <
   const params: ParamDef[] = Object.entries(config.params).map(
     ([name, builder]) => {
       const col = builder.build()
-      return { name, sqlType: col.sqlType }
+      const param: ParamDef = { name, sqlType: col.sqlType }
+      if (col.defaultValue !== undefined) {
+        return { ...param, defaultValue: col.defaultValue as string | number | boolean | null }
+      }
+      return param
     }
   )
 
-  const returnCol = config.returns.build()
-  const bodySource = config.body.toString()
+  // Determine return type
+  let returnType: string
+  if (config.returnsTable) {
+    const tableCols = Object.entries(config.returnsTable)
+      .map(([name, builder]) => `${name} ${sqlTypeToPg(builder.build().sqlType)}`)
+      .join(", ")
+    returnType = `TABLE(${tableCols})`
+  } else if (config.returnsSetOf) {
+    returnType = `SETOF ${sqlTypeToPg(config.returnsSetOf.build().sqlType)}`
+  } else if (config.returns) {
+    returnType = config.returns.build().sqlType
+  } else {
+    returnType = "VOID"
+  }
+  const language = config.language ?? "plpgsql"
+  const isStringBody = typeof config.body === "string"
+  const bodySource = isStringBody ? config.body : config.body.toString()
+  const bodyFn = isStringBody ? (() => { throw new Error("Cannot call a SQL-language function in TypeScript") }) : config.body
 
   const definition: FunctionDefinition = {
     _tag: "Function",
     name: config.name,
     schema: config.schema ?? "public",
     params,
-    returnType: returnCol.sqlType,
+    returnType,
     volatility: config.volatility ?? "VOLATILE",
     security: config.security ?? "INVOKER",
     deployMode: config.deployMode ?? "create-or-replace",
-    language: "plpgsql",
+    language,
     bodySource,
-    bodyFn: config.body,
+    bodyFn,
   }
 
   return {
     definition,
-    call: (...args: any[]) => config.body(...args),
+    call: (...args: any[]) => bodyFn(...args),
     toSql: () => generateFunctionSql(definition, false),
     toCreateOrReplace: () => generateFunctionSql(definition, true),
   }

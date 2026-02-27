@@ -127,6 +127,54 @@ function validateStatement(
       validateExpr(stmt.expression)
       break
 
+    case "RaiseNotice":
+      validateExpr(stmt.message)
+      for (const arg of stmt.args) {
+        validateExpr(arg)
+      }
+      break
+
+    case "Break":
+    case "Continue":
+      break
+
+    case "ExecuteSql":
+      validateExpr(stmt.sql)
+      for (const arg of stmt.using) {
+        validateExpr(arg)
+      }
+      break
+
+    case "SelectInto":
+      declaredVariables.push(stmt.variable)
+      validateExpr(stmt.sql)
+      break
+
+    case "ForQuery":
+      declaredVariables.push(stmt.variable)
+      validateExpr(stmt.query)
+      for (const s of stmt.body) {
+        validateStatement(s, declaredVariables)
+      }
+      break
+
+    case "DoWhile":
+      validateExpr(stmt.condition)
+      for (const s of stmt.body) {
+        validateStatement(s, declaredVariables)
+      }
+      break
+
+    case "ReturnNext":
+      if (stmt.expression) {
+        validateExpr(stmt.expression)
+      }
+      break
+
+    case "ReturnQuery":
+      validateExpr(stmt.sql)
+      break
+
     default: {
       const exhaustive: never = stmt
       throw new Error(
@@ -187,6 +235,16 @@ function validateExpr(expr: PgExpr): void {
     case "NullishCoalescing":
       validateExpr(expr.left)
       validateExpr(expr.right)
+      break
+
+    case "TypeCast":
+      validateExpr(expr.expression)
+      break
+
+    case "ArrayLiteral":
+      for (const elem of expr.elements) {
+        validateExpr(elem)
+      }
       break
 
     default: {

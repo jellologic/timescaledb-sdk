@@ -62,6 +62,17 @@ export interface PgNullishCoalescing {
   readonly right: PgExpr
 }
 
+export interface PgTypeCast {
+  readonly kind: "TypeCast"
+  readonly expression: PgExpr
+  readonly targetType: string
+}
+
+export interface PgArrayLiteral {
+  readonly kind: "ArrayLiteral"
+  readonly elements: PgExpr[]
+}
+
 export type PgExpr =
   | PgBinaryExpr
   | PgUnaryExpr
@@ -73,6 +84,8 @@ export type PgExpr =
   | PgConditionalExpr
   | PgTemplateString
   | PgNullishCoalescing
+  | PgTypeCast
+  | PgArrayLiteral
 
 // ─── Statement IR nodes ──────────────────────────────────────────────
 
@@ -112,6 +125,7 @@ export interface PgForOf {
   readonly variable: string
   readonly iterable: PgExpr
   readonly body: PgStatement[]
+  readonly label?: string
 }
 
 export interface PgForRange {
@@ -119,13 +133,18 @@ export interface PgForRange {
   readonly variable: string
   readonly start: PgExpr
   readonly end: PgExpr
+  readonly inclusive: boolean
+  readonly reverse: boolean
+  readonly step: PgExpr | undefined
   readonly body: PgStatement[]
+  readonly label?: string
 }
 
 export interface PgWhile {
   readonly kind: "While"
   readonly condition: PgExpr
   readonly body: PgStatement[]
+  readonly label?: string
 }
 
 export interface PgTryCatch {
@@ -163,6 +182,60 @@ export interface PgExpressionStatement {
   readonly expression: PgExpr
 }
 
+export interface PgRaiseNotice {
+  readonly kind: "RaiseNotice"
+  readonly level: "NOTICE" | "WARNING" | "EXCEPTION"
+  readonly message: PgExpr
+  readonly args: PgExpr[]
+}
+
+export interface PgBreak {
+  readonly kind: "Break"
+  readonly label?: string
+}
+
+export interface PgContinue {
+  readonly kind: "Continue"
+  readonly label?: string
+}
+
+export interface PgExecuteSql {
+  readonly kind: "ExecuteSql"
+  readonly sql: PgExpr
+  readonly using: PgExpr[]
+}
+
+export interface PgSelectInto {
+  readonly kind: "SelectInto"
+  readonly variable: string
+  readonly sql: PgExpr
+}
+
+export interface PgForQuery {
+  readonly kind: "ForQuery"
+  readonly variable: string
+  readonly query: PgExpr
+  readonly body: PgStatement[]
+  readonly label?: string
+}
+
+export interface PgDoWhile {
+  readonly kind: "DoWhile"
+  readonly condition: PgExpr
+  readonly body: PgStatement[]
+  readonly label?: string
+}
+
+export interface PgReturnNext {
+  readonly kind: "ReturnNext"
+  readonly expression: PgExpr | undefined
+}
+
+export interface PgReturnQuery {
+  readonly kind: "ReturnQuery"
+  readonly sql: PgExpr
+}
+
 export type PgStatement =
   | PgReturn
   | PgVariableDeclaration
@@ -171,12 +244,21 @@ export type PgStatement =
   | PgForOf
   | PgForRange
   | PgWhile
+  | PgDoWhile
   | PgTryCatch
   | PgSwitch
   | PgThrow
   | PgDestructureObject
   | PgDestructureArray
   | PgExpressionStatement
+  | PgRaiseNotice
+  | PgBreak
+  | PgContinue
+  | PgExecuteSql
+  | PgSelectInto
+  | PgForQuery
+  | PgReturnNext
+  | PgReturnQuery
 
 // ─── Parser ──────────────────────────────────────────────────────────
 
@@ -246,7 +328,12 @@ function parseStatements(
 ): PgStatement[] {
   const result: PgStatement[] = []
   for (const node of nodes) {
-    result.push(parseStatement(node))
+    // Variable statements may expand to multiple declarations (e.g. `let a = 0, b = 1`)
+    if (ts.isVariableStatement(node)) {
+      result.push(...parseVariableStatements(node))
+    } else {
+      result.push(parseStatement(node))
+    }
   }
   return result
 }
@@ -262,7 +349,8 @@ function parseStatement(node: ts.Statement): PgStatement {
 
   // Variable declaration statement
   if (ts.isVariableStatement(node)) {
-    return parseVariableStatement(node)
+    // Single-declaration fast path (called from parseStatement which expects one)
+    return parseVariableStatements(node)[0]!
   }
 
   // If statement
@@ -295,9 +383,40 @@ function parseStatement(node: ts.Statement): PgStatement {
     return parseSwitchStatement(node)
   }
 
+  // Do...while statement
+  if (ts.isDoStatement(node)) {
+    return {
+      kind: "DoWhile",
+      condition: parseExpression(node.expression),
+      body: parseBlockOrSingle(node.statement),
+    }
+  }
+
   // Throw statement
   if (ts.isThrowStatement(node)) {
     return parseThrowStatement(node)
+  }
+
+  // Break statement
+  if (ts.isBreakStatement(node)) {
+    return { kind: "Break", label: node.label?.text }
+  }
+
+  // Continue statement
+  if (ts.isContinueStatement(node)) {
+    return { kind: "Continue", label: node.label?.text }
+  }
+
+  // Labeled statement — peel the label and attach to inner loops
+  if (ts.isLabeledStatement(node)) {
+    const label = node.label.text
+    const inner = parseStatement(node.statement)
+    // Attach label to loop statements
+    if (inner.kind === "While" || inner.kind === "ForOf" || inner.kind === "ForRange" || inner.kind === "DoWhile" || inner.kind === "ForQuery") {
+      return { ...inner, label } as any
+    }
+    // Non-loop labeled statements — just parse the inner statement
+    return inner
   }
 
   // Expression statement — may be an assignment
@@ -310,33 +429,52 @@ function parseStatement(node: ts.Statement): PgStatement {
   )
 }
 
-function parseVariableStatement(node: ts.VariableStatement): PgStatement {
-  // Handle only single-declaration for now (most common case)
-  const decl = node.declarationList.declarations[0]
-  if (!decl) {
-    throw new Error("Parser: empty variable declaration list")
-  }
-
+function parseVariableStatements(node: ts.VariableStatement): PgStatement[] {
+  const results: PgStatement[] = []
   const mutable =
     (node.declarationList.flags & ts.NodeFlags.Const) === 0
 
-  // Check for destructuring patterns
-  if (ts.isObjectBindingPattern(decl.name)) {
-    return parseObjectDestructuring(decl)
+  for (const decl of node.declarationList.declarations) {
+    // Check for destructuring patterns
+    if (ts.isObjectBindingPattern(decl.name)) {
+      results.push(parseObjectDestructuring(decl))
+      continue
+    }
+
+    if (ts.isArrayBindingPattern(decl.name)) {
+      results.push(parseArrayDestructuring(decl))
+      continue
+    }
+
+    // Check for sql() call → SELECT INTO
+    if (decl.initializer && ts.isCallExpression(decl.initializer)) {
+      const callee = flattenCallee(decl.initializer.expression)
+      if (callee === "sql") {
+        const args = decl.initializer.arguments.map((a) => parseExpression(a))
+        results.push({
+          kind: "SelectInto",
+          variable: decl.name.getText(),
+          sql: args[0] ?? { kind: "Literal", value: "", rawType: "string" },
+        })
+        continue
+      }
+    }
+
+    results.push({
+      kind: "VariableDeclaration",
+      name: decl.name.getText(),
+      mutable,
+      initializer: decl.initializer
+        ? parseExpression(decl.initializer)
+        : undefined,
+    })
   }
 
-  if (ts.isArrayBindingPattern(decl.name)) {
-    return parseArrayDestructuring(decl)
+  if (results.length === 0) {
+    throw new Error("Parser: empty variable declaration list")
   }
 
-  return {
-    kind: "VariableDeclaration",
-    name: decl.name.getText(),
-    mutable,
-    initializer: decl.initializer
-      ? parseExpression(decl.initializer)
-      : undefined,
-  }
+  return results
 }
 
 function parseObjectDestructuring(
@@ -414,13 +552,27 @@ function parseBlockOrSingle(node: ts.Statement): PgStatement[] {
   return [parseStatement(node)]
 }
 
-function parseForOfStatement(node: ts.ForOfStatement): PgForOf {
+function parseForOfStatement(node: ts.ForOfStatement): PgForOf | PgForQuery {
   let variable = "__item"
   const init = node.initializer
   if (ts.isVariableDeclarationList(init)) {
     const decl = init.declarations[0]
     if (decl && ts.isIdentifier(decl.name)) {
       variable = decl.name.text
+    }
+  }
+
+  // Check if iterating over sql() call → FOR rec IN query LOOP
+  if (ts.isCallExpression(node.expression)) {
+    const callee = flattenCallee(node.expression.expression)
+    if (callee === "sql") {
+      const args = node.expression.arguments.map((a) => parseExpression(a))
+      return {
+        kind: "ForQuery",
+        variable,
+        query: args[0] ?? { kind: "Literal", value: "", rawType: "string" },
+        body: parseBlockOrSingle(node.statement),
+      }
     }
   }
 
@@ -449,10 +601,54 @@ function parseForStatement(node: ts.ForStatement): PgForRange {
     }
   }
 
-  // Extract end value from condition's right side
+  // Extract end value and comparison operator from condition
   let end: PgExpr = { kind: "Literal", value: 0, rawType: "number" }
+  let inclusive = false
+  let reverse = false
   if (node.condition && ts.isBinaryExpression(node.condition)) {
+    const opKind = node.condition.operatorToken.kind
     end = parseExpression(node.condition.right)
+    if (opKind === ts.SyntaxKind.LessThanEqualsToken) {
+      inclusive = true
+    } else if (opKind === ts.SyntaxKind.GreaterThanToken) {
+      // i > n → REVERSE, exclusive
+      reverse = true
+    } else if (opKind === ts.SyntaxKind.GreaterThanEqualsToken) {
+      // i >= n → REVERSE, inclusive
+      reverse = true
+      inclusive = true
+    }
+    // LessThanToken: default (exclusive, ascending)
+  }
+
+  // Extract step from incrementor
+  let step: PgExpr | undefined
+  if (node.incrementor) {
+    const inc = node.incrementor
+    // i += N or i -= N
+    if (ts.isBinaryExpression(inc)) {
+      const opKind = inc.operatorToken.kind
+      if (opKind === ts.SyntaxKind.PlusEqualsToken) {
+        const val = inc.right
+        // Only emit step if not 1
+        if (!ts.isNumericLiteral(val) || val.text !== "1") {
+          step = parseExpression(val)
+        }
+      } else if (opKind === ts.SyntaxKind.MinusEqualsToken) {
+        reverse = true
+        const val = inc.right
+        if (!ts.isNumericLiteral(val) || val.text !== "1") {
+          step = parseExpression(val)
+        }
+      }
+    }
+    // i++ or i-- (postfix)
+    if (ts.isPostfixUnaryExpression(inc) || ts.isPrefixUnaryExpression(inc)) {
+      if (inc.operator === ts.SyntaxKind.MinusMinusToken) {
+        reverse = true
+      }
+      // step = 1 is the default, no need to set
+    }
   }
 
   return {
@@ -460,6 +656,9 @@ function parseForStatement(node: ts.ForStatement): PgForRange {
     variable,
     start,
     end,
+    inclusive,
+    reverse,
+    step,
     body: parseBlockOrSingle(node.statement),
   }
 }
@@ -567,9 +766,119 @@ function parseExpressionStatement(
     }
   }
 
+  // Compound assignment operators: +=, -=, *=, /=, %=
+  if (ts.isBinaryExpression(expr)) {
+    const compoundOp = compoundAssignmentOp(expr.operatorToken.kind)
+    if (compoundOp) {
+      const target = parseExpression(expr.left)
+      return {
+        kind: "Assignment",
+        target,
+        value: {
+          kind: "Binary",
+          operator: compoundOp,
+          left: target,
+          right: parseExpression(expr.right),
+        },
+      }
+    }
+  }
+
+  // Postfix/prefix increment/decrement as statement: i++, i--, ++i, --i
+  if (ts.isPostfixUnaryExpression(expr) || ts.isPrefixUnaryExpression(expr)) {
+    const op = expr.operator
+    if (op === ts.SyntaxKind.PlusPlusToken || op === ts.SyntaxKind.MinusMinusToken) {
+      const operand = parseExpression(expr.operand)
+      const delta: PgLiteral = { kind: "Literal", value: 1, rawType: "number" }
+      return {
+        kind: "Assignment",
+        target: operand,
+        value: {
+          kind: "Binary",
+          operator: op === ts.SyntaxKind.PlusPlusToken ? "+" : "-",
+          left: operand,
+          right: delta,
+        },
+      }
+    }
+  }
+
+  // console.log/warn/error → RAISE NOTICE/WARNING/EXCEPTION
+  // sql(...) → EXECUTE (raw SQL passthrough)
+  if (ts.isCallExpression(expr)) {
+    const callee = flattenCallee(expr.expression)
+    const raiseLevel = CONSOLE_TO_RAISE[callee]
+    if (raiseLevel) {
+      const parsedArgs = expr.arguments.map((a) => parseExpression(a))
+      return {
+        kind: "RaiseNotice",
+        level: raiseLevel,
+        message: parsedArgs[0] ?? { kind: "Literal", value: "", rawType: "string" },
+        args: parsedArgs.slice(1),
+      }
+    }
+
+    // returnNext(...) → RETURN NEXT
+    if (callee === "returnNext") {
+      const args = expr.arguments.map((a) => parseExpression(a))
+      return {
+        kind: "ReturnNext",
+        expression: args[0],
+      }
+    }
+
+    // returnQuery("...") → RETURN QUERY ...
+    if (callee === "returnQuery") {
+      const args = expr.arguments.map((a) => parseExpression(a))
+      return {
+        kind: "ReturnQuery",
+        sql: args[0] ?? { kind: "Literal", value: "", rawType: "string" },
+      }
+    }
+
+    // sql("...") or sql(`...`) → EXECUTE
+    if (callee === "sql") {
+      const args = expr.arguments.map((a) => parseExpression(a))
+      return {
+        kind: "ExecuteSql",
+        sql: args[0] ?? { kind: "Literal", value: "", rawType: "string" },
+        using: args.slice(1),
+      }
+    }
+  }
+
   return {
     kind: "ExpressionStatement",
     expression: parseExpression(expr),
+  }
+}
+
+const TS_TO_PG_TYPE: Record<string, string> = {
+  number: "NUMERIC",
+  string: "TEXT",
+  boolean: "BOOLEAN",
+  bigint: "BIGINT",
+  Date: "TIMESTAMPTZ",
+  object: "JSONB",
+  any: "TEXT",
+  unknown: "TEXT",
+  void: "VOID",
+}
+
+const CONSOLE_TO_RAISE: Record<string, "NOTICE" | "WARNING" | "EXCEPTION"> = {
+  "console.log": "NOTICE",
+  "console.warn": "WARNING",
+  "console.error": "EXCEPTION",
+}
+
+function compoundAssignmentOp(kind: ts.SyntaxKind): string | undefined {
+  switch (kind) {
+    case ts.SyntaxKind.PlusEqualsToken: return "+"
+    case ts.SyntaxKind.MinusEqualsToken: return "-"
+    case ts.SyntaxKind.AsteriskEqualsToken: return "*"
+    case ts.SyntaxKind.SlashEqualsToken: return "/"
+    case ts.SyntaxKind.PercentEqualsToken: return "%"
+    default: return undefined
   }
 }
 
@@ -695,9 +1004,31 @@ function parseExpression(node: ts.Expression): PgExpr {
     }
   }
 
-  // As-expression / type assertion — unwrap
+  // Array literal [1, 2, 3] → ARRAY[1, 2, 3]
+  if (ts.isArrayLiteralExpression(node)) {
+    return {
+      kind: "ArrayLiteral",
+      elements: node.elements.map((e) => parseExpression(e)),
+    }
+  }
+
+  // As-expression / type assertion → type cast when target is a PG type
   if (ts.isAsExpression(node)) {
-    return parseExpression(node.expression)
+    const targetType = node.type.getText()
+    const pgType = TS_TO_PG_TYPE[targetType]
+    if (pgType) {
+      return {
+        kind: "TypeCast",
+        expression: parseExpression(node.expression),
+        targetType: pgType,
+      }
+    }
+    // Unknown type — pass through as uppercase (e.g. "jsonb" → "JSONB")
+    return {
+      kind: "TypeCast",
+      expression: parseExpression(node.expression),
+      targetType: targetType.toUpperCase(),
+    }
   }
 
   // Non-null assertion (x!) — unwrap

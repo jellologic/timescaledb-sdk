@@ -62,6 +62,14 @@ const emptyDiff: SchemaDiff = {
   functionsToCreate: [],
   functionsToDrop: [],
   functionsToReplace: [],
+  functionsToRecreate: [],
+  proceduresToCreate: [],
+  proceduresToDrop: [],
+  proceduresToReplace: [],
+  proceduresToRecreate: [],
+  triggerFunctionsToCreate: [],
+  triggerFunctionsToDrop: [],
+  triggerFunctionsToReplace: [],
   warnings: [],
 }
 

@@ -27,6 +27,13 @@ export interface PgProcedureInstance {
   toCreateOrReplace(): string
 }
 
+function toSqlLiteral(value: string | number | boolean | null): string {
+  if (value === null) return "NULL"
+  if (typeof value === "string") return `'${value.replace(/'/g, "''")}'`
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE"
+  return String(value)
+}
+
 function generateProcedureSql(
   def: ProcedureDefinition,
   orReplace: boolean,
@@ -41,7 +48,14 @@ function generateProcedureSql(
 
   // Parameter list
   const paramList = def.params
-    .map((p) => `${p.name} ${sqlTypeToPg(p.sqlType as string)}`)
+    .map((p) => {
+      const modePrefix = p.mode && p.mode !== "IN" ? `${p.mode} ` : ""
+      let s = `${modePrefix}${p.name} ${sqlTypeToPg(p.sqlType as string)}`
+      if (p.defaultValue !== undefined) {
+        s += ` DEFAULT ${toSqlLiteral(p.defaultValue)}`
+      }
+      return s
+    })
     .join(", ")
 
   const createKeyword = orReplace
@@ -79,7 +93,11 @@ export const pgProcedure = <
   const params: ParamDef[] = Object.entries(config.params).map(
     ([name, builder]) => {
       const col = builder.build()
-      return { name, sqlType: col.sqlType }
+      const param: ParamDef = { name, sqlType: col.sqlType }
+      if (col.defaultValue !== undefined) {
+        return { ...param, defaultValue: col.defaultValue as string | number | boolean | null }
+      }
+      return param
     },
   )
 

@@ -1,7 +1,7 @@
 import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, CaggDefinition, ConstraintDef, TriggerDef, JobDefinition } from "../schema/types.js"
-import type { FunctionDefinition } from "../functions/types.js"
+import type { FunctionDefinition, ProcedureDefinition, TriggerFunctionDefinition } from "../functions/types.js"
 import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
-import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, FunctionSnapshot } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, FunctionSnapshot, ProcedureSnapshot, TriggerFunctionSnapshot } from "./types.js"
 import type { SchemaDefinition } from "./Generator.js"
 
 export interface PersistedSnapshot {
@@ -97,6 +97,39 @@ const functionDefToSnapshot = (def: FunctionDefinition): FunctionSnapshot => {
   }
 }
 
+const procedureDefToSnapshot = (def: ProcedureDefinition): ProcedureSnapshot => {
+  const hasher = new Bun.CryptoHasher("sha256")
+  hasher.update(def.bodySource)
+  const bodyHash = hasher.digest("hex")
+
+  return {
+    name: def.name,
+    schema: def.schema,
+    params: def.params.map((p) => ({
+      name: p.name,
+      type: sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType),
+    })),
+    language: def.language,
+    security: def.security,
+    bodyHash,
+  }
+}
+
+const triggerFunctionDefToSnapshot = (def: TriggerFunctionDefinition): TriggerFunctionSnapshot => {
+  const hasher = new Bun.CryptoHasher("sha256")
+  hasher.update(def.bodySource)
+  const bodyHash = hasher.digest("hex")
+
+  return {
+    name: def.name,
+    schema: def.schema,
+    language: def.language,
+    volatility: def.volatility,
+    security: def.security,
+    bodyHash,
+  }
+}
+
 const caggDefToSnapshot = (def: CaggDefinition): CaggSnapshot => ({
   viewName: def.viewName,
   viewSchema: def.schema,
@@ -119,6 +152,12 @@ export const definitionsToSnapshot = (
   )
   const functionDefs = definitions.filter(
     (d): d is FunctionDefinition => d._tag === "Function"
+  )
+  const procedureDefs = definitions.filter(
+    (d): d is ProcedureDefinition => d._tag === "Procedure"
+  )
+  const triggerFunctionDefs = definitions.filter(
+    (d): d is TriggerFunctionDefinition => d._tag === "TriggerFunction"
   )
   const jobDefs = definitions.filter(
     (d): d is JobDefinition => d._tag === "JobDefinition"
@@ -190,6 +229,8 @@ export const definitionsToSnapshot = (
     caggPolicies,
     hypertablePolicies,
     functions: functionDefs.map(functionDefToSnapshot),
+    procedures: procedureDefs.map(procedureDefToSnapshot),
+    triggerFunctions: triggerFunctionDefs.map(triggerFunctionDefToSnapshot),
     takenAt: new Date(),
   }
 }

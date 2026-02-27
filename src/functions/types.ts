@@ -4,10 +4,13 @@ export type FunctionVolatility = "VOLATILE" | "STABLE" | "IMMUTABLE"
 export type FunctionSecurity = "INVOKER" | "DEFINER"
 export type FunctionDeployMode = "create-or-replace" | "migration"
 export type FunctionLanguage = "plpgsql" | "sql"
+export type ParamMode = "IN" | "OUT" | "INOUT" | "VARIADIC"
 
 export interface ParamDef {
   readonly name: string
   readonly sqlType: SQLType | string
+  readonly defaultValue?: string | number | boolean | null
+  readonly mode?: ParamMode
 }
 
 export interface FunctionDefinition {

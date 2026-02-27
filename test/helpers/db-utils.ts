@@ -127,3 +127,25 @@ export const tableRelPersistence = (name: string) =>
     )
     return rows[0]?.relpersistence
   })
+
+export const functionExists = (name: string, schema = "public") =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    const rows = yield* client.execute<{ exists: boolean }>(
+      `SELECT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE p.proname = $1 AND n.nspname = $2) as exists`,
+      [name, schema]
+    )
+    return rows[0]?.exists ?? false
+  })
+
+export const dropFunction = (name: string, schema = "public") =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    yield* client.execute(`DROP FUNCTION IF EXISTS "${schema}"."${name}" CASCADE`)
+  })
+
+export const dropProcedure = (name: string, schema = "public") =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    yield* client.execute(`DROP PROCEDURE IF EXISTS "${schema}"."${name}" CASCADE`)
+  })

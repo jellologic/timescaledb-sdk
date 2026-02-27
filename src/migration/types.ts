@@ -83,6 +83,8 @@ export interface SchemaSnapshot {
   readonly caggPolicies?: ReadonlyArray<CaggPolicySnapshot>
   readonly hypertablePolicies?: ReadonlyArray<HypertablePolicySnapshot>
   readonly functions?: ReadonlyArray<FunctionSnapshot>
+  readonly procedures?: ReadonlyArray<ProcedureSnapshot>
+  readonly triggerFunctions?: ReadonlyArray<TriggerFunctionSnapshot>
   readonly takenAt: Date
 }
 
@@ -159,6 +161,24 @@ export interface FunctionSnapshot {
   readonly schema: string
   readonly params: ReadonlyArray<{ name: string; type: string }>
   readonly returnType: string
+  readonly language: string
+  readonly volatility: string
+  readonly security: string
+  readonly bodyHash: string
+}
+
+export interface ProcedureSnapshot {
+  readonly name: string
+  readonly schema: string
+  readonly params: ReadonlyArray<{ name: string; type: string }>
+  readonly language: string
+  readonly security: string
+  readonly bodyHash: string
+}
+
+export interface TriggerFunctionSnapshot {
+  readonly name: string
+  readonly schema: string
   readonly language: string
   readonly volatility: string
   readonly security: string
