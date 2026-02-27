@@ -5,12 +5,13 @@ export interface CteClause {
   readonly sql: string
   readonly params: ReadonlyArray<unknown>
   readonly materialized?: boolean
+  readonly recursive?: boolean
 }
 
 export const cte = (
   name: string,
   query: { toSql(): Statement },
-  options?: { materialized?: boolean }
+  options?: { materialized?: boolean; recursive?: boolean }
 ): CteClause => {
   const stmt = query.toSql()
   return {
@@ -18,5 +19,6 @@ export const cte = (
     sql: stmt.sql,
     params: stmt.params,
     materialized: options?.materialized,
+    recursive: options?.recursive,
   }
 }

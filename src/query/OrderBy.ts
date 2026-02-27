@@ -31,3 +31,13 @@ export const descNullsLast = (col: ColumnDef<any> | Expression<any> | string): O
   sql: `${colRef(col)} DESC NULLS LAST`,
   params: col instanceof Expression ? [...col.params] : [],
 })
+
+export const ascNullsLast = (col: ColumnDef<any> | Expression<any> | string): OrderByClause => ({
+  sql: `${colRef(col)} ASC NULLS LAST`,
+  params: col instanceof Expression ? [...col.params] : [],
+})
+
+export const descNullsFirst = (col: ColumnDef<any> | Expression<any> | string): OrderByClause => ({
+  sql: `${colRef(col)} DESC NULLS FIRST`,
+  params: col instanceof Expression ? [...col.params] : [],
+})

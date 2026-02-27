@@ -75,6 +75,46 @@ export class WindowExpression<T = unknown> extends Expression<T> {
       this.params
     )
   }
+
+  /** Reference a named window definition: OVER "windowName" */
+  overWindow(name: string): Expression<T> {
+    return new Expression<T>(
+      `${this._fnSql} OVER "${name.replace(/"/g, '""')}"`,
+      this.params
+    )
+  }
+}
+
+// --- Named Windows ---
+
+export interface NamedWindowDef {
+  readonly name: string
+  readonly spec: WindowSpec
+}
+
+export const namedWindow = (name: string, spec: WindowSpec): NamedWindowDef => ({
+  name,
+  spec,
+})
+
+export const buildNamedWindowSql = (defs: NamedWindowDef[]): string => {
+  const parts = defs.map((d) => {
+    const specParts: string[] = []
+    if (d.spec.partitionBy && d.spec.partitionBy.length > 0) {
+      specParts.push(`PARTITION BY ${d.spec.partitionBy.map(colToSql).join(", ")}`)
+    }
+    if (d.spec.orderBy && d.spec.orderBy.length > 0) {
+      specParts.push(`ORDER BY ${d.spec.orderBy.map(colToSql).join(", ")}`)
+    }
+    if (d.spec.frame) {
+      const frameSql = d.spec.frame.end
+        ? `${d.spec.frame.type} BETWEEN ${d.spec.frame.start} AND ${d.spec.frame.end}`
+        : `${d.spec.frame.type} ${d.spec.frame.start}`
+      specParts.push(frameSql)
+    }
+    return `"${d.name.replace(/"/g, '""')}" AS (${specParts.join(" ")})`
+  })
+  return `WINDOW ${parts.join(", ")}`
 }
 
 export const windowFn = <T = unknown>(
@@ -141,4 +181,16 @@ export const lastValue = <T = unknown>(col: Expression<T> | string): WindowExpre
   const colSql = col instanceof Expression ? col.sql : `"${col.replace(/"/g, '""')}"`
   const params = col instanceof Expression ? [...col.params] : []
   return new WindowExpression<T>(`LAST_VALUE(${colSql})`, {}, params)
+}
+
+export const percentRank = (): WindowExpression<number> =>
+  new WindowExpression<number>("PERCENT_RANK()", {})
+
+export const cumeDist = (): WindowExpression<number> =>
+  new WindowExpression<number>("CUME_DIST()", {})
+
+export const nthValue = <T = unknown>(col: Expression<T> | string, n: number): WindowExpression<T> => {
+  const colSql = col instanceof Expression ? col.sql : `"${col.replace(/"/g, '""')}"`
+  const params = col instanceof Expression ? [...col.params] : []
+  return new WindowExpression<T>(`NTH_VALUE(${colSql}, ${n})`, {}, params)
 }

@@ -1,6 +1,7 @@
 import { Expression } from "./Expression.js"
 import type { TableDefinition } from "../schema/types.js"
 import type { WhereCondition } from "./Where.js"
+import { unnumberParams } from "./_internal.js"
 
 export type JoinType = "INNER" | "LEFT" | "RIGHT" | "FULL" | "CROSS"
 
@@ -12,6 +13,8 @@ export interface JoinClause {
   readonly lateral?: boolean
   readonly subquerySql?: string
   readonly subqueryParams?: readonly unknown[]
+  readonly joinMode?: "ON" | "USING" | "NATURAL"
+  readonly usingColumns?: string[]
 }
 
 export const innerJoin = (table: TableDefinition | string, on: WhereCondition, alias?: string): JoinClause => ({
@@ -49,15 +52,6 @@ export const crossJoin = (table: TableDefinition | string, alias?: string): Join
   on: undefined,
 })
 
-/** Convert numbered params ($1, $2, ...) back to $? placeholders for re-numbering by outer query */
-const unnumberParams = (sql: string, paramCount: number): string => {
-  let result = sql
-  for (let i = paramCount; i >= 1; i--) {
-    result = result.replace(new RegExp(`\\$${i}(?!\\d)`, "g"), "$?")
-  }
-  return result
-}
-
 /** INNER JOIN LATERAL (subquery) AS alias ON condition */
 export const lateralJoin = (subquery: { toSql(): { sql: string; params: readonly unknown[] } }, on: WhereCondition, alias: string): JoinClause => {
   const stmt = subquery.toSql()
@@ -85,3 +79,36 @@ export const lateralLeftJoin = (subquery: { toSql(): { sql: string; params: read
     subqueryParams: [...stmt.params],
   }
 }
+
+/** NATURAL INNER JOIN table */
+export const naturalJoin = (table: TableDefinition | string, alias?: string): JoinClause => ({
+  type: "INNER",
+  table: typeof table === "string" ? table : table.name,
+  alias,
+  on: undefined,
+  joinMode: "NATURAL",
+})
+
+/** NATURAL LEFT JOIN table */
+export const naturalLeftJoin = (table: TableDefinition | string, alias?: string): JoinClause => ({
+  type: "LEFT",
+  table: typeof table === "string" ? table : table.name,
+  alias,
+  on: undefined,
+  joinMode: "NATURAL",
+})
+
+/** JOIN ... USING (col1, col2) */
+export const joinUsing = (
+  table: TableDefinition | string,
+  columns: string[],
+  type: JoinType = "INNER",
+  alias?: string
+): JoinClause => ({
+  type,
+  table: typeof table === "string" ? table : table.name,
+  alias,
+  on: undefined,
+  joinMode: "USING",
+  usingColumns: columns,
+})
