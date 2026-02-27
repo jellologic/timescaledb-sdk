@@ -26,7 +26,7 @@ bun test test/unit/query.unit.test.ts                     # Run a single test fi
 
 1. **Pure schema DSL** (`src/schema/`) — No IO. Produces plain data objects (`TableDefinition`, `HypertableDefinition`). `ColumnBuilder` uses phantom type parameters (`TNotNull`, `THasDefault`) to track nullability/defaults at the type level, enabling `InferSelect<T>` and `InferInsert<T>`.
 
-2. **Effectful runtime modules** (`src/hypertable/`, `src/cagg/`, `src/compression/`, `src/retention/`, `src/jobs/`, `src/tiering/`, `src/migration/`, `src/view/`) — Every function follows the same pattern: pull `TimescaleClient` from Effect context via `yield* TimescaleClient`, execute SQL, wrap errors in a domain-specific `Data.TaggedError`.
+2. **Effectful runtime modules** (`src/hypertable/`, `src/cagg/`, `src/compression/`, `src/retention/`, `src/jobs/`, `src/tiering/`, `src/migration/`, `src/view/`, `src/queue/`, `src/bulk/`) — Every function follows the same pattern: pull `TimescaleClient` from Effect context via `yield* TimescaleClient`, execute SQL, wrap errors in a domain-specific `Data.TaggedError`.
 
 3. **Functions module** (`src/functions/`) — TypeScript-to-PL/pgSQL transpiler. `pgFunction`, `pgProcedure`, and `pgTriggerFunction` factories produce definition objects with `.toSql()` and `.call()` methods. The transpiler pipeline (Parser → Validator → TypeResolver → Emitter) converts TypeScript arrow functions to PL/pgSQL. Integrates with the migration system for function diffing.
 
@@ -69,17 +69,35 @@ The most complex module. Key flows:
 - **Runner.ts**: Uses PostgreSQL advisory lock (`pg_try_advisory_lock(123456789)`) with `Effect.ensuring` for guaranteed release.
 - **Orchestrator.ts**: Top-level API — `generate()` (async, not Effect), `loadAndRun`/`loadAndRollback`/`loadAndStatus` (Effects).
 
+### Queue system (`src/queue/`)
+
+PostgreSQL-backed persistent job queue. Key components:
+- **Queue.ts**: `enqueue`, `enqueueBulk`, `dequeue`, `completeJob`, `failJob`, `retryJob`, `cancelJob` — core job lifecycle.
+- **Scheduler.ts**: Cron-based repeatable jobs via `addRepeatableJob`, `schedulerTick`.
+- **Registry.ts**: Worker registration with heartbeat and dead worker cleanup.
+- **Orchestrator.ts**: Workflow primitives — `runSequential`, `runParallel`, `runSaga`, `runPipeline`.
+- **Events.ts**: LISTEN/NOTIFY wiring for real-time job notifications.
+- **Setup.ts**: Auto-creates queue tables on first use.
+
+### Bulk operations (`src/bulk/`)
+
+Generic `bulkInsert` and `bulkUpsert` with automatic batching to stay under PostgreSQL's 65,535 parameter limit. Uses parameterized queries only (no string interpolation of values). Configurable batch size, RETURNING clause, and update columns for upserts.
+
+### Client helpers
+
+`rawQuery<T>(sql, params?)` and `executeSql(sql, params?)` in `src/Client.ts` — thin Effect wrappers that pull `TimescaleClient` from context, eliminating boilerplate for ad-hoc SQL.
+
 ### Error types
 
-14 tagged errors in `src/Error.ts` using `Data.TaggedError`: `ConnectionError`, `QueryError`, `TransactionError`, `SchemaError`, `ValidationError`, `MigrationError`, `HypertableError`, `CompressionError`, `ContinuousAggregateError`, `RetentionError`, `JobError`, `TieringError`, `ViewError`, `FunctionError`.
+15 tagged errors in `src/Error.ts` using `Data.TaggedError`: `ConnectionError`, `QueryError`, `TransactionError`, `SchemaError`, `ValidationError`, `MigrationError`, `HypertableError`, `CompressionError`, `ContinuousAggregateError`, `RetentionError`, `JobError`, `TieringError`, `ViewError`, `FunctionError`, `QueueError`.
 
 ## Module exports
 
-The package has 13 export paths (root + one per module). Each maps to `./dist/<module>/index.js`. The root `src/index.ts` re-exports all modules as namespaces plus the core `TimescaleClient`, `TimescaleConfig`, and `Errors`.
+The package has 17 export paths (root + one per module). Each maps to `./dist/<module>/index.js`. The root `src/index.ts` re-exports all modules as namespaces plus the core `TimescaleClient`, `TimescaleConfig`, `rawQuery`, `executeSql`, and `Errors`.
 
 ## Testing
 
-- **Unit tests** (`test/unit/`) — ~35 files, no DB required. Test SQL generation, schema DSL, type inference, diffing logic.
+- **Unit tests** (`test/unit/`) — ~59 files, no DB required. Test SQL generation, schema DSL, type inference, diffing logic, queue, bulk operations.
 - **Integration tests** (`test/integration/`) — Spin up TimescaleDB via Docker (managed by `test/setup/docker.ts`). Test round-trip schema creation, migration execution, advisory locking.
 - **Test helpers** in `test/helpers/`: `assertions.ts` (SQL matchers), `effect-runner.ts` (`runTest`/`runTestWith`), `fixtures.ts` (test hypertable definitions), `db-utils.ts` (live DB introspection helpers).
 - **Test layers** in `test/setup/test-layers.ts`: `mockClient()` for unit tests, `liveClient()` for integration tests.

@@ -2,7 +2,7 @@
 
 **A complete, type-safe TypeScript SDK for TimescaleDB — built on Effect.**
 
-[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-v0.1.3-blue)](https://github.com/jellologic/timescaledb-sdk/packages)
+[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-v0.2.3-blue)](https://github.com/jellologic/timescaledb-sdk/packages)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6.svg)](https://www.typescriptlang.org/)
 
@@ -26,6 +26,9 @@
 | **Migrations** | Schema diff, SQL generation, run, rollback, and status tracking | `@jellologic/timescaledb-sdk/migration` |
 | **Views** | Views, materialized views, refresh, alter, and migration tracking | `@jellologic/timescaledb-sdk/view` |
 | **Functions** | PL/pgSQL functions, procedures, triggers with TypeScript-to-PL/pgSQL transpiler | `@jellologic/timescaledb-sdk/functions` |
+| **Job Queue** | Persistent job queue with workers, scheduling, retries, workflows, LISTEN/NOTIFY | `@jellologic/timescaledb-sdk/queue` |
+| **Bulk Operations** | `bulkInsert`, `bulkUpsert` with automatic batching under PG's 65K param limit | `@jellologic/timescaledb-sdk/bulk` |
+| **Raw SQL Helpers** | `rawQuery<T>()`, `executeSql()` — ad-hoc SQL without boilerplate | `@jellologic/timescaledb-sdk` |
 
 ---
 
@@ -307,11 +310,141 @@ const migrate = Effect.gen(function* () {
 
 ---
 
+## Raw SQL Helpers
+
+Skip the `yield* TimescaleClient` boilerplate for ad-hoc queries:
+
+```typescript
+import { rawQuery, executeSql } from "@jellologic/timescaledb-sdk"
+import { Effect } from "effect"
+
+const program = Effect.gen(function* () {
+  // Typed query — returns ReadonlyArray<T>
+  const users = yield* rawQuery<{ id: number; name: string }>(
+    "SELECT id, name FROM users WHERE active = $1",
+    [true],
+  )
+
+  // Mutation — returns void
+  yield* executeSql("DELETE FROM sessions WHERE expires_at < NOW()")
+})
+```
+
+---
+
+## Bulk Operations
+
+Insert or upsert thousands of rows with automatic batching to stay under PostgreSQL's 65,535 parameter limit:
+
+```typescript
+import { bulkInsert, bulkUpsert } from "@jellologic/timescaledb-sdk/bulk"
+import { Effect } from "effect"
+
+const program = Effect.gen(function* () {
+  // Bulk insert with RETURNING
+  const { rows, count } = yield* bulkInsert<{ id: number }>(
+    "sensor_readings",
+    ["time", "sensor_id", "temperature"],
+    [
+      [new Date(), "sensor-1", 22.5],
+      [new Date(), "sensor-2", 23.1],
+      // ... thousands more rows
+    ],
+    { batchSize: 500, returning: "id" },
+  )
+
+  // Bulk upsert — insert or update on conflict
+  yield* bulkUpsert(
+    "devices",
+    ["id", "name", "last_seen"],
+    [
+      ["device-1", "Thermostat", new Date()],
+      ["device-2", "Humidity Sensor", new Date()],
+    ],
+    ["id"], // conflict columns
+    { updateColumns: ["name", "last_seen"] },
+  )
+})
+```
+
+---
+
+## Job Queue
+
+Persistent PostgreSQL-backed job queue with workers, scheduling, retries, and workflows:
+
+```typescript
+import {
+  enqueue, enqueueBulk, dequeue, completeJob, failJob,
+  addRepeatableJob, schedulerTick,
+  registerWorker, runSequential, runParallel,
+} from "@jellologic/timescaledb-sdk/queue"
+import { Effect } from "effect"
+
+const program = Effect.gen(function* () {
+  // Enqueue a job
+  const job = yield* enqueue("emails", {
+    name: "send-welcome",
+    data: { userId: 123, template: "welcome" },
+    options: { priority: 1, attempts: 3, backoff: { type: "exponential", delay: 1000 } },
+  })
+
+  // Dequeue and process
+  const next = yield* dequeue("emails")
+  if (next) {
+    // ... process job
+    yield* completeJob(next.id, { sentAt: new Date() })
+  }
+
+  // Schedule recurring jobs
+  yield* addRepeatableJob("emails", {
+    name: "daily-digest",
+    data: { type: "digest" },
+    cron: "0 9 * * *", // Every day at 9 AM
+  })
+
+  // Run a workflow (sequential steps)
+  yield* runSequential("onboarding", [
+    { queue: "emails", name: "welcome", data: {} },
+    { queue: "emails", name: "setup-guide", data: {} },
+  ])
+})
+```
+
+---
+
+## Functions
+
+Define PL/pgSQL functions, procedures, and triggers in TypeScript — the transpiler converts them to PL/pgSQL:
+
+```typescript
+import { pgFunction, pgTriggerFunction } from "@jellologic/timescaledb-sdk/functions"
+
+// Define a function with TypeScript syntax → transpiled to PL/pgSQL
+const calculateDiscount = pgFunction("calculate_discount", {
+  args: { price: "numeric", quantity: "integer" },
+  returns: "numeric",
+  body: (price, quantity) => {
+    if (quantity > 100) return price * 0.9
+    if (quantity > 50) return price * 0.95
+    return price
+  },
+})
+
+// Generate the CREATE FUNCTION SQL
+const sql = calculateDiscount.toSql()
+
+// Use in queries
+const call = calculateDiscount.call(99.99, 150)
+```
+
+---
+
 ## API Reference
 
 | Import Path | Description |
 |---|---|
-| `@jellologic/timescaledb-sdk` | Core client, config, and connection management |
+| `@jellologic/timescaledb-sdk` | Core client, config, `rawQuery`, `executeSql`, and all module namespaces |
 | `@jellologic/timescaledb-sdk/schema` | Hypertable definitions, 40+ column types, indexes, constraints |
 | `@jellologic/timescaledb-sdk/query` | Query builder: SELECT, INSERT, UPDATE, DELETE, JOINs, CTEs, window functions |
 | `@jellologic/timescaledb-sdk/hypertable` | Create, alter, and drop hypertables; chunk interval management |
@@ -324,6 +457,8 @@ const migrate = Effect.gen(function* () {
 | `@jellologic/timescaledb-sdk/migration` | Schema diffing, migration generation, execution, and rollback |
 | `@jellologic/timescaledb-sdk/view` | Views and materialized views: create, drop, refresh, alter |
 | `@jellologic/timescaledb-sdk/functions` | PL/pgSQL functions, procedures, and trigger functions with TS transpiler |
+| `@jellologic/timescaledb-sdk/queue` | Persistent job queue: enqueue, dequeue, workers, scheduling, workflows |
+| `@jellologic/timescaledb-sdk/bulk` | `bulkInsert`, `bulkUpsert` with automatic batching |
 | `@jellologic/timescaledb-sdk/client` | Direct access to `TimescaleClient` service and layer factories |
 | `@jellologic/timescaledb-sdk/config` | Direct access to `TimescaleConfig` service and environment layer |
 
