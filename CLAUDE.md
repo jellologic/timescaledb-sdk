@@ -26,7 +26,9 @@ bun test test/unit/query.unit.test.ts                     # Run a single test fi
 
 1. **Pure schema DSL** (`src/schema/`) — No IO. Produces plain data objects (`TableDefinition`, `HypertableDefinition`). `ColumnBuilder` uses phantom type parameters (`TNotNull`, `THasDefault`) to track nullability/defaults at the type level, enabling `InferSelect<T>` and `InferInsert<T>`.
 
-2. **Effectful runtime modules** (`src/hypertable/`, `src/cagg/`, `src/compression/`, `src/retention/`, `src/jobs/`, `src/tiering/`, `src/migration/`) — Every function follows the same pattern: pull `TimescaleClient` from Effect context via `yield* TimescaleClient`, execute SQL, wrap errors in a domain-specific `Data.TaggedError`.
+2. **Effectful runtime modules** (`src/hypertable/`, `src/cagg/`, `src/compression/`, `src/retention/`, `src/jobs/`, `src/tiering/`, `src/migration/`, `src/view/`) — Every function follows the same pattern: pull `TimescaleClient` from Effect context via `yield* TimescaleClient`, execute SQL, wrap errors in a domain-specific `Data.TaggedError`.
+
+3. **Functions module** (`src/functions/`) — TypeScript-to-PL/pgSQL transpiler. `pgFunction`, `pgProcedure`, and `pgTriggerFunction` factories produce definition objects with `.toSql()` and `.call()` methods. The transpiler pipeline (Parser → Validator → TypeResolver → Emitter) converts TypeScript arrow functions to PL/pgSQL. Integrates with the migration system for function diffing.
 
 ### Effect integration pattern
 
@@ -69,11 +71,11 @@ The most complex module. Key flows:
 
 ### Error types
 
-12 tagged errors in `src/Error.ts` using `Data.TaggedError`: `ConnectionError`, `QueryError`, `TransactionError`, `SchemaError`, `ValidationError`, `MigrationError`, `HypertableError`, `CompressionError`, `ContinuousAggregateError`, `RetentionError`, `JobError`, `TieringError`.
+14 tagged errors in `src/Error.ts` using `Data.TaggedError`: `ConnectionError`, `QueryError`, `TransactionError`, `SchemaError`, `ValidationError`, `MigrationError`, `HypertableError`, `CompressionError`, `ContinuousAggregateError`, `RetentionError`, `JobError`, `TieringError`, `ViewError`, `FunctionError`.
 
 ## Module exports
 
-The package has 11 export paths (root + one per module). Each maps to `./dist/<module>/index.js`. The root `src/index.ts` re-exports all modules as namespaces plus the core `TimescaleClient`, `TimescaleConfig`, and `Errors`.
+The package has 13 export paths (root + one per module). Each maps to `./dist/<module>/index.js`. The root `src/index.ts` re-exports all modules as namespaces plus the core `TimescaleClient`, `TimescaleConfig`, and `Errors`.
 
 ## Testing
 
