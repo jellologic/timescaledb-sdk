@@ -1,7 +1,7 @@
 {
   "name": "timescaledb-sdk",
   "version": "0.1.0",
-  "description": "Effect-based TypeScript SDK for TimescaleDB",
+  "description": "Complete, type-safe TypeScript SDK for TimescaleDB — hypertables, continuous aggregates, compression, hyperfunctions, migrations, and more. Built on Effect.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -44,6 +44,8 @@
     "typescript": "^5"
   },
   "license": "MIT",
+  "homepage": "https://github.com/ezrasperodev/timescaledb-sdk#readme",
+  "author": "EzraSperoDev",
   "repository": {
     "type": "git",
     "url": "https://github.com/ezrasperodev/timescaledb-sdk"
@@ -52,9 +54,22 @@
     "timescaledb",
     "timescale",
     "postgres",
+    "postgresql",
     "time-series",
     "sdk",
     "effect",
-    "typescript"
+    "typescript",
+    "database",
+    "hypertable",
+    "continuous-aggregate",
+    "compression",
+    "hyperfunctions",
+    "migration",
+    "query-builder",
+    "iot",
+    "monitoring",
+    "analytics",
+    "functional-programming",
+    "bun"
   ]
 }
