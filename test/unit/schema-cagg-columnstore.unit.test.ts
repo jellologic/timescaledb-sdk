@@ -165,7 +165,7 @@ describe("set_integer_now_func", () => {
     }
 
     const { up } = generateMigrationSql(
-      { ...emptyDiff, tablesToCreate: ["events"], hypertablesToCreate: ["events"] },
+      { ...emptyDiff, tablesToCreate: [{ name: "events", schema: "public" }], hypertablesToCreate: [{ name: "events", schema: "public" }] },
       [htDef],
     )
 
@@ -198,7 +198,7 @@ describe("add_columnstore_policy (modern API)", () => {
     }
 
     const { up } = generateMigrationSql(
-      { ...emptyDiff, tablesToCreate: ["metrics"], hypertablesToCreate: ["metrics"] },
+      { ...emptyDiff, tablesToCreate: [{ name: "metrics", schema: "public" }], hypertablesToCreate: [{ name: "metrics", schema: "public" }] },
       [htDef],
     )
 
@@ -229,7 +229,7 @@ describe("add_columnstore_policy (modern API)", () => {
     }
 
     const { up } = generateMigrationSql(
-      { ...emptyDiff, tablesToCreate: ["metrics"], hypertablesToCreate: ["metrics"] },
+      { ...emptyDiff, tablesToCreate: [{ name: "metrics", schema: "public" }], hypertablesToCreate: [{ name: "metrics", schema: "public" }] },
       [htDef],
     )
 
@@ -371,7 +371,7 @@ describe("Policy interval alteration detection", () => {
 
   test("generates remove+add SQL for compression policy alteration", () => {
     const { up } = generateMigrationSql(
-      { ...emptyDiff, compressionPoliciesToAlter: [{ table: "metrics", after: "14 days" }] },
+      { ...emptyDiff, compressionPoliciesToAlter: [{ table: "metrics", schema: "public", after: "14 days" }] },
       [],
     )
 
@@ -381,7 +381,7 @@ describe("Policy interval alteration detection", () => {
 
   test("generates remove+add SQL for retention policy alteration", () => {
     const { up } = generateMigrationSql(
-      { ...emptyDiff, retentionPoliciesToAlter: [{ table: "metrics", dropAfter: "90 days" }] },
+      { ...emptyDiff, retentionPoliciesToAlter: [{ table: "metrics", schema: "public", dropAfter: "90 days" }] },
       [],
     )
 
@@ -391,7 +391,7 @@ describe("Policy interval alteration detection", () => {
 
   test("generates remove+add SQL for CAGG refresh policy alteration", () => {
     const { up } = generateMigrationSql(
-      { ...emptyDiff, caggRefreshPoliciesToAlter: [{ viewName: "hourly_avg", startOffset: "2 hours", endOffset: "1 hour", scheduleInterval: "30 minutes" }] },
+      { ...emptyDiff, caggRefreshPoliciesToAlter: [{ viewName: "hourly_avg", schema: "public", startOffset: "2 hours", endOffset: "1 hour", scheduleInterval: "30 minutes" }] },
       [],
     )
 

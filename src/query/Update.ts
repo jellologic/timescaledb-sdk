@@ -25,7 +25,7 @@ export class UpdateBuilder<
   private _where: WhereCondition[] = []
   private _returning: string[] = []
   private _returningMap: Record<string, ColumnDef<any, any, any> | Expression<any>> | null = null
-  private _from: string[] = []
+  private _from: Array<{ name: string; schema?: string }> = []
   private _ctes: CteClause[] = []
 
   constructor(table: TableDefinition | string) {
@@ -49,7 +49,9 @@ export class UpdateBuilder<
 
   from(...tables: Array<TableDefinition | string>): UpdateBuilder<TTable, TResult> {
     const b = this._clone()
-    b._from = [...this._from, ...tables.map((t) => typeof t === "string" ? t : t.name)]
+    b._from = [...this._from, ...tables.map((t) =>
+      typeof t === "string" ? { name: t } : { name: t.name, schema: t.schema !== "public" ? t.schema : undefined }
+    )]
     return b
   }
 
@@ -125,7 +127,7 @@ export class UpdateBuilder<
     sql += `UPDATE ${tableRef(this._table, this._schema)} SET ${setClauses.join(", ")}`
 
     if (this._from.length > 0) {
-      sql += ` FROM ${this._from.map((t) => `"${t}"`).join(", ")}`
+      sql += ` FROM ${this._from.map((t) => tableRef(t.name, t.schema)).join(", ")}`
     }
 
     if (this._where.length > 0) {

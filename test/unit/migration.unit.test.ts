@@ -20,7 +20,7 @@ describe("Migration Generator", () => {
     })
 
     const diff = diffSchema([users], emptySnapshot)
-    expect(diff.tablesToCreate).toEqual(["users"])
+    expect(diff.tablesToCreate).toEqual([{ name: "users", schema: "public" }])
     expect(diff.tablesToDrop).toEqual([])
   })
 
@@ -38,7 +38,7 @@ describe("Migration Generator", () => {
     }
 
     const diff = diffSchema([], snapshot)
-    expect(diff.tablesToDrop).toEqual(["old_table"])
+    expect(diff.tablesToDrop).toEqual([{ name: "old_table", schema: "public" }])
   })
 
   test("detects columns to add", () => {
@@ -75,7 +75,7 @@ describe("Migration Generator", () => {
     }, { timeColumn: "time", chunkInterval: "1 day" })
 
     const diff = diffSchema([metrics], emptySnapshot)
-    expect(diff.hypertablesToCreate).toEqual(["metrics"])
+    expect(diff.hypertablesToCreate).toEqual([{ name: "metrics", schema: "public" }])
   })
 
   test("generateMigrationSql creates CREATE TABLE", () => {

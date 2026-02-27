@@ -8,6 +8,7 @@ export type JoinType = "INNER" | "LEFT" | "RIGHT" | "FULL" | "CROSS"
 export interface JoinClause {
   readonly type: JoinType
   readonly table: string
+  readonly schema: string | undefined
   readonly alias: string | undefined
   readonly on: WhereCondition | undefined
   readonly lateral?: boolean
@@ -17,9 +18,13 @@ export interface JoinClause {
   readonly usingColumns?: string[]
 }
 
+const extractSchema = (table: TableDefinition | string): string | undefined =>
+  typeof table === "string" ? undefined : (table.schema !== "public" ? table.schema : undefined)
+
 export const innerJoin = (table: TableDefinition | string, on: WhereCondition, alias?: string): JoinClause => ({
   type: "INNER",
   table: typeof table === "string" ? table : table.name,
+  schema: extractSchema(table),
   alias,
   on,
 })
@@ -27,6 +32,7 @@ export const innerJoin = (table: TableDefinition | string, on: WhereCondition, a
 export const leftJoin = (table: TableDefinition | string, on: WhereCondition, alias?: string): JoinClause => ({
   type: "LEFT",
   table: typeof table === "string" ? table : table.name,
+  schema: extractSchema(table),
   alias,
   on,
 })
@@ -34,6 +40,7 @@ export const leftJoin = (table: TableDefinition | string, on: WhereCondition, al
 export const rightJoin = (table: TableDefinition | string, on: WhereCondition, alias?: string): JoinClause => ({
   type: "RIGHT",
   table: typeof table === "string" ? table : table.name,
+  schema: extractSchema(table),
   alias,
   on,
 })
@@ -41,6 +48,7 @@ export const rightJoin = (table: TableDefinition | string, on: WhereCondition, a
 export const fullJoin = (table: TableDefinition | string, on: WhereCondition, alias?: string): JoinClause => ({
   type: "FULL",
   table: typeof table === "string" ? table : table.name,
+  schema: extractSchema(table),
   alias,
   on,
 })
@@ -48,6 +56,7 @@ export const fullJoin = (table: TableDefinition | string, on: WhereCondition, al
 export const crossJoin = (table: TableDefinition | string, alias?: string): JoinClause => ({
   type: "CROSS",
   table: typeof table === "string" ? table : table.name,
+  schema: extractSchema(table),
   alias,
   on: undefined,
 })
@@ -58,6 +67,7 @@ export const lateralJoin = (subquery: { toSql(): { sql: string; params: readonly
   return {
     type: "INNER",
     table: `__LATERAL__`,
+    schema: undefined,
     alias,
     on,
     lateral: true,
@@ -72,6 +82,7 @@ export const lateralLeftJoin = (subquery: { toSql(): { sql: string; params: read
   return {
     type: "LEFT",
     table: `__LATERAL__`,
+    schema: undefined,
     alias,
     on: new Expression<boolean>("TRUE"),
     lateral: true,
@@ -84,6 +95,7 @@ export const lateralLeftJoin = (subquery: { toSql(): { sql: string; params: read
 export const naturalJoin = (table: TableDefinition | string, alias?: string): JoinClause => ({
   type: "INNER",
   table: typeof table === "string" ? table : table.name,
+  schema: extractSchema(table),
   alias,
   on: undefined,
   joinMode: "NATURAL",
@@ -93,6 +105,7 @@ export const naturalJoin = (table: TableDefinition | string, alias?: string): Jo
 export const naturalLeftJoin = (table: TableDefinition | string, alias?: string): JoinClause => ({
   type: "LEFT",
   table: typeof table === "string" ? table : table.name,
+  schema: extractSchema(table),
   alias,
   on: undefined,
   joinMode: "NATURAL",
@@ -107,6 +120,7 @@ export const joinUsing = (
 ): JoinClause => ({
   type,
   table: typeof table === "string" ? table : table.name,
+  schema: extractSchema(table),
   alias,
   on: undefined,
   joinMode: "USING",

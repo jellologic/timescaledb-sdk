@@ -41,4 +41,9 @@ export const qualifiedName = (name: string, schema?: string): string =>
     ? `${quoteIdentifier(schema)}.${quoteIdentifier(name)}`
     : quoteIdentifier(name)
 
+/** For embedding in SQL string literals (TimescaleDB function args).
+ *  Public schema: bare name. Non-public: schema.name. */
+export const qualifiedNameLiteral = (name: string, schema?: string): string =>
+  schema && schema !== "public" ? `${schema}.${name}` : name
+
 export const placeholder = (index: number): string => `$${index}`

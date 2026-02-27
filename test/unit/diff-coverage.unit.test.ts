@@ -220,6 +220,7 @@ describe("compressionSettingsToAlter", () => {
         ...emptyDiff,
         compressionSettingsToAlter: [{
           table: "metrics",
+          schema: "public",
           segmentby: ["device_id", "location"],
           orderby: "time DESC",
         }],
@@ -237,6 +238,7 @@ describe("compressionSettingsToAlter", () => {
         ...emptyDiff,
         compressionSettingsToAlter: [{
           table: "metrics",
+          schema: "public",
           segmentby: ["device_id"],
           orderby: undefined,
         }],
@@ -292,7 +294,7 @@ describe("chunkIntervalsToAlter", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        chunkIntervalsToAlter: [{ table: "metrics", interval: "14 days" }],
+        chunkIntervalsToAlter: [{ table: "metrics", schema: "public", interval: "14 days" }],
       },
       [],
     )
@@ -306,8 +308,8 @@ describe("Chunk operations SQL generation", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        tablesToCreate: ["metrics"],
-        hypertablesToCreate: ["metrics"],
+        tablesToCreate: [{ name: "metrics", schema: "public" }],
+        hypertablesToCreate: [{ name: "metrics", schema: "public" }],
       },
       [makeHtDef("metrics", {
         timeColumn: "time",
@@ -322,8 +324,8 @@ describe("Chunk operations SQL generation", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        tablesToCreate: ["metrics"],
-        hypertablesToCreate: ["metrics"],
+        tablesToCreate: [{ name: "metrics", schema: "public" }],
+        hypertablesToCreate: [{ name: "metrics", schema: "public" }],
       },
       [makeHtDef("metrics", {
         timeColumn: "time",
@@ -338,8 +340,8 @@ describe("Chunk operations SQL generation", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        tablesToCreate: ["metrics"],
-        hypertablesToCreate: ["metrics"],
+        tablesToCreate: [{ name: "metrics", schema: "public" }],
+        hypertablesToCreate: [{ name: "metrics", schema: "public" }],
       },
       [makeHtDef("metrics", {
         timeColumn: "time",
@@ -387,14 +389,14 @@ describe("Data tiering diff", () => {
     }], [{ hypertableName: "metrics", tierAfter: "30 days" }])
 
     const diff = diffSchema([def], snapshot)
-    expect(diff.tieringToRemove).toEqual(["metrics"])
+    expect(diff.tieringToRemove).toEqual([{ name: "metrics", schema: "public" }])
   })
 
   test("generates add_tiering_policy SQL", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        tieringToAdd: [{ table: "metrics", tierAfter: "30 days" }],
+        tieringToAdd: [{ table: "metrics", schema: "public", tierAfter: "30 days" }],
       },
       [],
     )
@@ -543,7 +545,7 @@ describe("caggMigrations validation (Batch 16)", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        caggMigrations: ["hourly_avg", "daily_summary"],
+        caggMigrations: [{ name: "hourly_avg", schema: "public" }, { name: "daily_summary", schema: "public" }],
       },
       [],
     )

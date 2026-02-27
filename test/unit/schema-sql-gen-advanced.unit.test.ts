@@ -88,8 +88,8 @@ describe("Modern Columnstore Syntax", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        tablesToCreate: ["metrics"],
-        hypertablesToCreate: ["metrics"],
+        tablesToCreate: [{ name: "metrics", schema: "public" }],
+        hypertablesToCreate: [{ name: "metrics", schema: "public" }],
       },
       [
         {
@@ -128,8 +128,8 @@ describe("Modern Columnstore Syntax", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        tablesToCreate: ["metrics"],
-        hypertablesToCreate: ["metrics"],
+        tablesToCreate: [{ name: "metrics", schema: "public" }],
+        hypertablesToCreate: [{ name: "metrics", schema: "public" }],
       },
       [
         {
@@ -162,8 +162,8 @@ describe("Modern Columnstore Syntax", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        tablesToCreate: ["metrics"],
-        hypertablesToCreate: ["metrics"],
+        tablesToCreate: [{ name: "metrics", schema: "public" }],
+        hypertablesToCreate: [{ name: "metrics", schema: "public" }],
       },
       [
         {
@@ -199,8 +199,8 @@ describe("Modern Columnstore Syntax", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        tablesToCreate: ["metrics"],
-        hypertablesToCreate: ["metrics"],
+        tablesToCreate: [{ name: "metrics", schema: "public" }],
+        hypertablesToCreate: [{ name: "metrics", schema: "public" }],
       },
       [
         {
@@ -233,8 +233,8 @@ describe("Data Tiering", () => {
     const { up, down } = generateMigrationSql(
       {
         ...emptyDiff,
-        tablesToCreate: ["metrics"],
-        hypertablesToCreate: ["metrics"],
+        tablesToCreate: [{ name: "metrics", schema: "public" }],
+        hypertablesToCreate: [{ name: "metrics", schema: "public" }],
       },
       [
         {
@@ -266,7 +266,7 @@ describe("Data Tiering", () => {
     const { up, down } = generateMigrationSql(
       {
         ...emptyDiff,
-        tieringToAdd: [{ table: "metrics", tierAfter: "60 days" }],
+        tieringToAdd: [{ table: "metrics", schema: "public", tierAfter: "60 days" }],
       },
       []
     )
@@ -278,7 +278,7 @@ describe("Data Tiering", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        tieringToRemove: ["metrics"],
+        tieringToRemove: [{ name: "metrics", schema: "public" }],
       },
       []
     )
@@ -291,7 +291,7 @@ describe("CAGG Migration", () => {
     const { up } = generateMigrationSql(
       {
         ...emptyDiff,
-        caggMigrations: ["hourly_view"],
+        caggMigrations: [{ name: "hourly_view", schema: "public" }],
       },
       []
     )
@@ -435,7 +435,7 @@ describe("cagg_migrate activation via migrate flag (Batch 21)", () => {
 
     const diff = diffSchema([cagg], snapshot as any)
     expect(diff.caggMigrations.length).toBe(1)
-    expect(diff.caggMigrations[0]).toBe("hourly_avg")
+    expect(diff.caggMigrations[0]).toEqual({ name: "hourly_avg", schema: "public" })
 
     const { up } = generateMigrationSql(diff, [])
     expect(up.some((s) => s.includes("CALL cagg_migrate") && s.includes("hourly_avg"))).toBe(true)
