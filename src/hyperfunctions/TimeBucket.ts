@@ -32,13 +32,13 @@ export const timeBucketRange = (
   interval: string,
   col: ColumnDef<Date> | Expression<Date> | string,
   opts?: { timezone?: string }
-): Expression<unknown> => {
+): Expression<string> => {
   const ref = colRef(col)
   const params = colParams(col)
   const extraArgs: string[] = []
   if (opts?.timezone) extraArgs.push(`timezone => '${opts.timezone}'`)
   const args = [`'${interval}'`, ref, ...extraArgs].join(", ")
-  return new Expression<unknown>(`time_bucket_range(${args})`, params)
+  return new Expression<string>(`time_bucket_range(${args})`, params)
 }
 
 export const timeBucketGapfill = (

@@ -48,8 +48,8 @@ export class CounterAggExpression extends Expression<unknown> {
     return new Expression<number>(`irate_right(${this.sql})`, this.params)
   }
 
-  counterZeroTime(): Expression<unknown> {
-    return new Expression<unknown>(`counter_zero_time(${this.sql})`, this.params)
+  counterZeroTime(): Expression<Date> {
+    return new Expression<Date>(`counter_zero_time(${this.sql})`, this.params)
   }
 
   numChanges(): Expression<number> {
