@@ -110,6 +110,9 @@ export interface SchemaSnapshot {
   readonly views?: ReadonlyArray<ViewSnapshot>
   readonly materializedViews?: ReadonlyArray<MaterializedViewSnapshot>
   readonly viewDependencies?: ReadonlyArray<ViewDependency>
+  readonly functions?: ReadonlyArray<FunctionSnapshot>
+  readonly procedures?: ReadonlyArray<ProcedureSnapshot>
+  readonly triggerFunctions?: ReadonlyArray<TriggerFunctionSnapshot>
   readonly takenAt: Date
 }
 
@@ -179,4 +182,33 @@ export interface TriggerSnapshot {
   readonly timing: string
   readonly events: ReadonlyArray<string>
   readonly functionName: string
+}
+
+export interface FunctionSnapshot {
+  readonly name: string
+  readonly schema: string
+  readonly params: ReadonlyArray<{ name: string; type: string }>
+  readonly returnType: string
+  readonly language: string
+  readonly volatility: string
+  readonly security: string
+  readonly bodyHash: string
+}
+
+export interface ProcedureSnapshot {
+  readonly name: string
+  readonly schema: string
+  readonly params: ReadonlyArray<{ name: string; type: string }>
+  readonly language: string
+  readonly security: string
+  readonly bodyHash: string
+}
+
+export interface TriggerFunctionSnapshot {
+  readonly name: string
+  readonly schema: string
+  readonly language: string
+  readonly volatility: string
+  readonly security: string
+  readonly bodyHash: string
 }

@@ -1,8 +1,11 @@
 import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, IndexDef, EnumTypeDef, CaggDefinition, RlsPolicyDef, JobDefinition, ViewDefinition, MaterializedViewDefinition } from "../schema/types.js"
+import type { FunctionDefinition, ProcedureDefinition, TriggerFunctionDefinition } from "../functions/types.js"
+import { transpile } from "../functions/transpiler/index.js"
+import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
 import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot, ViewDependency } from "./types.js"
 import { toSqlValue, quoteIdentifier, quoteString, qualifiedName } from "../internal/sql.js"
 
-export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition | ViewDefinition | MaterializedViewDefinition
+export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition | ViewDefinition | MaterializedViewDefinition | FunctionDefinition | ProcedureDefinition | TriggerFunctionDefinition
 
 const TYPE_ALIASES: Record<string, string> = {
   "serial": "integer",
@@ -79,6 +82,17 @@ export interface SchemaDiff {
   readonly materializedViewIndexesToDrop: ReadonlyArray<{ matViewName: string; indexName: string }>
   readonly materializedViewsToAlterTablespace: ReadonlyArray<{ name: string; schema: string; tablespace: string }>
   readonly materializedViewsToAlterStorageParams: ReadonlyArray<{ name: string; schema: string; params: Record<string, string | number | boolean> }>
+  readonly functionsToCreate: ReadonlyArray<FunctionDefinition>
+  readonly functionsToDrop: ReadonlyArray<string>
+  readonly functionsToReplace: ReadonlyArray<FunctionDefinition>
+  readonly functionsToRecreate: ReadonlyArray<FunctionDefinition>
+  readonly proceduresToCreate: ReadonlyArray<ProcedureDefinition>
+  readonly proceduresToDrop: ReadonlyArray<string>
+  readonly proceduresToReplace: ReadonlyArray<ProcedureDefinition>
+  readonly proceduresToRecreate: ReadonlyArray<ProcedureDefinition>
+  readonly triggerFunctionsToCreate: ReadonlyArray<TriggerFunctionDefinition>
+  readonly triggerFunctionsToDrop: ReadonlyArray<string>
+  readonly triggerFunctionsToReplace: ReadonlyArray<TriggerFunctionDefinition>
   readonly warnings: ReadonlyArray<{ name: string; message: string }>
 }
 
@@ -783,6 +797,130 @@ export const diffSchema = (
     }
   }
 
+  // Function diffing
+  const fnDefs = definitions.filter((d): d is FunctionDefinition => d._tag === "Function")
+  const snapshotFunctions = snapshot.functions ?? []
+  const snapshotFnMap = new Map(snapshotFunctions.map((f) => [f.name, f]))
+
+  const functionsToCreate: FunctionDefinition[] = []
+  const functionsToDrop: string[] = []
+  const functionsToReplace: FunctionDefinition[] = []
+  const functionsToRecreate: FunctionDefinition[] = []
+
+  for (const fnDef of fnDefs) {
+    const existing = snapshotFnMap.get(fnDef.name)
+    if (!existing) {
+      functionsToCreate.push(fnDef)
+    } else {
+      // Compare body hashes
+      const hasher = new Bun.CryptoHasher("sha256")
+      hasher.update(fnDef.bodySource)
+      const currentHash = hasher.digest("hex")
+      const bodyChanged = currentHash !== existing.bodyHash
+
+      // Compare signature
+      const defParams = fnDef.params.map((p) => ({
+        name: p.name,
+        type: sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType),
+      }))
+      const paramsChanged = JSON.stringify(defParams) !== JSON.stringify(existing.params)
+      const returnChanged = sqlTypeToPg(fnDef.returnType) !== existing.returnType
+      const volatilityChanged = fnDef.volatility !== existing.volatility
+      const securityChanged = fnDef.security !== existing.security
+
+      if (paramsChanged || returnChanged) {
+        // Signature change requires DROP + CREATE (can't use CREATE OR REPLACE)
+        functionsToRecreate.push(fnDef)
+      } else if (bodyChanged || volatilityChanged || securityChanged) {
+        functionsToReplace.push(fnDef)
+      }
+    }
+  }
+
+  // Functions in snapshot but not in definitions → drop
+  const definedFnNames = new Set(fnDefs.map((f) => f.name))
+  for (const [name] of snapshotFnMap) {
+    if (!definedFnNames.has(name)) {
+      functionsToDrop.push(name)
+    }
+  }
+
+  // Procedure diffing
+  const procDefs = definitions.filter((d): d is ProcedureDefinition => d._tag === "Procedure")
+  const snapshotProcedures = snapshot.procedures ?? []
+  const snapshotProcMap = new Map(snapshotProcedures.map((p) => [p.name, p]))
+
+  const proceduresToCreate: ProcedureDefinition[] = []
+  const proceduresToDrop: string[] = []
+  const proceduresToReplace: ProcedureDefinition[] = []
+  const proceduresToRecreate: ProcedureDefinition[] = []
+
+  for (const procDef of procDefs) {
+    const existing = snapshotProcMap.get(procDef.name)
+    if (!existing) {
+      proceduresToCreate.push(procDef)
+    } else {
+      const hasher = new Bun.CryptoHasher("sha256")
+      hasher.update(procDef.bodySource)
+      const currentHash = hasher.digest("hex")
+      const bodyChanged = currentHash !== existing.bodyHash
+
+      const defParams = procDef.params.map((p) => ({
+        name: p.name,
+        type: sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType),
+      }))
+      const paramsChanged = JSON.stringify(defParams) !== JSON.stringify(existing.params)
+      const securityChanged = procDef.security !== existing.security
+
+      if (paramsChanged) {
+        proceduresToRecreate.push(procDef)
+      } else if (bodyChanged || securityChanged) {
+        proceduresToReplace.push(procDef)
+      }
+    }
+  }
+
+  const definedProcNames = new Set(procDefs.map((p) => p.name))
+  for (const [name] of snapshotProcMap) {
+    if (!definedProcNames.has(name)) {
+      proceduresToDrop.push(name)
+    }
+  }
+
+  // Trigger function diffing
+  const trigFnDefs = definitions.filter((d): d is TriggerFunctionDefinition => d._tag === "TriggerFunction")
+  const snapshotTrigFunctions = snapshot.triggerFunctions ?? []
+  const snapshotTrigFnMap = new Map(snapshotTrigFunctions.map((f) => [f.name, f]))
+
+  const triggerFunctionsToCreate: TriggerFunctionDefinition[] = []
+  const triggerFunctionsToDrop: string[] = []
+  const triggerFunctionsToReplace: TriggerFunctionDefinition[] = []
+
+  for (const trigFnDef of trigFnDefs) {
+    const existing = snapshotTrigFnMap.get(trigFnDef.name)
+    if (!existing) {
+      triggerFunctionsToCreate.push(trigFnDef)
+    } else {
+      const hasher = new Bun.CryptoHasher("sha256")
+      hasher.update(trigFnDef.bodySource)
+      const currentHash = hasher.digest("hex")
+      const bodyChanged = currentHash !== existing.bodyHash
+      const securityChanged = trigFnDef.security !== existing.security
+      const volatilityChanged = trigFnDef.volatility !== existing.volatility
+
+      if (bodyChanged || securityChanged || volatilityChanged) {
+        triggerFunctionsToReplace.push(trigFnDef)
+      }
+    }
+  }
+
+  const definedTrigFnNames = new Set(trigFnDefs.map((f) => f.name))
+  for (const [name] of snapshotTrigFnMap) {
+    if (!definedTrigFnNames.has(name)) {
+      triggerFunctionsToDrop.push(name)
+    }
+  }
+
   return {
     tablesToCreate, tablesToDrop, tablesToRename,
     columnsToAdd, columnsToRemove, columnsToAlter, columnsToRename,
@@ -815,6 +953,17 @@ export const diffSchema = (
     materializedViewsToCreate, materializedViewsToDrop, materializedViewsToRecreate, materializedViewsToRename,
     materializedViewIndexesToCreate, materializedViewIndexesToDrop,
     materializedViewsToAlterTablespace, materializedViewsToAlterStorageParams,
+    functionsToCreate,
+    functionsToDrop,
+    functionsToReplace,
+    functionsToRecreate,
+    proceduresToCreate,
+    proceduresToDrop,
+    proceduresToReplace,
+    proceduresToRecreate,
+    triggerFunctionsToCreate,
+    triggerFunctionsToDrop,
+    triggerFunctionsToReplace,
     warnings: enumReorderWarnings,
   }
 }
@@ -1353,6 +1502,193 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
   for (const con of diff.constraintsToAdd) {
     up.push(`ALTER TABLE ${quoteIdentifier(con.table)} ADD ${generateConstraintSql(con.constraint)};`)
     down.push(`ALTER TABLE ${quoteIdentifier(con.table)} DROP CONSTRAINT ${quoteIdentifier(con.constraint.name)};`)
+  }
+
+  // Function changes (after table creation, before triggers)
+  for (const fnDef of diff.functionsToCreate ?? []) {
+    const qualifiedName =
+      fnDef.schema === "public"
+        ? quoteIdentifier(fnDef.name)
+        : `${quoteIdentifier(fnDef.schema)}.${quoteIdentifier(fnDef.name)}`
+    const paramList = fnDef.params
+      .map((p) => `${p.name} ${sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType)}`)
+      .join(", ")
+    const returnType = fnDef.returnType.startsWith("SETOF ") || fnDef.returnType.startsWith("TABLE(")
+      ? fnDef.returnType
+      : sqlTypeToPg(fnDef.returnType)
+    const language = fnDef.language ?? "plpgsql"
+    const body = language === "sql" ? fnDef.bodySource : transpile(fnDef.bodySource, [...fnDef.params], fnDef.returnType)
+
+    let sql = `CREATE FUNCTION ${qualifiedName}(${paramList})\nRETURNS ${returnType}\nLANGUAGE ${language}`
+    if (fnDef.volatility !== "VOLATILE") sql += `\n${fnDef.volatility}`
+    if (fnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`DROP FUNCTION IF EXISTS ${qualifiedName}(${paramList});`)
+  }
+
+  for (const fnDef of diff.functionsToReplace ?? []) {
+    const qualifiedName =
+      fnDef.schema === "public"
+        ? quoteIdentifier(fnDef.name)
+        : `${quoteIdentifier(fnDef.schema)}.${quoteIdentifier(fnDef.name)}`
+    const paramList = fnDef.params
+      .map((p) => `${p.name} ${sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType)}`)
+      .join(", ")
+    const returnType = fnDef.returnType.startsWith("SETOF ") || fnDef.returnType.startsWith("TABLE(")
+      ? fnDef.returnType
+      : sqlTypeToPg(fnDef.returnType)
+    const language = fnDef.language ?? "plpgsql"
+    const body = language === "sql" ? fnDef.bodySource : transpile(fnDef.bodySource, [...fnDef.params], fnDef.returnType)
+
+    let sql = `CREATE OR REPLACE FUNCTION ${qualifiedName}(${paramList})\nRETURNS ${returnType}\nLANGUAGE ${language}`
+    if (fnDef.volatility !== "VOLATILE") sql += `\n${fnDef.volatility}`
+    if (fnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`-- Cannot auto-restore previous version of function ${qualifiedName}`)
+  }
+
+  // Functions requiring DROP + CREATE (signature changed)
+  for (const fnDef of diff.functionsToRecreate ?? []) {
+    const qualifiedName =
+      fnDef.schema === "public"
+        ? quoteIdentifier(fnDef.name)
+        : `${quoteIdentifier(fnDef.schema)}.${quoteIdentifier(fnDef.name)}`
+    const paramList = fnDef.params
+      .map((p) => `${p.name} ${sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType)}`)
+      .join(", ")
+    const returnType = fnDef.returnType.startsWith("SETOF ") || fnDef.returnType.startsWith("TABLE(")
+      ? fnDef.returnType
+      : sqlTypeToPg(fnDef.returnType)
+    const language = fnDef.language ?? "plpgsql"
+    const body = language === "sql" ? fnDef.bodySource : transpile(fnDef.bodySource, [...fnDef.params], fnDef.returnType)
+
+    up.push(`DROP FUNCTION IF EXISTS ${qualifiedName};`)
+    let sql = `CREATE FUNCTION ${qualifiedName}(${paramList})\nRETURNS ${returnType}\nLANGUAGE ${language}`
+    if (fnDef.volatility !== "VOLATILE") sql += `\n${fnDef.volatility}`
+    if (fnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`-- Cannot auto-restore previous version of function ${qualifiedName}`)
+  }
+
+  for (const fnName of diff.functionsToDrop ?? []) {
+    up.push(`DROP FUNCTION IF EXISTS ${quoteIdentifier(fnName)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped function ${quoteIdentifier(fnName)}`)
+  }
+
+  // Procedure changes
+  for (const procDef of diff.proceduresToCreate ?? []) {
+    const qualifiedName =
+      procDef.schema === "public"
+        ? quoteIdentifier(procDef.name)
+        : `${quoteIdentifier(procDef.schema)}.${quoteIdentifier(procDef.name)}`
+    const paramList = procDef.params
+      .map((p) => {
+        const modePrefix = p.mode && p.mode !== "IN" ? `${p.mode} ` : ""
+        return `${modePrefix}${p.name} ${sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType)}`
+      })
+      .join(", ")
+    const body = transpile(procDef.bodySource, [...procDef.params], "VOID")
+
+    let sql = `CREATE PROCEDURE ${qualifiedName}(${paramList})\nLANGUAGE plpgsql`
+    if (procDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`DROP PROCEDURE IF EXISTS ${qualifiedName}(${paramList});`)
+  }
+
+  for (const procDef of diff.proceduresToReplace ?? []) {
+    const qualifiedName =
+      procDef.schema === "public"
+        ? quoteIdentifier(procDef.name)
+        : `${quoteIdentifier(procDef.schema)}.${quoteIdentifier(procDef.name)}`
+    const paramList = procDef.params
+      .map((p) => {
+        const modePrefix = p.mode && p.mode !== "IN" ? `${p.mode} ` : ""
+        return `${modePrefix}${p.name} ${sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType)}`
+      })
+      .join(", ")
+    const body = transpile(procDef.bodySource, [...procDef.params], "VOID")
+
+    let sql = `CREATE OR REPLACE PROCEDURE ${qualifiedName}(${paramList})\nLANGUAGE plpgsql`
+    if (procDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`-- Cannot auto-restore previous version of procedure ${qualifiedName}`)
+  }
+
+  for (const procDef of diff.proceduresToRecreate ?? []) {
+    const qualifiedName =
+      procDef.schema === "public"
+        ? quoteIdentifier(procDef.name)
+        : `${quoteIdentifier(procDef.schema)}.${quoteIdentifier(procDef.name)}`
+    const paramList = procDef.params
+      .map((p) => {
+        const modePrefix = p.mode && p.mode !== "IN" ? `${p.mode} ` : ""
+        return `${modePrefix}${p.name} ${sqlTypeToPg(typeof p.sqlType === "string" ? p.sqlType : p.sqlType)}`
+      })
+      .join(", ")
+    const body = transpile(procDef.bodySource, [...procDef.params], "VOID")
+
+    up.push(`DROP PROCEDURE IF EXISTS ${qualifiedName};`)
+    let sql = `CREATE PROCEDURE ${qualifiedName}(${paramList})\nLANGUAGE plpgsql`
+    if (procDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`-- Cannot auto-restore previous version of procedure ${qualifiedName}`)
+  }
+
+  for (const procName of diff.proceduresToDrop ?? []) {
+    up.push(`DROP PROCEDURE IF EXISTS ${quoteIdentifier(procName)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped procedure ${quoteIdentifier(procName)}`)
+  }
+
+  // Trigger function changes
+  for (const trigFnDef of diff.triggerFunctionsToCreate ?? []) {
+    const qualifiedName =
+      trigFnDef.schema === "public"
+        ? quoteIdentifier(trigFnDef.name)
+        : `${quoteIdentifier(trigFnDef.schema)}.${quoteIdentifier(trigFnDef.name)}`
+    const triggerParams = [
+      { name: "NEW", sqlType: "RECORD" },
+      { name: "OLD", sqlType: "RECORD" },
+      { name: "TG_OP", sqlType: "TEXT" },
+    ]
+    const body = transpile(trigFnDef.bodySource, triggerParams, "TRIGGER")
+
+    let sql = `CREATE FUNCTION ${qualifiedName}()\nRETURNS TRIGGER\nLANGUAGE plpgsql`
+    if (trigFnDef.volatility !== "VOLATILE") sql += `\n${trigFnDef.volatility}`
+    if (trigFnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`DROP FUNCTION IF EXISTS ${qualifiedName}();`)
+  }
+
+  for (const trigFnDef of diff.triggerFunctionsToReplace ?? []) {
+    const qualifiedName =
+      trigFnDef.schema === "public"
+        ? quoteIdentifier(trigFnDef.name)
+        : `${quoteIdentifier(trigFnDef.schema)}.${quoteIdentifier(trigFnDef.name)}`
+    const triggerParams = [
+      { name: "NEW", sqlType: "RECORD" },
+      { name: "OLD", sqlType: "RECORD" },
+      { name: "TG_OP", sqlType: "TEXT" },
+    ]
+    const body = transpile(trigFnDef.bodySource, triggerParams, "TRIGGER")
+
+    let sql = `CREATE OR REPLACE FUNCTION ${qualifiedName}()\nRETURNS TRIGGER\nLANGUAGE plpgsql`
+    if (trigFnDef.volatility !== "VOLATILE") sql += `\n${trigFnDef.volatility}`
+    if (trigFnDef.security === "DEFINER") sql += `\nSECURITY DEFINER`
+    sql += `\nAS $$\n${body}\n$$;`
+    up.push(sql)
+    down.push(`-- Cannot auto-restore previous version of trigger function ${qualifiedName}`)
+  }
+
+  for (const trigFnName of diff.triggerFunctionsToDrop ?? []) {
+    up.push(`DROP FUNCTION IF EXISTS ${quoteIdentifier(trigFnName)}();`)
+    down.push(`-- Cannot auto-generate recreation of dropped trigger function ${quoteIdentifier(trigFnName)}`)
   }
 
   // Trigger changes on existing tables
