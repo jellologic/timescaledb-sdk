@@ -1,13 +1,13 @@
 import type { ColumnBuilder } from "./Column.js"
 import type { ColumnDef, ConstraintDef, HypertableConfig, HypertableDefinition, IndexDef, TriggerDef } from "./types.js"
 
-type ColumnMap<T extends Record<string, ColumnBuilder<any>>> = {
+type ColumnMap<T extends Record<string, ColumnBuilder<any, any, any>>> = {
   [K in keyof T]: ReturnType<T[K]["build"]>
 }
 
 export const hypertable = <
   TName extends string,
-  TColumns extends Record<string, ColumnBuilder<any>>
+  TColumns extends Record<string, ColumnBuilder<any, any, any>>
 >(
   name: TName,
   columns: TColumns,

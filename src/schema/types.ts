@@ -44,11 +44,12 @@ export type SQLType =
 
 export type ForeignKeyAction = "CASCADE" | "RESTRICT" | "SET NULL" | "SET DEFAULT" | "NO ACTION"
 
-export interface ColumnDef<T = unknown> {
+export interface ColumnDef<T = unknown, TNotNull extends boolean = boolean, THasDefault extends boolean = boolean> {
   readonly _type: T
+  readonly _hasDefault: THasDefault
   readonly name: string
   readonly sqlType: SQLType | string
-  readonly isNotNull: boolean
+  readonly isNotNull: TNotNull
   readonly isPrimaryKey: boolean
   readonly isUnique: boolean
   readonly defaultValue: unknown | undefined
@@ -97,7 +98,7 @@ export interface ConstraintDef {
 
 export interface TableDefinition<
   TName extends string = string,
-  TColumns extends Record<string, ColumnDef<any>> = Record<string, ColumnDef<any>>,
+  TColumns extends Record<string, ColumnDef<any, any, any>> = Record<string, ColumnDef<any, any, any>>,
   TTag extends string = "Table"
 > {
   readonly _tag: TTag
@@ -183,7 +184,7 @@ export interface HypertableConfig {
 
 export interface HypertableDefinition<
   TName extends string = string,
-  TColumns extends Record<string, ColumnDef<any>> = Record<string, ColumnDef<any>>
+  TColumns extends Record<string, ColumnDef<any, any, any>> = Record<string, ColumnDef<any, any, any>>
 > extends TableDefinition<TName, TColumns, "Hypertable"> {
   readonly hypertableConfig: HypertableConfig
 }
@@ -282,15 +283,15 @@ export interface JobDefinition {
 export type InferColumnType<C> = C extends ColumnDef<infer T> ? T : never
 
 export type InferInsert<T extends TableDefinition> = {
-  [K in keyof T["columns"] as T["columns"][K] extends { isNotNull: true; defaultValue: undefined }
+  [K in keyof T["columns"] as T["columns"][K] extends ColumnDef<any, true, false>
     ? K : never]: InferColumnType<T["columns"][K]>
 } & {
-  [K in keyof T["columns"] as T["columns"][K] extends { isNotNull: true; defaultValue: undefined }
+  [K in keyof T["columns"] as T["columns"][K] extends ColumnDef<any, true, false>
     ? never : K]?: InferColumnType<T["columns"][K]> | null
 }
 
 export type InferSelect<T extends TableDefinition> = {
-  [K in keyof T["columns"]]: T["columns"][K] extends { isNotNull: true }
-    ? InferColumnType<T["columns"][K]>
-    : InferColumnType<T["columns"][K]> | null
+  [K in keyof T["columns"]]: T["columns"][K] extends ColumnDef<infer V, true>
+    ? V
+    : T["columns"][K] extends ColumnDef<infer V> ? V | null : unknown
 }

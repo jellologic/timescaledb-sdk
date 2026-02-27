@@ -1,7 +1,9 @@
 import type { ColumnDef, ForeignKeyAction, SQLType } from "./types.ts"
 
-export class ColumnBuilder<T> {
+export class ColumnBuilder<T, TNotNull extends boolean = false, THasDefault extends boolean = false> {
   readonly _type!: T
+  readonly _notNull!: TNotNull
+  readonly _hasDefault!: THasDefault
   private readonly _name: string
   private readonly _sqlType: SQLType | string
   private _isNotNull: boolean = false
@@ -21,91 +23,94 @@ export class ColumnBuilder<T> {
     this._sqlType = sqlType
   }
 
-  notNull(): ColumnBuilder<T> {
+  notNull(): ColumnBuilder<T, true, THasDefault> {
     const col = this._clone()
     col._isNotNull = true
-    return col
+    return col as any
   }
 
-  default(value: T | string): ColumnBuilder<T> {
+  default(value: T | string): ColumnBuilder<T, TNotNull, true> {
     const col = this._clone()
     col._defaultValue = value
-    return col
+    return col as any
   }
 
-  primaryKey(): ColumnBuilder<T> {
+  primaryKey(): ColumnBuilder<T, true, THasDefault> {
     const col = this._clone()
     col._isPrimaryKey = true
     col._isNotNull = true
-    return col
+    return col as any
   }
 
-  unique(): ColumnBuilder<T> {
+  unique(): ColumnBuilder<T, TNotNull, THasDefault> {
     const col = this._clone()
     col._isUnique = true
-    return col
+    return col as any
   }
 
-  references(table: string, column: string): ColumnBuilder<T> {
+  references(table: string, column: string): ColumnBuilder<T, TNotNull, THasDefault> {
     const col = this._clone()
     col._references = { table, column }
-    return col
+    return col as any
   }
 
-  check(expression: string): ColumnBuilder<T> {
+  check(expression: string): ColumnBuilder<T, TNotNull, THasDefault> {
     const col = this._clone()
     col._check = expression
-    return col
+    return col as any
   }
 
-  generatedAlwaysAs(expression: string): ColumnBuilder<T> {
+  generatedAlwaysAs(expression: string): ColumnBuilder<T, TNotNull, true> {
     const col = this._clone()
     col._generated = { expression, type: "stored" }
-    return col
+    return col as any
   }
 
-  generatedAlwaysAsIdentity(): ColumnBuilder<T> {
+  generatedAlwaysAsIdentity(): ColumnBuilder<T, true, true> {
     const col = this._clone()
     col._generated = { type: "identity", mode: "always" }
-    return col
+    col._isNotNull = true
+    return col as any
   }
 
-  generatedByDefaultAsIdentity(): ColumnBuilder<T> {
+  generatedByDefaultAsIdentity(): ColumnBuilder<T, true, true> {
     const col = this._clone()
     col._generated = { type: "identity", mode: "byDefault" }
-    return col
+    col._isNotNull = true
+    return col as any
   }
 
-  collate(collation: string): ColumnBuilder<T> {
+  collate(collation: string): ColumnBuilder<T, TNotNull, THasDefault> {
     const col = this._clone()
     col._collation = collation
-    return col
+    return col as any
   }
 
-  onDelete(action: ForeignKeyAction): ColumnBuilder<T> {
+  onDelete(action: ForeignKeyAction): ColumnBuilder<T, TNotNull, THasDefault> {
     const col = this._clone()
     col._onDelete = action
-    return col
+    return col as any
   }
 
-  onUpdate(action: ForeignKeyAction): ColumnBuilder<T> {
+  onUpdate(action: ForeignKeyAction): ColumnBuilder<T, TNotNull, THasDefault> {
     const col = this._clone()
     col._onUpdate = action
-    return col
+    return col as any
   }
 
-  renamedFrom(previousName: string): ColumnBuilder<T> {
+  renamedFrom(previousName: string): ColumnBuilder<T, TNotNull, THasDefault> {
     const col = this._clone()
     col._renamedFrom = previousName
-    return col
+    return col as any
   }
 
-  build(): ColumnDef<T> {
+  build(): ColumnDef<T, TNotNull, THasDefault> {
     return {
       _type: undefined as any,
+      _hasDefault: undefined as any,
       name: this._name,
       sqlType: this._sqlType,
-      isNotNull: this._isNotNull,
+      isNotNull: this._isNotNull as TNotNull,
       isPrimaryKey: this._isPrimaryKey,
       isUnique: this._isUnique,
       defaultValue: this._defaultValue,
@@ -119,8 +124,8 @@ export class ColumnBuilder<T> {
     }
   }
 
-  private _clone(): ColumnBuilder<T> {
-    const col = new ColumnBuilder<T>(this._sqlType, this._name)
+  private _clone(): ColumnBuilder<T, TNotNull, THasDefault> {
+    const col = new ColumnBuilder<T, TNotNull, THasDefault>(this._sqlType, this._name)
     col._isNotNull = this._isNotNull
     col._isPrimaryKey = this._isPrimaryKey
     col._isUnique = this._isUnique
@@ -141,8 +146,8 @@ export const timestamptz = (name: string) => new ColumnBuilder<Date>("timestampt
 export const timestamp = (name: string) => new ColumnBuilder<Date>("timestamp", name)
 export const integer = (name: string) => new ColumnBuilder<number>("integer", name)
 export const bigint_ = (name: string) => new ColumnBuilder<bigint>("bigint", name)
-export const serial = (name: string) => new ColumnBuilder<number>("serial", name).notNull()
-export const bigserial = (name: string) => new ColumnBuilder<bigint>("bigserial", name).notNull()
+export const serial = (name: string) => new ColumnBuilder<number, false, true>("serial", name).notNull()
+export const bigserial = (name: string) => new ColumnBuilder<bigint, false, true>("bigserial", name).notNull()
 export const text = (name: string) => new ColumnBuilder<string>("text", name)
 export const varchar = (name: string, opts?: { length?: number }) =>
   new ColumnBuilder<string>(opts?.length ? `varchar(${opts.length})` : "varchar", name)
@@ -166,7 +171,7 @@ export const time = (name: string) => new ColumnBuilder<string>("time", name)
 
 // New numeric types
 export const smallint = (name: string) => new ColumnBuilder<number>("smallint", name)
-export const smallserial = (name: string) => new ColumnBuilder<number>("smallserial", name).notNull()
+export const smallserial = (name: string) => new ColumnBuilder<number, false, true>("smallserial", name).notNull()
 export const oid = (name: string) => new ColumnBuilder<number>("oid", name)
 export const money = (name: string) => new ColumnBuilder<string>("money", name)
 
@@ -200,7 +205,9 @@ export const daterange = (name: string) => new ColumnBuilder<string>("daterange"
 export const numrange = (name: string) => new ColumnBuilder<string>("numrange", name)
 
 // Array wrapper
-export const array = <T>(inner: ColumnBuilder<T>): ColumnBuilder<T[]> => {
+export const array = <T, TNotNull extends boolean, THasDefault extends boolean>(
+  inner: ColumnBuilder<T, TNotNull, THasDefault>
+): ColumnBuilder<T[], TNotNull, THasDefault> => {
   const def = inner.build()
-  return new ColumnBuilder<T[]>(`${def.sqlType}[]`, def.name)
+  return new ColumnBuilder<T[], TNotNull, THasDefault>(`${def.sqlType}[]`, def.name)
 }
