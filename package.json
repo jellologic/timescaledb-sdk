@@ -1,5 +1,5 @@
 {
-  "name": "timescaledb-sdk",
+  "name": "@jellologic/timescaledb-sdk",
   "version": "0.1.0",
   "description": "Complete, type-safe TypeScript SDK for TimescaleDB — hypertables, continuous aggregates, compression, hyperfunctions, migrations, and more. Built on Effect.",
   "type": "module",
@@ -44,6 +44,9 @@
     "@effect/sql-pg": "^0.50.3",
     "@types/bun": "latest",
     "typescript": "^5"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
   "license": "MIT",
   "homepage": "https://github.com/ezrasperodev/timescaledb-sdk#readme",
