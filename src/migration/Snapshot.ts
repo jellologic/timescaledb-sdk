@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { MigrationError } from "../Error.js"
-import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, IndexSnapshotColumn, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot } from "./types.js"
 
 export class SnapshotWarning {
   readonly _tag = "SnapshotWarning"
@@ -27,11 +27,43 @@ const catchWithWarning = <A>(queryName: string, fallback: A) =>
     return Effect.succeed(fallback)
   })
 
-const parseIndexColumns = (indexdef: string): string[] => {
-  // Extract columns from indexdef like: CREATE INDEX idx ON tbl USING btree (col1, col2)
+const parseIndexColumns = (indexdef: string): Array<string | IndexSnapshotColumn> => {
+  // Extract columns from indexdef like: CREATE INDEX idx ON tbl USING btree (col1, col2 DESC NULLS FIRST)
   const match = indexdef.match(/\(([^)]+)\)\s*(?:WHERE|$)/i)
   if (!match) return []
-  return match[1]!.split(",").map((c) => c.trim().replace(/^"(.*)"$/, "$1"))
+  return match[1]!.split(",").map((c) => {
+    const trimmed = c.trim()
+    const hasDesc = /\bDESC\b/i.test(trimmed)
+    const hasNullsFirst = /\bNULLS\s+FIRST\b/i.test(trimmed)
+    const hasNullsLast = /\bNULLS\s+LAST\b/i.test(trimmed)
+    const name = trimmed
+      .replace(/\b(ASC|DESC)\b/gi, "")
+      .replace(/\bNULLS\s+(FIRST|LAST)\b/gi, "")
+      .trim()
+      .replace(/^"(.*)"$/, "$1")
+
+    if (!hasDesc && !hasNullsFirst && !hasNullsLast) return name
+    const col: IndexSnapshotColumn = {
+      name,
+      ...(hasDesc ? { order: "DESC" as const } : undefined),
+      ...(hasNullsFirst ? { nulls: "FIRST" as const } : hasNullsLast ? { nulls: "LAST" as const } : undefined),
+    }
+    return col
+  })
+}
+
+/** Merge pg_attribute column names with ordering info parsed from indexdef */
+const enrichColumnsWithOrdering = (
+  colNames: string[] | null,
+  indexdef: string
+): Array<string | IndexSnapshotColumn> => {
+  const parsed = parseIndexColumns(indexdef)
+  if (!colNames || colNames.length !== parsed.length) return parsed
+  return colNames.map((name, i) => {
+    const p = parsed[i]!
+    if (typeof p === "string") return name
+    return { name, ...(p.order ? { order: p.order } : {}), ...(p.nulls ? { nulls: p.nulls } : {}) } as IndexSnapshotColumn
+  })
 }
 
 const conTypeMap: Record<string, ConstraintSnapshot["type"]> = {
@@ -172,7 +204,7 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
         })),
         indexes: indexes.map((i): IndexSnapshot => ({
           name: i.indexname,
-          columns: i.columns ?? parseIndexColumns(i.indexdef),
+          columns: enrichColumnsWithOrdering(i.columns, i.indexdef),
           isUnique: i.indexdef.includes("UNIQUE"),
           type: i.indexdef.includes("USING btree") ? "btree" :
                 i.indexdef.includes("USING brin") ? "brin" :
@@ -547,7 +579,7 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
         viewDefinition: mv.definition ?? "",
         indexes: (mvIndexes as any[]).map((i): IndexSnapshot => ({
           name: i.indexname,
-          columns: i.columns ?? parseIndexColumns(i.indexdef),
+          columns: enrichColumnsWithOrdering(i.columns, i.indexdef),
           isUnique: i.indexdef.includes("UNIQUE"),
           type: i.indexdef.includes("USING btree") ? "btree" :
                 i.indexdef.includes("USING brin") ? "brin" :

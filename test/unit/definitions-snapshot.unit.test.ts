@@ -5,7 +5,7 @@ import { timestamptz, integer, doublePrecision, text, serial, boolean } from "..
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
 import { pgEnum, enumColumn } from "../../src/schema/Enum.js"
-import { index } from "../../src/schema/IndexHelpers.js"
+import { index, desc } from "../../src/schema/IndexHelpers.js"
 import { rlsPolicy } from "../../src/schema/Rls.js"
 import { backgroundJob } from "../../src/schema/Job.js"
 import { continuousAggregateView, aggColumn } from "../../src/schema/ContinuousAggregate.js"
@@ -69,6 +69,33 @@ describe("definitionsToSnapshot", () => {
     expect(snapshot.tables[0]!.indexes.length).toBe(1)
     expect(snapshot.tables[0]!.indexes[0]!.name).toBe("idx_name")
     expect(snapshot.tables[0]!.indexes[0]!.columns).toEqual(["name"])
+  })
+
+  test("includes index ordering in snapshots", () => {
+    const events = pgTable("events", {
+      id: integer("id"),
+      time: timestamptz("time"),
+    }, () => [
+      index("idx_comp", ["id", desc("time", "FIRST")]),
+    ])
+
+    const snapshot = definitionsToSnapshot([events])
+    expect(snapshot.tables[0]!.indexes[0]!.columns).toEqual([
+      "id",
+      { name: "time", order: "DESC", nulls: "FIRST" },
+    ])
+  })
+
+  test("plain columns without ordering remain strings in snapshot", () => {
+    const events = pgTable("events", {
+      id: integer("id"),
+      time: timestamptz("time"),
+    }, () => [
+      index("idx_id", ["id"]),
+    ])
+
+    const snapshot = definitionsToSnapshot([events])
+    expect(snapshot.tables[0]!.indexes[0]!.columns).toEqual(["id"])
   })
 
   test("round-trip: snapshot from definitions produces empty diff", () => {

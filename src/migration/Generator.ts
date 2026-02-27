@@ -2,7 +2,7 @@ import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, I
 import type { FunctionDefinition, ProcedureDefinition, TriggerFunctionDefinition } from "../functions/types.js"
 import { transpile } from "../functions/transpiler/index.js"
 import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
-import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot, ViewDependency } from "./types.js"
+import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot, ViewDependency, IndexSnapshotColumn } from "./types.js"
 import { toSqlValue, quoteIdentifier, quoteString, qualifiedName } from "../internal/sql.js"
 
 export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition | ViewDefinition | MaterializedViewDefinition | FunctionDefinition | ProcedureDefinition | TriggerFunctionDefinition
@@ -279,6 +279,22 @@ export const diffSchema = (
   const indexesToCreate: Array<{ table: string; index: import("../schema/types.js").IndexDef }> = []
   const indexesToDrop: Array<{ table: string; indexName: string }> = []
 
+  const normalizeSnapshotCol = (c: string | IndexSnapshotColumn): string => {
+    if (typeof c === "string") return c
+    let s = c.name
+    if (c.order) s += ` ${c.order}`
+    if (c.nulls) s += ` NULLS ${c.nulls}`
+    return s
+  }
+
+  const normalizeDefCol = (c: import("../schema/types.js").IndexColumn): string => {
+    if (typeof c === "string") return c
+    let s = c.expression
+    if (c.order) s += ` ${c.order}`
+    if (c.nulls) s += ` NULLS ${c.nulls}`
+    return s
+  }
+
   for (const def of tableDefs) {
     if (tablesToCreate.includes(def.name)) continue // skip new tables, indexes handled in CREATE TABLE
     const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
@@ -293,10 +309,10 @@ export const diffSchema = (
       if (!existingIndexes.has(name)) {
         indexesToCreate.push({ table: def.name, index: idx })
       } else {
-        // Check if index changed (different columns or type)
+        // Check if index changed (different columns, type, or ordering)
         const existingIdx = existingIndexes.get(name)!
-        const defCols = idx.columns.map((c) => typeof c === "string" ? c : c.expression)
-        const existCols = existingIdx.columns
+        const defCols = idx.columns.map(normalizeDefCol)
+        const existCols = existingIdx.columns.map(normalizeSnapshotCol)
         if (
           idx.type !== existingIdx.type ||
           idx.unique !== existingIdx.isUnique ||
@@ -711,11 +727,12 @@ export const diffSchema = (
         materializedViewIndexesToCreate.push({ matViewName: def.name, index: idx })
       } else {
         const existingIdx = existingIndexes.get(name)!
-        const defCols = idx.columns.map((c) => typeof c === "string" ? c : c.expression)
+        const defCols = idx.columns.map(normalizeDefCol)
+        const existCols = existingIdx.columns.map(normalizeSnapshotCol)
         if (
           idx.type !== existingIdx.type ||
           idx.unique !== existingIdx.isUnique ||
-          JSON.stringify(defCols) !== JSON.stringify(existingIdx.columns)
+          JSON.stringify(defCols) !== JSON.stringify(existCols)
         ) {
           materializedViewIndexesToDrop.push({ matViewName: def.name, indexName: name })
           materializedViewIndexesToCreate.push({ matViewName: def.name, index: idx })
@@ -1046,8 +1063,11 @@ const generateConstraintSql = (constraint: ConstraintDef): string => {
 
 const formatIndexColumn = (col: import("../schema/types.js").IndexColumn): string => {
   if (typeof col === "string") return quoteIdentifier(col)
-  let s = `(${col.expression})`
+  const isSimpleColumn = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(col.expression)
+  let s = isSimpleColumn ? quoteIdentifier(col.expression) : `(${col.expression})`
   if (col.opclass) s += ` ${col.opclass}`
+  if (col.order) s += ` ${col.order}`
+  if (col.nulls) s += ` NULLS ${col.nulls}`
   return s
 }
 

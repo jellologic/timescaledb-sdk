@@ -6,7 +6,7 @@ import {
 } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
-import { expr, colWithOp, index, uniqueIndex, brinIndex, ginIndex } from "../../src/schema/IndexHelpers.js"
+import { expr, colWithOp, desc, asc, index, uniqueIndex, brinIndex, ginIndex } from "../../src/schema/IndexHelpers.js"
 import { check, unique, foreignKey, primaryKey, exclude, deferrable } from "../../src/schema/Constraint.js"
 import { pgEnum, enumColumn } from "../../src/schema/Enum.js"
 import { trigger } from "../../src/schema/Trigger.js"
@@ -271,6 +271,136 @@ describe("SQL Generation — Indexes", () => {
     const up = genUp([t])
     const idxSql = up.find((s) => s.includes("CREATE INDEX"))
     expect(idxSql).toContain("USING gin")
+  })
+})
+
+describe("SQL Generation — Index Column Ordering", () => {
+  test("DESC index column", () => {
+    const t = pgTable("events", { time: timestamptz("time") }, () => [
+      index("idx_time", [desc("time")]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain('"time" DESC')
+  })
+
+  test("composite index with mixed ordering", () => {
+    const t = pgTable("events", { id: integer("id"), time: timestamptz("time") }, () => [
+      index("idx_comp", ["id", desc("time")]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain('"id", "time" DESC')
+  })
+
+  test("DESC with NULLS FIRST", () => {
+    const t = pgTable("events", { time: timestamptz("time") }, () => [
+      index("idx_time", [desc("time", "FIRST")]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain('"time" DESC NULLS FIRST')
+  })
+
+  test("ASC with NULLS LAST", () => {
+    const t = pgTable("events", { time: timestamptz("time") }, () => [
+      index("idx_time", [asc("time", "LAST")]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain('"time" ASC NULLS LAST')
+  })
+
+  test("expression column with ordering", () => {
+    const t = pgTable("events", { name: text("name") }, () => [
+      index("idx_lower", [{ expression: "lower(name)", order: "DESC" }]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain("(lower(name)) DESC")
+  })
+
+  test("column with opclass and ordering", () => {
+    const t = pgTable("events", { name: text("name") }, () => [
+      index("idx_name", [{ expression: "name", opclass: "text_pattern_ops", order: "DESC" }]),
+    ])
+    const up = genUp([t])
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
+    expect(idxSql).toContain('"name" text_pattern_ops DESC')
+  })
+})
+
+describe("SQL Generation — Index Ordering Diffing", () => {
+  test("changed ordering (ASC→DESC) → DROP + CREATE", () => {
+    const t = pgTable("events", { time: timestamptz("time") }, () => [
+      index("idx_time", [desc("time")]),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "events",
+        schema: "public",
+        columns: [
+          { name: "time", dataType: "timestamp with time zone", isNullable: true, defaultValue: null },
+        ],
+        indexes: [{ name: "idx_time", columns: ["time"], isUnique: false, type: "btree" }],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.indexesToDrop.length).toBe(1)
+    expect(diff.indexesToCreate.length).toBe(1)
+  })
+
+  test("same ordering (both DESC) → no change", () => {
+    const t = pgTable("events", { time: timestamptz("time") }, () => [
+      index("idx_time", [desc("time")]),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "events",
+        schema: "public",
+        columns: [
+          { name: "time", dataType: "timestamp with time zone", isNullable: true, defaultValue: null },
+        ],
+        indexes: [{ name: "idx_time", columns: [{ name: "time", order: "DESC" }], isUnique: false, type: "btree" }],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.indexesToDrop.length).toBe(0)
+    expect(diff.indexesToCreate.length).toBe(0)
+  })
+
+  test("changed NULLS ordering → DROP + CREATE", () => {
+    const t = pgTable("events", { time: timestamptz("time") }, () => [
+      index("idx_time", [desc("time", "FIRST")]),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{
+        name: "events",
+        schema: "public",
+        columns: [
+          { name: "time", dataType: "timestamp with time zone", isNullable: true, defaultValue: null },
+        ],
+        indexes: [{ name: "idx_time", columns: [{ name: "time", order: "DESC" }], isUnique: false, type: "btree" }],
+      }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.indexesToDrop.length).toBe(1)
+    expect(diff.indexesToCreate.length).toBe(1)
   })
 })
 

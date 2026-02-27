@@ -132,9 +132,15 @@ export interface ColumnSnapshot {
   readonly defaultValue: string | null
 }
 
+export interface IndexSnapshotColumn {
+  readonly name: string
+  readonly order?: "ASC" | "DESC"
+  readonly nulls?: "FIRST" | "LAST"
+}
+
 export interface IndexSnapshot {
   readonly name: string
-  readonly columns: ReadonlyArray<string>
+  readonly columns: ReadonlyArray<string | IndexSnapshotColumn>
   readonly isUnique: boolean
   readonly type: string
 }

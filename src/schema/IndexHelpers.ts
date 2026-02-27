@@ -11,6 +11,20 @@ export const colWithOp = (column: string, opclass: string): IndexColumn => ({
   opclass,
 })
 
+/** Create an index column with DESC ordering */
+export const desc = (column: string, nulls?: "FIRST" | "LAST"): IndexColumn => ({
+  expression: column,
+  order: "DESC",
+  nulls,
+})
+
+/** Create an index column with ASC ordering (explicit) */
+export const asc = (column: string, nulls?: "FIRST" | "LAST"): IndexColumn => ({
+  expression: column,
+  order: "ASC",
+  nulls,
+})
+
 export const index = (
   name: string,
   columns: ReadonlyArray<IndexColumn>,

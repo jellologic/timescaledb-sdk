@@ -1,7 +1,7 @@
 import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, CaggDefinition, ConstraintDef, TriggerDef, JobDefinition, ViewDefinition, MaterializedViewDefinition } from "../schema/types.js"
 import type { FunctionDefinition, ProcedureDefinition, TriggerFunctionDefinition } from "../functions/types.js"
 import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
-import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot, ProcedureSnapshot, TriggerFunctionSnapshot } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot, ProcedureSnapshot, TriggerFunctionSnapshot, IndexSnapshotColumn } from "./types.js"
 import type { SchemaDefinition } from "./Generator.js"
 
 export interface PersistedSnapshot {
@@ -46,7 +46,11 @@ const tableDefToSnapshot = (def: TableDefinition | HypertableDefinition): TableS
   columns: (Object.values(def.columns) as ColumnDef[]).map(columnDefToSnapshot),
   indexes: def.indexes.map((idx) => ({
     name: idx.name,
-    columns: idx.columns.map((c) => typeof c === "string" ? c : c.expression),
+    columns: idx.columns.map((c): string | IndexSnapshotColumn => {
+      if (typeof c === "string") return c
+      if (!c.order && !c.nulls) return c.expression
+      return { name: c.expression, ...(c.order ? { order: c.order } : {}), ...(c.nulls ? { nulls: c.nulls } : {}) } as IndexSnapshotColumn
+    }),
     isUnique: idx.unique,
     type: idx.type,
   })),
@@ -152,7 +156,11 @@ const matViewDefToSnapshot = (def: MaterializedViewDefinition): MaterializedView
   viewDefinition: def.sql,
   indexes: def.indexes.map((idx) => ({
     name: idx.name,
-    columns: idx.columns.map((c) => typeof c === "string" ? c : c.expression),
+    columns: idx.columns.map((c): string | IndexSnapshotColumn => {
+      if (typeof c === "string") return c
+      if (!c.order && !c.nulls) return c.expression
+      return { name: c.expression, ...(c.order ? { order: c.order } : {}), ...(c.nulls ? { nulls: c.nulls } : {}) } as IndexSnapshotColumn
+    }),
     isUnique: idx.unique,
     type: idx.type,
   })),

@@ -65,6 +65,8 @@ export interface ColumnDef<T = unknown, TNotNull extends boolean = boolean, THas
 export type IndexColumn = string | {
   readonly expression: string
   readonly opclass?: string
+  readonly order?: "ASC" | "DESC"
+  readonly nulls?: "FIRST" | "LAST"
 }
 
 export interface IndexDef {
