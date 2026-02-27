@@ -182,6 +182,7 @@ const setup = Effect.gen(function* () {
 
 ## Next steps
 
+- [Functions](./functions.md) -- define typed functions for job references
 - [Tiering](./tiering.md) -- data tiering across tablespaces
 - [Retention](./retention.md) -- retention policies
 - [Compression](./compression.md) -- compression policies

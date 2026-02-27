@@ -25,6 +25,7 @@ All errors extend `Data.TaggedError` with `{ message: string; cause?: unknown }`
 | `JobError` | `"JobError"` | Background job operations |
 | `TieringError` | `"TieringError"` | Data tiering operations |
 | `ViewError` | `"ViewError"` | View and materialized view operations |
+| `FunctionError` | `"FunctionError"` | Function, procedure, and trigger function operations |
 
 ## Catching specific errors
 
@@ -194,4 +195,5 @@ const resilientQuery = select(users).execute.pipe(
 - [Getting Started](./getting-started.md) -- setup and configuration
 - [Query Builder](./query-builder.md) -- queries that produce `QueryError`
 - [Views](./views.md) -- views and materialized views
+- [Functions](./functions.md) -- functions, procedures, and triggers
 - [Migrations](./migrations.md) -- migration error handling

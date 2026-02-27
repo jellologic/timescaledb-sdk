@@ -472,5 +472,6 @@ See [Jobs](./jobs.md) for runtime operations.
 
 - [Query Builder](./query-builder.md) -- build queries using these table definitions
 - [Views](./views.md) -- define views and materialized views
+- [Functions](./functions.md) -- define functions, procedures, and trigger functions
 - [Hyperfunctions](./hyperfunctions.md) -- use TimescaleDB analytical functions
 - [Migrations](./migrations.md) -- generate migrations from schema definitions
