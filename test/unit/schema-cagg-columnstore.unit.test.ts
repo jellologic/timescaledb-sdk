@@ -59,6 +59,18 @@ const emptyDiff: SchemaDiff = {
   retentionPoliciesToAlter: [],
   caggRefreshPoliciesToAlter: [],
   caggMigrations: [],
+  viewsToCreate: [],
+  viewsToDrop: [],
+  viewsToReplace: [],
+  viewsToRename: [],
+  materializedViewsToCreate: [],
+  materializedViewsToDrop: [],
+  materializedViewsToRecreate: [],
+  materializedViewsToRename: [],
+  materializedViewIndexesToCreate: [],
+  materializedViewIndexesToDrop: [],
+  materializedViewsToAlterTablespace: [],
+  materializedViewsToAlterStorageParams: [],
   warnings: [],
 }
 

@@ -1,8 +1,8 @@
-import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, IndexDef, EnumTypeDef, CaggDefinition, RlsPolicyDef, JobDefinition } from "../schema/types.js"
-import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot } from "./types.js"
-import { toSqlValue, quoteIdentifier, quoteString } from "../internal/sql.js"
+import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, IndexDef, EnumTypeDef, CaggDefinition, RlsPolicyDef, JobDefinition, ViewDefinition, MaterializedViewDefinition } from "../schema/types.js"
+import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot, ViewDependency } from "./types.js"
+import { toSqlValue, quoteIdentifier, quoteString, qualifiedName } from "../internal/sql.js"
 
-export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition
+export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition | ViewDefinition | MaterializedViewDefinition
 
 const TYPE_ALIASES: Record<string, string> = {
   "serial": "integer",
@@ -67,6 +67,18 @@ export interface SchemaDiff {
   readonly retentionPoliciesToAlter: ReadonlyArray<{ table: string; dropAfter: string }>
   readonly caggRefreshPoliciesToAlter: ReadonlyArray<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }>
   readonly caggMigrations: ReadonlyArray<string>
+  readonly viewsToCreate: ReadonlyArray<ViewDefinition>
+  readonly viewsToDrop: ReadonlyArray<string>
+  readonly viewsToReplace: ReadonlyArray<ViewDefinition>
+  readonly viewsToRename: ReadonlyArray<{ oldName: string; newName: string }>
+  readonly materializedViewsToCreate: ReadonlyArray<MaterializedViewDefinition>
+  readonly materializedViewsToDrop: ReadonlyArray<string>
+  readonly materializedViewsToRecreate: ReadonlyArray<MaterializedViewDefinition>
+  readonly materializedViewsToRename: ReadonlyArray<{ oldName: string; newName: string }>
+  readonly materializedViewIndexesToCreate: ReadonlyArray<{ matViewName: string; index: IndexDef }>
+  readonly materializedViewIndexesToDrop: ReadonlyArray<{ matViewName: string; indexName: string }>
+  readonly materializedViewsToAlterTablespace: ReadonlyArray<{ name: string; schema: string; tablespace: string }>
+  readonly materializedViewsToAlterStorageParams: ReadonlyArray<{ name: string; schema: string; params: Record<string, string | number | boolean> }>
   readonly warnings: ReadonlyArray<{ name: string; message: string }>
 }
 
@@ -596,6 +608,142 @@ export const diffSchema = (
     }
   }
 
+  // View diffing
+  const viewDefs = definitions.filter((d): d is ViewDefinition => d._tag === "View")
+  const matViewDefs = definitions.filter((d): d is MaterializedViewDefinition => d._tag === "MaterializedView")
+
+  const viewKey = (name: string, schema: string) => `${schema}.${name}`
+
+  const snapshotViews = snapshot.views ?? []
+  const snapshotMatViews = snapshot.materializedViews ?? []
+  const snapshotViewKeys = new Set(snapshotViews.map((v) => viewKey(v.name, v.schema)))
+  const snapshotMatViewKeys = new Set(snapshotMatViews.map((v) => viewKey(v.name, v.schema)))
+
+  // View renames
+  const viewsToRename: Array<{ oldName: string; newName: string }> = []
+  const viewRenamedOldKeys = new Set<string>()
+  const viewRenamedNewKeys = new Set<string>()
+
+  for (const def of viewDefs) {
+    if (def.renamedFrom && snapshotViewKeys.has(viewKey(def.renamedFrom, def.schema)) && !snapshotViewKeys.has(viewKey(def.name, def.schema))) {
+      viewsToRename.push({ oldName: def.renamedFrom, newName: def.name })
+      viewRenamedOldKeys.add(viewKey(def.renamedFrom, def.schema))
+      viewRenamedNewKeys.add(viewKey(def.name, def.schema))
+    }
+  }
+
+  const definedViewKeys = new Set(viewDefs.map((v) => viewKey(v.name, v.schema)))
+  const viewsToCreate = viewDefs.filter((v) => !snapshotViewKeys.has(viewKey(v.name, v.schema)) && !viewRenamedNewKeys.has(viewKey(v.name, v.schema)))
+  const viewsToDrop = snapshotViews.filter((v) => !definedViewKeys.has(viewKey(v.name, v.schema)) && !viewRenamedOldKeys.has(viewKey(v.name, v.schema))).map((v) => v.name)
+
+  // Detect changed view definitions → replace
+  const normalizeViewSql = (sql: string): string => sql.replace(/\s+/g, " ").trim().toLowerCase()
+  const viewsToReplace: ViewDefinition[] = []
+
+  for (const def of viewDefs) {
+    if (viewsToCreate.includes(def)) continue
+    if (viewRenamedNewKeys.has(viewKey(def.name, def.schema))) continue
+    const snapshotName = [...viewsToRename].find((r) => r.newName === def.name)?.oldName ?? def.name
+    const existing = snapshotViews.find((v) => v.name === snapshotName && v.schema === def.schema)
+    if (!existing) continue
+    const sqlChanged = normalizeViewSql(def.sql) !== normalizeViewSql(existing.viewDefinition)
+    const checkOptionChanged = (def.checkOption ?? undefined) !== (existing.checkOption ?? undefined)
+    const securityChanged = (def.security ?? undefined) !== (existing.security ?? undefined)
+    if (sqlChanged || checkOptionChanged || securityChanged) {
+      viewsToReplace.push(def)
+    }
+  }
+
+  // Materialized view renames
+  const materializedViewsToRename: Array<{ oldName: string; newName: string }> = []
+  const matViewRenamedOldKeys = new Set<string>()
+  const matViewRenamedNewKeys = new Set<string>()
+
+  for (const def of matViewDefs) {
+    if (def.renamedFrom && snapshotMatViewKeys.has(viewKey(def.renamedFrom, def.schema)) && !snapshotMatViewKeys.has(viewKey(def.name, def.schema))) {
+      materializedViewsToRename.push({ oldName: def.renamedFrom, newName: def.name })
+      matViewRenamedOldKeys.add(viewKey(def.renamedFrom, def.schema))
+      matViewRenamedNewKeys.add(viewKey(def.name, def.schema))
+    }
+  }
+
+  const definedMatViewKeys = new Set(matViewDefs.map((v) => viewKey(v.name, v.schema)))
+  const materializedViewsToCreate = matViewDefs.filter((v) => !snapshotMatViewKeys.has(viewKey(v.name, v.schema)) && !matViewRenamedNewKeys.has(viewKey(v.name, v.schema)))
+  const materializedViewsToDrop = snapshotMatViews.filter((v) => !definedMatViewKeys.has(viewKey(v.name, v.schema)) && !matViewRenamedOldKeys.has(viewKey(v.name, v.schema))).map((v) => v.name)
+
+  // Detect changed materialized view definitions → recreate (no OR REPLACE for matviews)
+  const materializedViewsToRecreate: MaterializedViewDefinition[] = []
+  const materializedViewIndexesToCreate: Array<{ matViewName: string; index: IndexDef }> = []
+  const materializedViewIndexesToDrop: Array<{ matViewName: string; indexName: string }> = []
+
+  for (const def of matViewDefs) {
+    if (materializedViewsToCreate.includes(def)) continue
+    if (matViewRenamedNewKeys.has(viewKey(def.name, def.schema))) continue
+    const snapshotName = [...materializedViewsToRename].find((r) => r.newName === def.name)?.oldName ?? def.name
+    const existing = snapshotMatViews.find((v) => v.name === snapshotName && v.schema === def.schema)
+    if (!existing) continue
+
+    if (normalizeViewSql(def.sql) !== normalizeViewSql(existing.viewDefinition)) {
+      materializedViewsToRecreate.push(def)
+      continue // skip index diffing if recreating
+    }
+
+    // Index diffing for existing materialized views
+    const existingIndexes = new Map(existing.indexes.map((i) => [i.name, i]))
+    const definedIndexes = new Map(def.indexes.map((i) => [i.name, i]))
+
+    for (const [name, idx] of definedIndexes) {
+      if (!existingIndexes.has(name)) {
+        materializedViewIndexesToCreate.push({ matViewName: def.name, index: idx })
+      } else {
+        const existingIdx = existingIndexes.get(name)!
+        const defCols = idx.columns.map((c) => typeof c === "string" ? c : c.expression)
+        if (
+          idx.type !== existingIdx.type ||
+          idx.unique !== existingIdx.isUnique ||
+          JSON.stringify(defCols) !== JSON.stringify(existingIdx.columns)
+        ) {
+          materializedViewIndexesToDrop.push({ matViewName: def.name, indexName: name })
+          materializedViewIndexesToCreate.push({ matViewName: def.name, index: idx })
+        }
+      }
+    }
+
+    for (const [name] of existingIndexes) {
+      if (!definedIndexes.has(name)) {
+        materializedViewIndexesToDrop.push({ matViewName: def.name, indexName: name })
+      }
+    }
+  }
+
+  // Materialized view ALTER tablespace and storage params
+  const materializedViewsToAlterTablespace: Array<{ name: string; schema: string; tablespace: string }> = []
+  const materializedViewsToAlterStorageParams: Array<{ name: string; schema: string; params: Record<string, string | number | boolean> }> = []
+
+  for (const def of matViewDefs) {
+    if (materializedViewsToCreate.includes(def)) continue
+    if (matViewRenamedNewKeys.has(viewKey(def.name, def.schema))) continue
+    if (materializedViewsToRecreate.includes(def)) continue
+    const snapshotName = [...materializedViewsToRename].find((r) => r.newName === def.name)?.oldName ?? def.name
+    const existing = snapshotMatViews.find((v) => v.name === snapshotName && v.schema === def.schema)
+    if (!existing) continue
+
+    // Tablespace changes (snapshot doesn't track tablespace currently, so we can only detect when def sets it)
+    if (def.tablespace && !(existing as any).tablespace) {
+      materializedViewsToAlterTablespace.push({ name: def.name, schema: def.schema, tablespace: def.tablespace })
+    } else if (def.tablespace && (existing as any).tablespace && def.tablespace !== (existing as any).tablespace) {
+      materializedViewsToAlterTablespace.push({ name: def.name, schema: def.schema, tablespace: def.tablespace })
+    }
+
+    // Storage param changes
+    if (def.storageParameters && Object.keys(def.storageParameters).length > 0) {
+      const existingParams = (existing as any).storageParameters ?? {}
+      if (JSON.stringify(def.storageParameters) !== JSON.stringify(existingParams)) {
+        materializedViewsToAlterStorageParams.push({ name: def.name, schema: def.schema, params: def.storageParameters })
+      }
+    }
+  }
+
   // Hypercore diffing
   const hypercoreToEnable: string[] = []
   const hypercoreToDisable: string[] = []
@@ -663,6 +811,10 @@ export const diffSchema = (
     retentionPoliciesToAlter,
     caggRefreshPoliciesToAlter,
     caggMigrations,
+    viewsToCreate, viewsToDrop, viewsToReplace, viewsToRename,
+    materializedViewsToCreate, materializedViewsToDrop, materializedViewsToRecreate, materializedViewsToRename,
+    materializedViewIndexesToCreate, materializedViewIndexesToDrop,
+    materializedViewsToAlterTablespace, materializedViewsToAlterStorageParams,
     warnings: enumReorderWarnings,
   }
 }
@@ -750,12 +902,13 @@ const formatIndexColumn = (col: import("../schema/types.js").IndexColumn): strin
   return s
 }
 
-const generateIndexSql = (tableName: string, idx: IndexDef): string => {
+const generateIndexSql = (tableName: string, idx: IndexDef, schema?: string): string => {
   let sql = "CREATE"
   if (idx.unique) sql += " UNIQUE"
   sql += " INDEX"
   if (idx.concurrently) sql += " CONCURRENTLY"
-  sql += ` ${quoteIdentifier(idx.name)} ON ${quoteIdentifier(tableName)}`
+  const tableRef = schema && schema !== "public" ? qualifiedName(tableName, schema) : quoteIdentifier(tableName)
+  sql += ` ${quoteIdentifier(idx.name)} ON ${tableRef}`
   sql += ` USING ${idx.type}`
   sql += ` (${idx.columns.map(formatIndexColumn).join(", ")})`
 
@@ -872,7 +1025,43 @@ const validateHypertableConstraints = (definitions: ReadonlyArray<SchemaDefiniti
   }
 }
 
-export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArray<SchemaDefinition>): { up: string[]; down: string[] } => {
+/** Topological sort: returns names ordered so dependencies come first */
+const topoSort = (names: ReadonlyArray<string>, deps: ReadonlyArray<ViewDependency>): string[] => {
+  const nameSet = new Set(names)
+  const graph = new Map<string, Set<string>>()
+  const inDegree = new Map<string, number>()
+  for (const n of names) {
+    graph.set(n, new Set())
+    inDegree.set(n, 0)
+  }
+  for (const dep of deps) {
+    if (nameSet.has(dep.viewName) && nameSet.has(dep.dependsOn)) {
+      graph.get(dep.dependsOn)!.add(dep.viewName)
+      inDegree.set(dep.viewName, (inDegree.get(dep.viewName) ?? 0) + 1)
+    }
+  }
+  const queue: string[] = []
+  for (const [n, d] of inDegree) {
+    if (d === 0) queue.push(n)
+  }
+  const result: string[] = []
+  while (queue.length > 0) {
+    const node = queue.shift()!
+    result.push(node)
+    for (const neighbor of graph.get(node) ?? []) {
+      const newDeg = (inDegree.get(neighbor) ?? 1) - 1
+      inDegree.set(neighbor, newDeg)
+      if (newDeg === 0) queue.push(neighbor)
+    }
+  }
+  // Append any remaining names not in graph (no deps)
+  for (const n of names) {
+    if (!result.includes(n)) result.push(n)
+  }
+  return result
+}
+
+export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArray<SchemaDefinition>, snapshot?: SchemaSnapshot): { up: string[]; down: string[] } => {
   // Validate hypertable constraints before generating SQL
   validateHypertableConstraints(definitions)
 
@@ -1175,6 +1364,168 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
   for (const trg of diff.triggersToCreate) {
     up.push(generateTriggerSql(trg.table, trg.trigger))
     down.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.trigger.name)} ON ${quoteIdentifier(trg.table)};`)
+  }
+
+  // View renames
+  for (const rename of diff.viewsToRename) {
+    // Find the view definition to get schema
+    const viewDef = definitions.filter((d): d is ViewDefinition => d._tag === "View").find((v) => v.name === rename.newName)
+    const schema = viewDef?.schema
+    up.push(`ALTER VIEW ${qualifiedName(rename.oldName, schema)} RENAME TO ${quoteIdentifier(rename.newName)};`)
+    down.push(`ALTER VIEW ${qualifiedName(rename.newName, schema)} RENAME TO ${quoteIdentifier(rename.oldName)};`)
+  }
+
+  // Create views (topologically sorted: dependencies first)
+  const viewDeps = snapshot?.viewDependencies ?? []
+  const viewCreateNames = diff.viewsToCreate.map((v) => v.name)
+  const sortedViewCreateNames = topoSort(viewCreateNames, viewDeps)
+  const sortedViewsToCreate = sortedViewCreateNames
+    .map((name) => diff.viewsToCreate.find((v) => v.name === name))
+    .filter((v): v is ViewDefinition => v !== undefined)
+
+  for (const viewDef of sortedViewsToCreate) {
+    const qn = qualifiedName(viewDef.name, viewDef.schema)
+    let sql = "CREATE"
+    if (viewDef.orReplace) sql += " OR REPLACE"
+    if (viewDef.recursive) {
+      sql += ` RECURSIVE VIEW ${qn}`
+      // RECURSIVE views require a column list
+      if (viewDef.columnList && viewDef.columnList.length > 0) {
+        sql += ` (${viewDef.columnList.map(quoteIdentifier).join(", ")})`
+      } else {
+        // Derive from columns map keys
+        const colNames = Object.values(viewDef.columns).map((c: any) => quoteIdentifier(c.name))
+        sql += ` (${colNames.join(", ")})`
+      }
+    } else {
+      sql += ` VIEW ${qn}`
+      if (viewDef.columnList && viewDef.columnList.length > 0) {
+        sql += ` (${viewDef.columnList.map(quoteIdentifier).join(", ")})`
+      }
+    }
+    if (viewDef.security === "definer") sql += " WITH (security_barrier=true)"
+    else if (viewDef.security === "invoker") sql += " WITH (security_invoker=true)"
+    sql += ` AS ${viewDef.sql}`
+    if (viewDef.checkOption) sql += ` WITH ${viewDef.checkOption.toUpperCase()} CHECK OPTION`
+    sql += ";"
+    up.push(sql)
+    const cascade = viewDef.cascadeOnDrop ? " CASCADE" : ""
+    down.push(`DROP VIEW IF EXISTS ${qn}${cascade};`)
+  }
+
+  // Replace views (definition changed)
+  for (const viewDef of diff.viewsToReplace) {
+    const qn = qualifiedName(viewDef.name, viewDef.schema)
+    let sql = `CREATE OR REPLACE VIEW ${qn}`
+    if (viewDef.columnList && viewDef.columnList.length > 0) {
+      sql += ` (${viewDef.columnList.map(quoteIdentifier).join(", ")})`
+    }
+    if (viewDef.security === "definer") sql += " WITH (security_barrier=true)"
+    else if (viewDef.security === "invoker") sql += " WITH (security_invoker=true)"
+    sql += ` AS ${viewDef.sql}`
+    if (viewDef.checkOption) sql += ` WITH ${viewDef.checkOption.toUpperCase()} CHECK OPTION`
+    sql += ";"
+    up.push(sql)
+    down.push(`-- Cannot auto-generate previous view definition for ${qn}`)
+  }
+
+  // Drop views (reverse topological order: dependents first)
+  const sortedViewDropNames = topoSort([...diff.viewsToDrop], viewDeps).reverse()
+
+  for (const viewName of sortedViewDropNames) {
+    const snapshotView = (snapshot?.views ?? []).find((v) => v.name === viewName)
+    const schema = snapshotView?.schema
+    up.push(`DROP VIEW IF EXISTS ${qualifiedName(viewName, schema)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped view ${qualifiedName(viewName, schema)}`)
+  }
+
+  // Materialized view renames
+  for (const rename of diff.materializedViewsToRename) {
+    const mvDef = definitions.filter((d): d is MaterializedViewDefinition => d._tag === "MaterializedView").find((v) => v.name === rename.newName)
+    const schema = mvDef?.schema
+    up.push(`ALTER MATERIALIZED VIEW ${qualifiedName(rename.oldName, schema)} RENAME TO ${quoteIdentifier(rename.newName)};`)
+    down.push(`ALTER MATERIALIZED VIEW ${qualifiedName(rename.newName, schema)} RENAME TO ${quoteIdentifier(rename.oldName)};`)
+  }
+
+  // Create materialized views
+  for (const mvDef of diff.materializedViewsToCreate) {
+    const qn = qualifiedName(mvDef.name, mvDef.schema)
+    let sql = `CREATE MATERIALIZED VIEW ${qn}`
+    if (mvDef.columnList && mvDef.columnList.length > 0) {
+      sql += ` (${mvDef.columnList.map(quoteIdentifier).join(", ")})`
+    }
+    if (mvDef.tablespace) sql += ` TABLESPACE ${quoteIdentifier(mvDef.tablespace)}`
+    if (mvDef.storageParameters && Object.keys(mvDef.storageParameters).length > 0) {
+      const paramParts = Object.entries(mvDef.storageParameters).map(([k, v]) => `${k} = ${typeof v === "string" ? quoteString(v) : v}`)
+      sql += ` WITH (${paramParts.join(", ")})`
+    }
+    sql += ` AS ${mvDef.sql}`
+    if (mvDef.withNoData) sql += " WITH NO DATA"
+    sql += ";"
+    up.push(sql)
+    const cascade = mvDef.cascadeOnDrop ? " CASCADE" : ""
+    down.push(`DROP MATERIALIZED VIEW IF EXISTS ${qn}${cascade};`)
+
+    // Create indexes on new materialized views
+    for (const idx of mvDef.indexes) {
+      up.push(generateIndexSql(mvDef.name, idx, mvDef.schema))
+    }
+  }
+
+  // Recreate materialized views (definition changed — DROP + CREATE)
+  for (const mvDef of diff.materializedViewsToRecreate) {
+    const qn = qualifiedName(mvDef.name, mvDef.schema)
+    up.push(`DROP MATERIALIZED VIEW IF EXISTS ${qn};`)
+    let sql = `CREATE MATERIALIZED VIEW ${qn}`
+    if (mvDef.columnList && mvDef.columnList.length > 0) {
+      sql += ` (${mvDef.columnList.map(quoteIdentifier).join(", ")})`
+    }
+    if (mvDef.tablespace) sql += ` TABLESPACE ${quoteIdentifier(mvDef.tablespace)}`
+    if (mvDef.storageParameters && Object.keys(mvDef.storageParameters).length > 0) {
+      const paramParts = Object.entries(mvDef.storageParameters).map(([k, v]) => `${k} = ${typeof v === "string" ? quoteString(v) : v}`)
+      sql += ` WITH (${paramParts.join(", ")})`
+    }
+    sql += ` AS ${mvDef.sql}`
+    if (mvDef.withNoData) sql += " WITH NO DATA"
+    sql += ";"
+    up.push(sql)
+    for (const idx of mvDef.indexes) {
+      up.push(generateIndexSql(mvDef.name, idx, mvDef.schema))
+    }
+    down.push(`-- Cannot auto-generate previous materialized view definition for ${qn}`)
+  }
+
+  // Drop materialized views
+  for (const mvName of diff.materializedViewsToDrop) {
+    const snapshotMv = (snapshot?.materializedViews ?? []).find((v) => v.name === mvName)
+    const schema = snapshotMv?.schema
+    up.push(`DROP MATERIALIZED VIEW IF EXISTS ${qualifiedName(mvName, schema)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped materialized view ${qualifiedName(mvName, schema)}`)
+  }
+
+  // Materialized view index changes
+  for (const idx of diff.materializedViewIndexesToDrop) {
+    up.push(`DROP INDEX IF EXISTS ${quoteIdentifier(idx.indexName)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped index ${quoteIdentifier(idx.indexName)}`)
+  }
+
+  for (const idx of diff.materializedViewIndexesToCreate) {
+    const mvDef = definitions.filter((d): d is MaterializedViewDefinition => d._tag === "MaterializedView").find((v) => v.name === idx.matViewName)
+    up.push(generateIndexSql(idx.matViewName, idx.index, mvDef?.schema))
+    down.push(`DROP INDEX IF EXISTS ${quoteIdentifier(idx.index.name)};`)
+  }
+
+  // Materialized view ALTER TABLESPACE
+  for (const alt of diff.materializedViewsToAlterTablespace) {
+    up.push(`ALTER MATERIALIZED VIEW ${qualifiedName(alt.name, alt.schema)} SET TABLESPACE ${quoteIdentifier(alt.tablespace)};`)
+    down.push(`-- Cannot auto-determine previous tablespace for ${qualifiedName(alt.name, alt.schema)}`)
+  }
+
+  // Materialized view ALTER storage parameters
+  for (const alt of diff.materializedViewsToAlterStorageParams) {
+    const paramParts = Object.entries(alt.params).map(([k, v]) => `${k} = ${typeof v === "string" ? quoteString(v) : v}`)
+    up.push(`ALTER MATERIALIZED VIEW ${qualifiedName(alt.name, alt.schema)} SET (${paramParts.join(", ")});`)
+    down.push(`-- Cannot auto-determine previous storage parameters for ${qualifiedName(alt.name, alt.schema)}`)
   }
 
   // Continuous aggregates

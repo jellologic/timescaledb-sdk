@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import type { Statement } from "./types.js"
-import type { TableDefinition, ColumnDef } from "../schema/types.js"
+import type { TableDefinition, ColumnDef, ViewDefinition, InferInsert } from "../schema/types.js"
 import { TimescaleClient } from "../Client.js"
 import { QueryError } from "../Error.js"
 
@@ -100,5 +100,9 @@ export class InsertBuilder<T = Record<string, unknown>> {
   }
 }
 
-export const insert = <T extends TableDefinition>(table: T | string): InsertBuilder<any> =>
-  new InsertBuilder(table)
+export function insert<T extends ViewDefinition<any, any, true>>(table: T): InsertBuilder<InferInsert<T>>
+export function insert<T extends TableDefinition>(table: T): InsertBuilder<InferInsert<T>>
+export function insert(table: string): InsertBuilder<Record<string, unknown>>
+export function insert(table: TableDefinition | ViewDefinition<any, any, true> | string): InsertBuilder<any> {
+  return new InsertBuilder(table as any)
+}

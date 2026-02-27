@@ -1,5 +1,5 @@
-import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, CaggDefinition, ConstraintDef, TriggerDef, JobDefinition } from "../schema/types.js"
-import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot } from "./types.js"
+import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, CaggDefinition, ConstraintDef, TriggerDef, JobDefinition, ViewDefinition, MaterializedViewDefinition } from "../schema/types.js"
+import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency } from "./types.js"
 import type { SchemaDefinition } from "./Generator.js"
 
 export interface PersistedSnapshot {
@@ -83,6 +83,61 @@ const caggDefToSnapshot = (def: CaggDefinition): CaggSnapshot => ({
   compressionEnabled: def.compress,
 })
 
+const viewDefToSnapshot = (def: ViewDefinition): ViewSnapshot => ({
+  name: def.name,
+  schema: def.schema,
+  viewDefinition: def.sql,
+  checkOption: def.checkOption,
+  security: def.security,
+})
+
+const matViewDefToSnapshot = (def: MaterializedViewDefinition): MaterializedViewSnapshot => ({
+  name: def.name,
+  schema: def.schema,
+  viewDefinition: def.sql,
+  indexes: def.indexes.map((idx) => ({
+    name: idx.name,
+    columns: idx.columns.map((c) => typeof c === "string" ? c : c.expression),
+    isUnique: idx.unique,
+    type: idx.type,
+  })),
+  hasData: !def.withNoData,
+  tablespace: def.tablespace,
+  storageParameters: def.storageParameters,
+})
+
+const computeStaticViewDependencies = (
+  viewDefs: ReadonlyArray<ViewDefinition>,
+  matViewDefs: ReadonlyArray<MaterializedViewDefinition>,
+): ViewDependency[] => {
+  const allDefs = [
+    ...viewDefs.map((v) => ({ name: v.name, schema: v.schema })),
+    ...matViewDefs.map((v) => ({ name: v.name, schema: v.schema })),
+  ]
+  const nameSet = new Set(allDefs.map((d) => d.name))
+  const deps: ViewDependency[] = []
+
+  const scanSql = (viewName: string, viewSchema: string, sql: string) => {
+    for (const target of allDefs) {
+      if (target.name === viewName && target.schema === viewSchema) continue
+      const regex = new RegExp(`\\b${target.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`)
+      if (regex.test(sql)) {
+        deps.push({
+          viewName,
+          viewSchema,
+          dependsOn: target.name,
+          dependsOnSchema: target.schema,
+        })
+      }
+    }
+  }
+
+  for (const v of viewDefs) scanSql(v.name, v.schema, v.sql)
+  for (const v of matViewDefs) scanSql(v.name, v.schema, v.sql)
+
+  return deps
+}
+
 export const definitionsToSnapshot = (
   definitions: ReadonlyArray<SchemaDefinition>
 ): SchemaSnapshot => {
@@ -94,6 +149,12 @@ export const definitionsToSnapshot = (
   )
   const enumDefs = definitions.filter(
     (d): d is EnumTypeDef => d._tag === "EnumType"
+  )
+  const viewDefs = definitions.filter(
+    (d): d is ViewDefinition => d._tag === "View"
+  )
+  const matViewDefs = definitions.filter(
+    (d): d is MaterializedViewDefinition => d._tag === "MaterializedView"
   )
   const jobDefs = definitions.filter(
     (d): d is JobDefinition => d._tag === "JobDefinition"
@@ -164,6 +225,9 @@ export const definitionsToSnapshot = (
     jobs,
     caggPolicies,
     hypertablePolicies,
+    views: viewDefs.map(viewDefToSnapshot),
+    materializedViews: matViewDefs.map(matViewDefToSnapshot),
+    viewDependencies: computeStaticViewDependencies(viewDefs, matViewDefs),
     takenAt: new Date(),
   }
 }

@@ -73,6 +73,31 @@ export interface HypertablePolicySnapshot {
   readonly tierAfter?: string
 }
 
+export interface ViewSnapshot {
+  readonly name: string
+  readonly schema: string
+  readonly viewDefinition: string
+  readonly checkOption?: string
+  readonly security?: string
+}
+
+export interface MaterializedViewSnapshot {
+  readonly name: string
+  readonly schema: string
+  readonly viewDefinition: string
+  readonly indexes: ReadonlyArray<IndexSnapshot>
+  readonly hasData?: boolean
+  readonly tablespace?: string
+  readonly storageParameters?: Record<string, string | number | boolean>
+}
+
+export interface ViewDependency {
+  readonly viewName: string
+  readonly viewSchema: string
+  readonly dependsOn: string
+  readonly dependsOnSchema: string
+}
+
 export interface SchemaSnapshot {
   readonly tables: ReadonlyArray<TableSnapshot>
   readonly hypertables: ReadonlyArray<HypertableSnapshot>
@@ -82,6 +107,9 @@ export interface SchemaSnapshot {
   readonly jobs?: ReadonlyArray<JobSnapshot>
   readonly caggPolicies?: ReadonlyArray<CaggPolicySnapshot>
   readonly hypertablePolicies?: ReadonlyArray<HypertablePolicySnapshot>
+  readonly views?: ReadonlyArray<ViewSnapshot>
+  readonly materializedViews?: ReadonlyArray<MaterializedViewSnapshot>
+  readonly viewDependencies?: ReadonlyArray<ViewDependency>
   readonly takenAt: Date
 }
 

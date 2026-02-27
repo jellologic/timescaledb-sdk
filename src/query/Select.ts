@@ -4,7 +4,7 @@ import type { OrderByClause } from "./OrderBy.js"
 import type { JoinClause } from "./Join.js"
 import type { WhereCondition } from "./Where.js"
 import type { Statement } from "./types.js"
-import type { TableDefinition, ColumnDef } from "../schema/types.js"
+import type { TableDefinition, ColumnDef, ViewDefinition, MaterializedViewDefinition, InferSelect } from "../schema/types.js"
 import type { CteClause } from "./Cte.js"
 import { TimescaleClient } from "../Client.js"
 import { QueryError } from "../Error.js"
@@ -28,7 +28,7 @@ export class SelectBuilder<T = Record<string, unknown>> {
   private _ctes: CteClause[] = []
   private _setOps: SetOperation[] = []
 
-  constructor(table: TableDefinition | string) {
+  constructor(table: TableDefinition | ViewDefinition | MaterializedViewDefinition | string) {
     this._table = typeof table === "string" ? table : table.name
   }
 
@@ -251,5 +251,10 @@ export class SelectBuilder<T = Record<string, unknown>> {
   }
 }
 
-export const select = <T extends TableDefinition>(table: T | string): SelectBuilder<any> =>
-  new SelectBuilder(table)
+export function select<T extends ViewDefinition>(table: T): SelectBuilder<InferSelect<T>>
+export function select<T extends MaterializedViewDefinition>(table: T): SelectBuilder<InferSelect<T>>
+export function select<T extends TableDefinition>(table: T): SelectBuilder<InferSelect<T>>
+export function select(table: string): SelectBuilder<Record<string, unknown>>
+export function select(table: TableDefinition | ViewDefinition | MaterializedViewDefinition | string): SelectBuilder<any> {
+  return new SelectBuilder(table)
+}

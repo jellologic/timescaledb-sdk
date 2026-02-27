@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { Statement } from "./types.js"
 import type { WhereCondition } from "./Where.js"
-import type { TableDefinition, ColumnDef } from "../schema/types.js"
+import type { TableDefinition, ColumnDef, ViewDefinition, InferSelect } from "../schema/types.js"
 import { TimescaleClient } from "../Client.js"
 import { QueryError } from "../Error.js"
 
@@ -80,5 +80,9 @@ export class UpdateBuilder<T = Record<string, unknown>> {
   }
 }
 
-export const update = <T extends TableDefinition>(table: T | string): UpdateBuilder<any> =>
-  new UpdateBuilder(table)
+export function update<T extends ViewDefinition<any, any, true>>(table: T): UpdateBuilder<InferSelect<T>>
+export function update<T extends TableDefinition>(table: T): UpdateBuilder<InferSelect<T>>
+export function update(table: string): UpdateBuilder<Record<string, unknown>>
+export function update(table: TableDefinition | ViewDefinition<any, any, true> | string): UpdateBuilder<any> {
+  return new UpdateBuilder(table as any)
+}

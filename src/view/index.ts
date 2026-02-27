@@ -1,0 +1,17 @@
+export {
+  createView,
+  dropView,
+  createMaterializedView,
+  dropMaterializedView,
+  refreshMaterializedView,
+  alterViewSetSchema,
+  alterViewOwner,
+  alterViewRename,
+  alterMaterializedViewSetSchema,
+  alterMaterializedViewOwner,
+  alterMaterializedViewRename,
+  alterMaterializedViewSetTablespace,
+  alterMaterializedViewSetStorageParameters,
+  viewInfo,
+  materializedViewInfo,
+} from "./View.js"

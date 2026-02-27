@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { Statement } from "./types.js"
 import type { WhereCondition } from "./Where.js"
-import type { TableDefinition, ColumnDef } from "../schema/types.js"
+import type { TableDefinition, ColumnDef, ViewDefinition, InferSelect } from "../schema/types.js"
 import { TimescaleClient } from "../Client.js"
 import { QueryError } from "../Error.js"
 
@@ -67,5 +67,9 @@ export class DeleteBuilder<T = Record<string, unknown>> {
   }
 }
 
-export const deleteFrom = <T extends TableDefinition>(table: T | string): DeleteBuilder<any> =>
-  new DeleteBuilder(table)
+export function deleteFrom<T extends ViewDefinition<any, any, true>>(table: T): DeleteBuilder<InferSelect<T>>
+export function deleteFrom<T extends TableDefinition>(table: T): DeleteBuilder<InferSelect<T>>
+export function deleteFrom(table: string): DeleteBuilder<Record<string, unknown>>
+export function deleteFrom(table: TableDefinition | ViewDefinition<any, any, true> | string): DeleteBuilder<any> {
+  return new DeleteBuilder(table as any)
+}

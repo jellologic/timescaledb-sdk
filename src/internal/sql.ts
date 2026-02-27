@@ -22,4 +22,9 @@ export const toSqlValue = (value: unknown): string => {
   return quoteString(JSON.stringify(value))
 }
 
+export const qualifiedName = (name: string, schema?: string): string =>
+  schema && schema !== "public"
+    ? `${quoteIdentifier(schema)}.${quoteIdentifier(name)}`
+    : quoteIdentifier(name)
+
 export const placeholder = (index: number): string => `$${index}`
