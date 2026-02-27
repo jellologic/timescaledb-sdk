@@ -143,6 +143,28 @@ describe("definitionsToSnapshot", () => {
     const snapshot = definitionsToSnapshot([t])
     expect(snapshot.tables[0]!.columns[0]!.defaultValue).toBeNull()
   })
+
+  test("defaultSql produces unquoted SQL expression in snapshot", () => {
+    const t = pgTable("t", {
+      createdAt: timestamptz("created_at").defaultSql("NOW()"),
+    })
+
+    const snapshot = definitionsToSnapshot([t])
+    expect(snapshot.tables[0]!.columns[0]!.defaultValue).toBe("NOW()")
+  })
+
+  test("round-trip: defaultSql produces empty diff", () => {
+    const t = pgTable("t", {
+      id: serial("id"),
+      createdAt: timestamptz("created_at").defaultSql("NOW()"),
+    })
+
+    const snapshot = definitionsToSnapshot([t])
+    const diff = diffSchema([t], snapshot)
+    const { up, down } = generateMigrationSql(diff, [t])
+    expect(up).toEqual([])
+    expect(down).toEqual([])
+  })
 })
 
 describe("definitionsToPersistedSnapshot", () => {

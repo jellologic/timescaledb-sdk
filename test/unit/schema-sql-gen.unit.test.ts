@@ -4,6 +4,7 @@ import type { SchemaSnapshot, EnumSnapshot } from "../../src/migration/types.js"
 import {
   timestamptz, integer, doublePrecision, text, serial, bigserial, boolean, varchar, uuid, numeric, jsonb, tsrange,
 } from "../../src/schema/Column.js"
+import { sql } from "../../src/internal/sql.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
 import { expr, colWithOp, desc, asc, index, uniqueIndex, brinIndex, ginIndex } from "../../src/schema/IndexHelpers.js"
@@ -93,6 +94,32 @@ describe("SQL Generation — DEFAULT value quoting", () => {
     const t = pgTable("t", { name: text("name").default("O'Brien") })
     const up = genUp([t])
     expect(up[0]).toContain("DEFAULT 'O''Brien'")
+  })
+
+  test("defaultSql emits raw SQL expression without quoting", () => {
+    const t = pgTable("t", { createdAt: timestamptz("created_at").defaultSql("NOW()") })
+    const up = genUp([t])
+    expect(up[0]).toContain("DEFAULT NOW()")
+    expect(up[0]).not.toContain("DEFAULT 'NOW()'")
+  })
+
+  test("defaultSql with gen_random_uuid()", () => {
+    const t = pgTable("t", { id: uuid("id").defaultSql("gen_random_uuid()") })
+    const up = genUp([t])
+    expect(up[0]).toContain("DEFAULT gen_random_uuid()")
+  })
+
+  test("defaultSql with CURRENT_TIMESTAMP", () => {
+    const t = pgTable("t", { ts: timestamptz("ts").defaultSql("CURRENT_TIMESTAMP") })
+    const up = genUp([t])
+    expect(up[0]).toContain("DEFAULT CURRENT_TIMESTAMP")
+    expect(up[0]).not.toContain("'CURRENT_TIMESTAMP'")
+  })
+
+  test("sql() helper can be used with .default() directly", () => {
+    const t = pgTable("t", { createdAt: timestamptz("created_at").default(sql("NOW()") as any) })
+    const up = genUp([t])
+    expect(up[0]).toContain("DEFAULT NOW()")
   })
 })
 

@@ -9,6 +9,7 @@ export {
   int4range, int8range, tsrange, tstzrange, daterange, numrange,
   array,
 } from "./Column.js"
+export { sql, type SqlExpression } from "../internal/sql.js"
 export { pgTable } from "./Table.js"
 export { hypertable } from "./Hypertable.js"
 export { pgView } from "./View.js"

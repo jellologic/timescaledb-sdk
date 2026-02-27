@@ -1,4 +1,5 @@
 import type { ColumnDef, ForeignKeyAction, SQLType } from "./types.ts"
+import { sql, type SqlExpression } from "../internal/sql.js"
 
 export class ColumnBuilder<T, TNotNull extends boolean = false, THasDefault extends boolean = false> {
   readonly _type!: T
@@ -32,6 +33,13 @@ export class ColumnBuilder<T, TNotNull extends boolean = false, THasDefault exte
   default(value: T | string): ColumnBuilder<T, TNotNull, true> {
     const col = this._clone()
     col._defaultValue = value
+    return col as any
+  }
+
+  /** Set a raw SQL expression as the default (not quoted). Use for NOW(), gen_random_uuid(), etc. */
+  defaultSql(expression: string): ColumnBuilder<T, TNotNull, true> {
+    const col = this._clone()
+    col._defaultValue = sql(expression)
     return col as any
   }
 
