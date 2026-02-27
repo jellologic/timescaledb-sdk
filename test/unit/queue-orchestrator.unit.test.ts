@@ -294,6 +294,132 @@ describe("Queue Orchestrator", () => {
     })
   })
 
+  describe("waitForJobCompletion (via runSequential)", () => {
+    test("fast path — job already completed returns immediately", async () => {
+      // Create a mock where the job is already completed when first checked
+      let jobCheckCount = 0
+      const layer = mockClient({
+        execute: (query: string, params?: ReadonlyArray<unknown>) => {
+          // INSERT workflow
+          if (query.includes("INSERT INTO") && query.includes("_tsdb_sdk_job_workflows")) {
+            return Effect.succeed([{
+              id: "wf-fast", name: params?.[0], type: params?.[1],
+              status: "pending", steps: JSON.parse(params?.[2] as string ?? "[]"),
+              result: null, error: null,
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          // UPDATE workflow
+          if (query.includes("UPDATE") && query.includes("_tsdb_sdk_job_workflows")) {
+            return Effect.succeed([{
+              id: "wf-fast", name: "test", type: "sequential",
+              status: "completed", steps: [], result: null, error: null,
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          // INSERT job (enqueue) — returns already completed
+          if (query.includes("INSERT INTO") && query.includes("_tsdb_sdk_job_queue")) {
+            return Effect.succeed([{
+              id: "job-instant", queue: "q", name: "j1", data: {},
+              status: "completed", priority: 0, attempts: 1, max_attempts: 1,
+              backoff: null, unique_key: null, scheduled_at: new Date().toISOString(),
+              started_at: new Date().toISOString(),
+              completed_at: new Date().toISOString(), failed_at: null,
+              result: JSON.stringify({ fast: true }),
+              error: null, error_stack: null, timeout: null,
+              worker_id: null, parent_id: null, repeat_key: null,
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          // SELECT job — also completed (fast path triggers on first check)
+          if (query.includes("SELECT") && query.includes("_tsdb_sdk_job_queue") && !query.includes("CREATE")) {
+            jobCheckCount++
+            return Effect.succeed([{
+              id: "job-instant", queue: "q", name: "j1", data: {},
+              status: "completed", priority: 0, attempts: 1, max_attempts: 1,
+              backoff: null, unique_key: null, scheduled_at: new Date().toISOString(),
+              started_at: new Date().toISOString(),
+              completed_at: new Date().toISOString(), failed_at: null,
+              result: JSON.stringify({ fast: true }),
+              error: null, error_stack: null, timeout: null,
+              worker_id: null, parent_id: null, repeat_key: null,
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          return Effect.succeed([] as any)
+        },
+      })
+
+      const steps: WorkflowStep[] = [
+        { name: "fast-step", queue: "q", jobName: "j1", data: {} },
+      ]
+
+      const result = await runTestWith(runSequential("test-fast", steps), layer)
+
+      // The job was completed on first getJob check — fast path
+      // jobCheckCount should be exactly 1 (the fast path check)
+      expect(jobCheckCount).toBe(1)
+      expect(result.status).toBe("completed")
+    })
+
+    test("cancelled status results in error message 'Job was cancelled'", async () => {
+      const mock = makeStatefulMock()
+      // Override: make the first enqueued job return cancelled status
+      let jobCounter = 0
+      const layer = mockClient({
+        execute: (query: string, params?: ReadonlyArray<unknown>) => {
+          if (query.includes("INSERT INTO") && query.includes("_tsdb_sdk_job_workflows")) {
+            return Effect.succeed([{
+              id: "wf-cancel", name: params?.[0], type: params?.[1],
+              status: "pending", steps: JSON.parse(params?.[2] as string ?? "[]"),
+              result: null, error: null,
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          if (query.includes("UPDATE") && query.includes("_tsdb_sdk_job_workflows")) {
+            return Effect.succeed([{
+              id: "wf-cancel", name: "test", type: "sequential",
+              status: "failed", steps: [], result: null, error: "Job was cancelled",
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          if (query.includes("INSERT INTO") && query.includes("_tsdb_sdk_job_queue")) {
+            jobCounter++
+            return Effect.succeed([{
+              id: `job-${jobCounter}`, queue: "q", name: "j1", data: {},
+              status: "cancelled", priority: 0, attempts: 0, max_attempts: 1,
+              backoff: null, unique_key: null, scheduled_at: new Date().toISOString(),
+              started_at: null, completed_at: null, failed_at: null,
+              result: null, error: null, error_stack: null, timeout: null,
+              worker_id: null, parent_id: null, repeat_key: null,
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          if (query.includes("SELECT") && query.includes("_tsdb_sdk_job_queue") && !query.includes("CREATE")) {
+            return Effect.succeed([{
+              id: `job-${jobCounter}`, queue: "q", name: "j1", data: {},
+              status: "cancelled", priority: 0, attempts: 0, max_attempts: 1,
+              backoff: null, unique_key: null, scheduled_at: new Date().toISOString(),
+              started_at: null, completed_at: null, failed_at: null,
+              result: null, error: null, error_stack: null, timeout: null,
+              worker_id: null, parent_id: null, repeat_key: null,
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          return Effect.succeed([] as any)
+        },
+      })
+
+      const steps: WorkflowStep[] = [
+        { name: "cancel-step", queue: "q", jobName: "j1", data: {} },
+      ]
+
+      const result = await runTestWith(runSequential("test-cancel-status", steps), layer)
+      expect(result.status).toBe("failed")
+      expect(result.error).toContain("cancelled")
+    })
+  })
+
   describe("getWorkflow", () => {
     test("returns null for nonexistent workflow", async () => {
       const layer = mockClient({
@@ -366,6 +492,38 @@ describe("Queue Orchestrator", () => {
       expect(capturedQuery).toContain("'failed'")
       expect(capturedQuery).toContain("'Cancelled'")
       expect(capturedParams?.[0]).toBe("wf-cancel-1")
+    })
+
+    test("does not error on nonexistent workflow (idempotent)", async () => {
+      const layer = mockClient({
+        execute: (query: string) => {
+          // SELECT returns empty — workflow doesn't exist
+          return Effect.succeed([] as any)
+        },
+      })
+
+      // Should not throw
+      await runTestWith(cancelWorkflow("nonexistent-wf"), layer)
+    })
+
+    test("calling cancel twice does not error (idempotent)", async () => {
+      const layer = mockClient({
+        execute: (query: string) => {
+          if (query.includes("SELECT") && query.includes("_tsdb_sdk_job_workflows") && !query.includes("CREATE")) {
+            return Effect.succeed([{
+              id: "wf-dbl", name: "test", type: "sequential", status: "failed",
+              steps: [], result: null, error: "Cancelled",
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          return Effect.succeed([] as any)
+        },
+      })
+
+      // First cancel
+      await runTestWith(cancelWorkflow("wf-dbl"), layer)
+      // Second cancel — should not error
+      await runTestWith(cancelWorkflow("wf-dbl"), layer)
     })
 
     test("cancels non-terminal step jobs", async () => {

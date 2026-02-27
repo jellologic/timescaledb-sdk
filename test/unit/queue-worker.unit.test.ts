@@ -514,6 +514,265 @@ describe("Queue Worker", () => {
       expect(heartbeatQuery).toBeDefined()
     })
 
+    test("emits job:active event via NOTIFY when processing starts", async () => {
+      const notifyCalls: Array<{ channel: string; payload: string }> = []
+      const mockRow = {
+        id: "job-evt-1", queue: "event-q", name: "j", data: {},
+        status: "active", priority: 0, attempts: 1, max_attempts: 3,
+        backoff: null, unique_key: null, scheduled_at: new Date().toISOString(),
+        started_at: new Date().toISOString(), completed_at: null, failed_at: null,
+        result: null, error: null, error_stack: null, timeout: null,
+        worker_id: "w1", parent_id: null, repeat_key: null,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }
+      const now = new Date().toISOString()
+
+      let dequeueCallCount = 0
+      const fullLayer = Layer.provide(
+        workerLayer({
+          queue: "event-q",
+          concurrency: 1,
+          pollInterval: 50,
+          stalledInterval: 60000,
+          processor: (_job: JobRecord) => Effect.succeed({ done: true } as any),
+          useNotify: false,
+        }),
+        mockClient({
+          execute: (query: string) => {
+            if (query.includes("FOR UPDATE SKIP LOCKED")) {
+              dequeueCallCount++
+              if (dequeueCallCount === 1) return Effect.succeed([mockRow] as any)
+              return Effect.succeed([] as any)
+            }
+            if (query.includes("INSERT") && query.includes("_tsdb_sdk_job_workers")) {
+              return Effect.succeed([{
+                id: "w", queue: "event-q", hostname: "unknown", pid: 0,
+                status: "active", concurrency: 1, active_jobs: 0, metadata: null,
+                last_heartbeat_at: now, started_at: now, stopped_at: null,
+              }] as any)
+            }
+            return Effect.succeed([] as any)
+          },
+          notify: (channel: string, payload: string) => {
+            notifyCalls.push({ channel, payload })
+            return Effect.succeed(undefined as any)
+          },
+        })
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const worker = yield* QueueWorker
+            yield* Effect.sleep(300)
+            yield* worker.close
+          }).pipe(Effect.provide(fullLayer))
+        )
+      )
+
+      const activeEvent = notifyCalls.find(c => {
+        try {
+          const parsed = JSON.parse(c.payload)
+          return parsed.type === "job:active"
+        } catch { return false }
+      })
+      expect(activeEvent).toBeDefined()
+    })
+
+    test("emits job:completed event after successful processing", async () => {
+      const notifyCalls: Array<{ channel: string; payload: string }> = []
+      const mockRow = {
+        id: "job-comp-1", queue: "comp-q", name: "j", data: {},
+        status: "active", priority: 0, attempts: 1, max_attempts: 3,
+        backoff: null, unique_key: null, scheduled_at: new Date().toISOString(),
+        started_at: new Date().toISOString(), completed_at: null, failed_at: null,
+        result: null, error: null, error_stack: null, timeout: null,
+        worker_id: "w1", parent_id: null, repeat_key: null,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }
+      const now = new Date().toISOString()
+
+      let dequeueCallCount = 0
+      const fullLayer = Layer.provide(
+        workerLayer({
+          queue: "comp-q",
+          concurrency: 1,
+          pollInterval: 50,
+          stalledInterval: 60000,
+          processor: (_job: JobRecord) => Effect.succeed({ result: "ok" } as any),
+          useNotify: false,
+        }),
+        mockClient({
+          execute: (query: string) => {
+            if (query.includes("FOR UPDATE SKIP LOCKED")) {
+              dequeueCallCount++
+              if (dequeueCallCount === 1) return Effect.succeed([mockRow] as any)
+              return Effect.succeed([] as any)
+            }
+            if (query.includes("INSERT") && query.includes("_tsdb_sdk_job_workers")) {
+              return Effect.succeed([{
+                id: "w", queue: "comp-q", hostname: "unknown", pid: 0,
+                status: "active", concurrency: 1, active_jobs: 0, metadata: null,
+                last_heartbeat_at: now, started_at: now, stopped_at: null,
+              }] as any)
+            }
+            if (query.includes("'completed'") && query.includes("UPDATE")) {
+              return Effect.succeed([{ ...mockRow, status: "completed" }] as any)
+            }
+            return Effect.succeed([] as any)
+          },
+          notify: (channel: string, payload: string) => {
+            notifyCalls.push({ channel, payload })
+            return Effect.succeed(undefined as any)
+          },
+        })
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const worker = yield* QueueWorker
+            yield* Effect.sleep(300)
+            yield* worker.close
+          }).pipe(Effect.provide(fullLayer))
+        )
+      )
+
+      const completedEvent = notifyCalls.find(c => {
+        try {
+          const parsed = JSON.parse(c.payload)
+          return parsed.type === "job:completed"
+        } catch { return false }
+      })
+      expect(completedEvent).toBeDefined()
+    })
+
+    test("emits job:failed event when processor fails with no retries", async () => {
+      const notifyCalls: Array<{ channel: string; payload: string }> = []
+      const mockRow = {
+        id: "job-fail-evt", queue: "fail-q", name: "j", data: {},
+        status: "active", priority: 0, attempts: 3, max_attempts: 3,
+        backoff: null, unique_key: null, scheduled_at: new Date().toISOString(),
+        started_at: new Date().toISOString(), completed_at: null, failed_at: null,
+        result: null, error: null, error_stack: null, timeout: null,
+        worker_id: "w1", parent_id: null, repeat_key: null,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }
+      const now = new Date().toISOString()
+
+      let dequeueCallCount = 0
+      const fullLayer = Layer.provide(
+        workerLayer({
+          queue: "fail-q",
+          concurrency: 1,
+          pollInterval: 50,
+          stalledInterval: 60000,
+          processor: (_job: JobRecord) => Effect.fail(new Error("processor exploded")),
+          useNotify: false,
+        }),
+        mockClient({
+          execute: (query: string) => {
+            if (query.includes("FOR UPDATE SKIP LOCKED")) {
+              dequeueCallCount++
+              if (dequeueCallCount === 1) return Effect.succeed([mockRow] as any)
+              return Effect.succeed([] as any)
+            }
+            if (query.includes("INSERT") && query.includes("_tsdb_sdk_job_workers")) {
+              return Effect.succeed([{
+                id: "w", queue: "fail-q", hostname: "unknown", pid: 0,
+                status: "active", concurrency: 1, active_jobs: 0, metadata: null,
+                last_heartbeat_at: now, started_at: now, stopped_at: null,
+              }] as any)
+            }
+            if (query.includes("'failed'") && query.includes("UPDATE") && !query.includes("CREATE")) {
+              return Effect.succeed([{ ...mockRow, status: "failed" }] as any)
+            }
+            return Effect.succeed([] as any)
+          },
+          notify: (channel: string, payload: string) => {
+            notifyCalls.push({ channel, payload })
+            return Effect.succeed(undefined as any)
+          },
+        })
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const worker = yield* QueueWorker
+            yield* Effect.sleep(300)
+            yield* worker.close
+          }).pipe(Effect.provide(fullLayer))
+        )
+      )
+
+      const failedEvent = notifyCalls.find(c => {
+        try {
+          const parsed = JSON.parse(c.payload)
+          return parsed.type === "job:failed"
+        } catch { return false }
+      })
+      expect(failedEvent).toBeDefined()
+    })
+
+    test("registry failure does not prevent worker from processing jobs", async () => {
+      let jobProcessed = false
+      const mockRow = {
+        id: "job-reg-fail", queue: "reg-fail-q", name: "j", data: {},
+        status: "active", priority: 0, attempts: 1, max_attempts: 1,
+        backoff: null, unique_key: null, scheduled_at: new Date().toISOString(),
+        started_at: new Date().toISOString(), completed_at: null, failed_at: null,
+        result: null, error: null, error_stack: null, timeout: null,
+        worker_id: "w1", parent_id: null, repeat_key: null,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }
+
+      let dequeueCallCount = 0
+      const fullLayer = Layer.provide(
+        workerLayer({
+          queue: "reg-fail-q",
+          concurrency: 1,
+          pollInterval: 50,
+          stalledInterval: 60000,
+          processor: (_job: JobRecord) => {
+            jobProcessed = true
+            return Effect.succeed({ done: true } as any)
+          },
+          useNotify: false,
+        }),
+        mockClient({
+          execute: (query: string) => {
+            // Make registerWorker INSERT fail
+            if (query.includes("INSERT") && query.includes("_tsdb_sdk_job_workers")) {
+              return Effect.fail(new Error("DB connection lost") as any)
+            }
+            if (query.includes("FOR UPDATE SKIP LOCKED")) {
+              dequeueCallCount++
+              if (dequeueCallCount === 1) return Effect.succeed([mockRow] as any)
+              return Effect.succeed([] as any)
+            }
+            if (query.includes("'completed'") && query.includes("UPDATE")) {
+              return Effect.succeed([{ ...mockRow, status: "completed" }] as any)
+            }
+            return Effect.succeed([] as any)
+          },
+        })
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const worker = yield* QueueWorker
+            yield* Effect.sleep(300)
+            yield* worker.close
+          }).pipe(Effect.provide(fullLayer))
+        )
+      )
+
+      // Worker should still have processed the job despite registry failure
+      expect(jobProcessed).toBe(true)
+    })
+
     test("workerId is a UUID format", async () => {
       let capturedWorkerId = ""
       const fullLayer = Layer.provide(

@@ -12,6 +12,10 @@
  *   8. Parallel workflow
  *   9. Maintenance (prune completed)
  *  10. Final stats + cleanup
+ *  11. Worker registry
+ *  12. Dead worker cleanup
+ *  13. Saga workflow with compensation
+ *  14. Workflow cancellation
  *
  * Usage:
  *   bun run examples/job-queue/src/app.ts
@@ -42,10 +46,12 @@ import {
 } from "../../../src/queue/Queue.js"
 import { addRepeatableJob, listRepeatableJobs } from "../../../src/queue/Scheduler.js"
 import { pruneCompleted } from "../../../src/queue/Maintenance.js"
-import { runSequential, runParallel, getWorkflow } from "../../../src/queue/Orchestrator.js"
+import { runSequential, runParallel, runSaga, getWorkflow, cancelWorkflow } from "../../../src/queue/Orchestrator.js"
+import { registerWorker, deregisterWorker, heartbeat, getActiveWorkers, cleanDeadWorkers } from "../../../src/queue/Registry.js"
 import { processEmail, processThumbnail, processNotification } from "./jobs.js"
-import { orderProcessingSteps, reportGenerationSteps } from "./workflows.js"
+import { orderProcessingSteps, reportGenerationSteps, sagaOrderSteps } from "./workflows.js"
 import { TimescaleClient } from "../../../src/Client.js"
+import os from "node:os"
 
 const program = Effect.gen(function* () {
   // --- 1. Setup queue tables ---
@@ -201,6 +207,75 @@ const program = Effect.gen(function* () {
     console.log(`  [${q}] waiting=${stats.waiting} active=${stats.active} completed=${stats.completed} total=${stats.total}`)
   }
 
+  // --- 11. Worker Registry ---
+  console.log("\n=== 11. Worker Registry ===")
+  const workerId = crypto.randomUUID()
+  yield* registerWorker(workerId, "emails", os.hostname(), process.pid, 4)
+  console.log(`  Registered worker: ${workerId}`)
+  yield* heartbeat(workerId, 2)
+  console.log("  Heartbeat sent (2 active jobs)")
+  const workers = yield* getActiveWorkers("emails")
+  console.log(`  Active workers on 'emails': ${workers.length}`)
+  yield* deregisterWorker(workerId)
+  console.log("  Worker deregistered")
+
+  // --- 12. Dead Worker Cleanup ---
+  console.log("\n=== 12. Dead Worker Cleanup ===")
+  const staleId = crypto.randomUUID()
+  yield* registerWorker(staleId, "emails", "crashed-host", 9999, 1)
+  const client = yield* TimescaleClient
+  yield* client.execute(
+    `UPDATE "_tsdb_sdk_job_workers" SET "last_heartbeat_at" = NOW() - INTERVAL '5 minutes' WHERE "id" = $1`,
+    [staleId]
+  )
+  const deadIds = yield* cleanDeadWorkers(60000)
+  console.log(`  Cleaned dead workers: ${deadIds.length}`)
+
+  // --- 13. Saga Workflow ---
+  console.log("\n=== 13. Saga Workflow (with compensation) ===")
+  const sagaWf = yield* runSaga("saga-order", sagaOrderSteps).pipe(
+    Effect.race(
+      Effect.gen(function* () {
+        for (let i = 0; i < 30; i++) {
+          yield* autoComplete("orders")
+          yield* Effect.sleep(100)
+        }
+        return yield* Effect.fail("timeout" as const)
+      })
+    ),
+    Effect.catchAll(() => Effect.succeed(null))
+  )
+  if (sagaWf) {
+    console.log(`  Saga workflow: ${sagaWf.name}, status: ${sagaWf.status}`)
+    for (const step of sagaWf.steps) {
+      console.log(`    Step "${step.name}": ${step.status}`)
+    }
+  } else {
+    console.log("  Saga workflow completed (or timed out)")
+  }
+
+  // --- 14. Workflow Cancellation ---
+  console.log("\n=== 14. Workflow Cancellation ===")
+  // Enqueue two jobs and create a workflow for them, then cancel it
+  const cancelJob1 = yield* enqueue("orders", "cancel-step-1", { idx: 1 })
+  const cancelJob2 = yield* enqueue("orders", "cancel-step-2", { idx: 2 })
+  const wfRows = yield* client.execute<any>(
+    `INSERT INTO "_tsdb_sdk_job_workflows" ("name", "type", "steps")
+     VALUES ($1, $2, $3) RETURNING *`,
+    [
+      "cancel-demo",
+      "sequential",
+      JSON.stringify([
+        { name: "s1", jobId: cancelJob1.id, status: "running", result: null, compensationJobId: null },
+        { name: "s2", jobId: cancelJob2.id, status: "pending", result: null, compensationJobId: null },
+      ])
+    ]
+  )
+  const wfToCancel = wfRows[0]
+  yield* cancelWorkflow(wfToCancel.id)
+  const cancelled = yield* getWorkflow(wfToCancel.id)
+  console.log(`  Cancelled workflow status: ${cancelled?.status} (error: ${cancelled?.error})`)
+
   // Cleanup demo data
   for (const q of queues) {
     yield* obliterate(q)
@@ -208,10 +283,10 @@ const program = Effect.gen(function* () {
   yield* obliterate("orders")
   yield* obliterate("reports")
 
-  // Clean up schedules
-  const client = yield* TimescaleClient
+  // Clean up schedules, workflows, workers
   yield* client.execute(`DELETE FROM "_tsdb_sdk_job_schedules" WHERE "queue" = 'emails'`)
-  yield* client.execute(`DELETE FROM "_tsdb_sdk_job_workflows" WHERE "name" LIKE 'order-%' OR "name" LIKE 'report-%'`)
+  yield* client.execute(`DELETE FROM "_tsdb_sdk_job_workflows" WHERE "name" LIKE 'order-%' OR "name" LIKE 'report-%' OR "name" LIKE 'saga-%' OR "name" LIKE 'cancel-%'`)
+  yield* client.execute(`DELETE FROM "_tsdb_sdk_job_workers" WHERE "queue" IN ('emails', 'media', 'notifications', 'orders', 'reports')`)
 
   console.log("\nDone! All demo data cleaned up.")
 })

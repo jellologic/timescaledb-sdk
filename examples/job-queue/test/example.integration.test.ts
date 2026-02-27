@@ -15,10 +15,12 @@ import { makeManagedRunner } from "../../../test/helpers/effect-runner.js"
 import { ensureQueueTables, resetInitialized } from "../../../src/queue/Setup.js"
 import {
   enqueue, enqueueBulk, dequeue, completeJob, getJob,
-  queueStats, obliterate,
+  queueStats, obliterate, cancelJob,
 } from "../../../src/queue/Queue.js"
 import { addRepeatableJob, listRepeatableJobs } from "../../../src/queue/Scheduler.js"
 import { pruneCompleted } from "../../../src/queue/Maintenance.js"
+import { registerWorker, deregisterWorker, getWorker, getActiveWorkers } from "../../../src/queue/Registry.js"
+import { cancelWorkflow, getWorkflow } from "../../../src/queue/Orchestrator.js"
 
 const runner = makeManagedRunner(liveClient())
 const run = <A>(effect: Effect.Effect<A, any, any>) => runner.run(effect)
@@ -32,6 +34,8 @@ afterAll(async () => {
       const client = yield* TimescaleClient
       yield* client.execute(`DELETE FROM "_tsdb_sdk_job_queue" WHERE "queue" LIKE 'example_q_%'`).pipe(Effect.catchAll(() => Effect.void))
       yield* client.execute(`DELETE FROM "_tsdb_sdk_job_schedules" WHERE "queue" LIKE 'example_q_%'`).pipe(Effect.catchAll(() => Effect.void))
+      yield* client.execute(`DELETE FROM "_tsdb_sdk_job_workers" WHERE "queue" LIKE 'example_q_%'`).pipe(Effect.catchAll(() => Effect.void))
+      yield* client.execute(`DELETE FROM "_tsdb_sdk_job_workflows" WHERE "name" LIKE 'example_%'`).pipe(Effect.catchAll(() => Effect.void))
     })
   ).catch(() => {})
   await runner.dispose()
@@ -154,5 +158,77 @@ describe("Job Queue Example", () => {
     await run(obliterate(q))
     const stats = await run(queueStats(q))
     expect(stats.total).toBe(0)
+  })
+
+  test("worker registry round-trip: register, get, deregister, verify stopped", async () => {
+    const q = uniqueQueue()
+    const id = crypto.randomUUID()
+
+    const registered = await run(registerWorker(id, q, "example-host", process.pid, 2))
+    expect(registered.status).toBe("active")
+    expect(registered.queue).toBe(q)
+
+    const fetched = await run(getWorker(id))
+    expect(fetched).not.toBeNull()
+    expect(fetched!.id).toBe(id)
+
+    // Verify appears in active list
+    const active = await run(getActiveWorkers(q))
+    expect(active.length).toBe(1)
+
+    await run(deregisterWorker(id))
+
+    const stopped = await run(getWorker(id))
+    expect(stopped!.status).toBe("stopped")
+
+    // No longer in active list
+    const afterDeregister = await run(getActiveWorkers(q))
+    expect(afterDeregister.length).toBe(0)
+  })
+
+  test("cancelWorkflow cancels waiting jobs", async () => {
+    const q = uniqueQueue()
+
+    await run(
+      Effect.gen(function* () {
+        yield* ensureQueueTables
+        const client = yield* TimescaleClient
+
+        // Enqueue two jobs
+        const j1 = yield* enqueue(q, "cancel-j1", { idx: 1 })
+        const j2 = yield* enqueue(q, "cancel-j2", { idx: 2 })
+
+        // Create a workflow record
+        const rows = yield* client.execute<any>(
+          `INSERT INTO "_tsdb_sdk_job_workflows" ("name", "type", "steps")
+           VALUES ($1, $2, $3) RETURNING *`,
+          [
+            "example_cancel_wf",
+            "sequential",
+            JSON.stringify([
+              { name: "s1", jobId: j1.id, status: "running", result: null, compensationJobId: null },
+              { name: "s2", jobId: j2.id, status: "pending", result: null, compensationJobId: null },
+            ])
+          ]
+        )
+        const wfId = rows[0].id
+
+        // Cancel the workflow
+        yield* cancelWorkflow(wfId)
+
+        // Verify workflow is failed
+        const wf = yield* getWorkflow(wfId)
+        expect(wf).not.toBeNull()
+        expect(wf!.status).toBe("failed")
+        expect(wf!.error).toBe("Cancelled")
+
+        // Verify jobs are cancelled
+        const fetchedJ1 = yield* getJob(j1.id)
+        expect(fetchedJ1!.status).toBe("cancelled")
+
+        const fetchedJ2 = yield* getJob(j2.id)
+        expect(fetchedJ2!.status).toBe("cancelled")
+      })
+    )
   })
 })

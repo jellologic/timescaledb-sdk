@@ -8,6 +8,10 @@ import {
 } from "../../src/queue/Queue.js"
 import { pruneCompleted, pruneFailed, recoverStalled, runMaintenance } from "../../src/queue/Maintenance.js"
 import { addRepeatableJob, removeRepeatableJob, listRepeatableJobs, schedulerTick } from "../../src/queue/Scheduler.js"
+import {
+  registerWorker, deregisterWorker, heartbeat, getActiveWorkers, cleanDeadWorkers, getWorker,
+} from "../../src/queue/Registry.js"
+import { runSequential, runParallel, runSaga, runPipeline, getWorkflow, cancelWorkflow } from "../../src/queue/Orchestrator.js"
 import { liveClient } from "../setup/test-layers.js"
 import { makeManagedRunner } from "../helpers/effect-runner.js"
 
@@ -25,6 +29,7 @@ afterAll(async () => {
       yield* client.execute(`DELETE FROM "_tsdb_sdk_job_queue" WHERE "queue" LIKE 'test_q_%'`).pipe(Effect.catchAll(() => Effect.void))
       yield* client.execute(`DELETE FROM "_tsdb_sdk_job_workflows" WHERE "name" LIKE 'test_%'`).pipe(Effect.catchAll(() => Effect.void))
       yield* client.execute(`DELETE FROM "_tsdb_sdk_job_schedules" WHERE "queue" LIKE 'test_q_%'`).pipe(Effect.catchAll(() => Effect.void))
+      yield* client.execute(`DELETE FROM "_tsdb_sdk_job_workers" WHERE "queue" LIKE 'test_q_%'`).pipe(Effect.catchAll(() => Effect.void))
     })
   ).catch(() => {})
   await runner.dispose()
@@ -568,5 +573,312 @@ describe("Integration — Scheduler", () => {
 
     const count = await run(schedulerTick)
     expect(count).toBeGreaterThanOrEqual(1)
+  })
+})
+
+// ============================================
+// Worker Registry
+// ============================================
+describe("Integration — Worker Registry", () => {
+  test("_tsdb_sdk_job_workers table exists after ensureQueueTables", async () => {
+    await run(
+      Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        yield* ensureQueueTables
+        const rows = yield* client.execute<any>(
+          `SELECT table_name FROM information_schema.tables WHERE table_name = '_tsdb_sdk_job_workers'`
+        )
+        expect(rows.length).toBe(1)
+      })
+    )
+  })
+
+  test("registerWorker round-trip: insert and getWorker", async () => {
+    const q = uniqueQueue()
+    const id = crypto.randomUUID()
+
+    const worker = await run(registerWorker(id, q, "integration-host", process.pid, 4, { env: "test" }))
+
+    expect(worker.id).toBe(id)
+    expect(worker.queue).toBe(q)
+    expect(worker.hostname).toBe("integration-host")
+    expect(worker.pid).toBe(process.pid)
+    expect(worker.status).toBe("active")
+    expect(worker.concurrency).toBe(4)
+    expect(worker.activeJobs).toBe(0)
+    expect(worker.metadata).toEqual({ env: "test" })
+    expect(worker.lastHeartbeatAt).toBeInstanceOf(Date)
+    expect(worker.startedAt).toBeInstanceOf(Date)
+    expect(worker.stoppedAt).toBeNull()
+
+    // Verify via getWorker
+    const fetched = await run(getWorker(id))
+    expect(fetched).not.toBeNull()
+    expect(fetched!.id).toBe(id)
+    expect(fetched!.hostname).toBe("integration-host")
+  })
+
+  test("heartbeat updates last_heartbeat_at and active_jobs", async () => {
+    const q = uniqueQueue()
+    const id = crypto.randomUUID()
+
+    await run(registerWorker(id, q, "hb-host", 1, 2))
+
+    // Record initial heartbeat time
+    const before = await run(getWorker(id))
+    expect(before).not.toBeNull()
+
+    // Small delay to ensure timestamp changes
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    await run(heartbeat(id, 5))
+
+    const after = await run(getWorker(id))
+    expect(after).not.toBeNull()
+    expect(after!.activeJobs).toBe(5)
+    expect(after!.lastHeartbeatAt.getTime()).toBeGreaterThanOrEqual(before!.lastHeartbeatAt.getTime())
+  })
+
+  test("deregisterWorker sets status to stopped", async () => {
+    const q = uniqueQueue()
+    const id = crypto.randomUUID()
+
+    await run(registerWorker(id, q, "dereg-host", 1, 1))
+    await run(deregisterWorker(id))
+
+    const worker = await run(getWorker(id))
+    expect(worker).not.toBeNull()
+    expect(worker!.status).toBe("stopped")
+    expect(worker!.stoppedAt).toBeInstanceOf(Date)
+  })
+
+  test("getActiveWorkers filters by status and queue", async () => {
+    const q = uniqueQueue()
+    const id1 = crypto.randomUUID()
+    const id2 = crypto.randomUUID()
+    const id3 = crypto.randomUUID()
+
+    await run(registerWorker(id1, q, "host-1", 1, 1))
+    await run(registerWorker(id2, q, "host-2", 2, 2))
+    await run(registerWorker(id3, q + "-other", "host-3", 3, 3))
+
+    const queueWorkers = await run(getActiveWorkers(q))
+    expect(queueWorkers.length).toBe(2)
+
+    const allWorkers = await run(getActiveWorkers())
+    expect(allWorkers.length).toBeGreaterThanOrEqual(3)
+  })
+
+  test("getActiveWorkers excludes stopped workers", async () => {
+    const q = uniqueQueue()
+    const id1 = crypto.randomUUID()
+    const id2 = crypto.randomUUID()
+
+    await run(registerWorker(id1, q, "active-host", 1, 1))
+    await run(registerWorker(id2, q, "stopped-host", 2, 2))
+    await run(deregisterWorker(id2))
+
+    const workers = await run(getActiveWorkers(q))
+    expect(workers.length).toBe(1)
+    expect(workers[0]!.id).toBe(id1)
+  })
+
+  test("cleanDeadWorkers marks stale workers as stopped", async () => {
+    const q = uniqueQueue()
+    const staleId = crypto.randomUUID()
+
+    await run(registerWorker(staleId, q, "stale-host", 9999, 1))
+
+    // Manually backdate the heartbeat to make it appear stale
+    await run(
+      Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        yield* client.execute(
+          `UPDATE "_tsdb_sdk_job_workers" SET "last_heartbeat_at" = NOW() - INTERVAL '10 minutes' WHERE "id" = $1`,
+          [staleId]
+        )
+      })
+    )
+
+    const deadIds = await run(cleanDeadWorkers(60000)) // 60 second timeout
+    expect(deadIds).toContain(staleId)
+
+    const worker = await run(getWorker(staleId))
+    expect(worker!.status).toBe("stopped")
+  })
+
+  test("cleanDeadWorkers reassigns active jobs from dead workers back to waiting", async () => {
+    const q = uniqueQueue()
+    const staleId = crypto.randomUUID()
+
+    // Register a worker and give it an active job
+    await run(registerWorker(staleId, q, "dead-host", 1, 1))
+
+    // Enqueue and dequeue a job assigned to this worker
+    const job = await run(enqueue(q, "orphan-job", { key: "val" }))
+    await run(dequeue(q, 1, staleId))
+
+    // Backdate the heartbeat
+    await run(
+      Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        yield* client.execute(
+          `UPDATE "_tsdb_sdk_job_workers" SET "last_heartbeat_at" = NOW() - INTERVAL '10 minutes' WHERE "id" = $1`,
+          [staleId]
+        )
+      })
+    )
+
+    await run(cleanDeadWorkers(60000))
+
+    // The job should have been reassigned back to waiting
+    const reassigned = await run(getJob(job.id))
+    expect(reassigned!.status).toBe("waiting")
+    expect(reassigned!.workerId).toBeNull()
+  })
+})
+
+// ============================================
+// Workflow Advanced
+// ============================================
+describe("Integration — Workflow Advanced", () => {
+  // Helper: auto-complete loop that runs in parallel with workflow
+  const autoCompleteLoop = (queue: string, iterations = 30) =>
+    Effect.gen(function* () {
+      for (let i = 0; i < iterations; i++) {
+        const jobs = yield* dequeue(queue, 10, "wf-test-worker")
+        for (const job of jobs) {
+          yield* completeJob(job.id, { processed: true, jobName: job.name })
+        }
+        yield* Effect.sleep(100)
+      }
+      return yield* Effect.fail("timeout" as const)
+    })
+
+  // Helper: auto-fail loop that fails the Nth job
+  const autoFailOnNth = (queue: string, failOnIndex: number, iterations = 30) =>
+    Effect.gen(function* () {
+      let processCount = 0
+      for (let i = 0; i < iterations; i++) {
+        const jobs = yield* dequeue(queue, 10, "wf-test-worker")
+        for (const job of jobs) {
+          processCount++
+          if (processCount === failOnIndex) {
+            yield* failJob(job.id, "Intentional test failure")
+          } else {
+            yield* completeJob(job.id, { processed: true, jobName: job.name })
+          }
+        }
+        yield* Effect.sleep(100)
+      }
+      return yield* Effect.fail("timeout" as const)
+    })
+
+  test("runSequential with auto-complete produces completed workflow", async () => {
+    const q = uniqueQueue()
+    const steps = [
+      { name: "step-1", queue: q, jobName: "s1", data: { idx: 1 } },
+      { name: "step-2", queue: q, jobName: "s2", data: { idx: 2 } },
+    ]
+
+    const result = await run(
+      runSequential("test_seq_adv", steps).pipe(
+        Effect.race(autoCompleteLoop(q)),
+        Effect.catchAll(() => Effect.succeed(null))
+      )
+    )
+
+    expect(result).not.toBeNull()
+    if (result) {
+      expect(result.type).toBe("sequential")
+      expect(result.status).toBe("completed")
+      expect(result.steps.length).toBe(2)
+    }
+  })
+
+  test("runPipeline delegates to sequential and returns type pipeline", async () => {
+    const q = uniqueQueue()
+    const steps = [
+      { name: "pipe-1", queue: q, jobName: "p1", data: { x: 1 } },
+    ]
+
+    const result = await run(
+      runPipeline("test_pipe_adv", steps).pipe(
+        Effect.race(autoCompleteLoop(q)),
+        Effect.catchAll(() => Effect.succeed(null))
+      )
+    )
+
+    expect(result).not.toBeNull()
+    if (result) {
+      expect(result.type).toBe("pipeline")
+      expect(result.status).toBe("completed")
+    }
+  })
+
+  test("cancelWorkflow sets workflow to failed and cancels running jobs", async () => {
+    const q = uniqueQueue()
+
+    // Create a sequential workflow but don't auto-complete so jobs stay waiting
+    const workflowPromise = run(
+      Effect.gen(function* () {
+        yield* ensureQueueTables
+        const step1 = yield* enqueue(q, "cancel-step-1", { idx: 1 })
+        const step2 = yield* enqueue(q, "cancel-step-2", { idx: 2 })
+
+        // Create workflow record manually using the client
+        const client = yield* TimescaleClient
+        const rows = yield* client.execute<any>(
+          `INSERT INTO "_tsdb_sdk_job_workflows" ("name", "type", "steps")
+           VALUES ($1, $2, $3) RETURNING *`,
+          [
+            "test_cancel_wf",
+            "sequential",
+            JSON.stringify([
+              { name: "s1", jobId: step1.id, status: "running", result: null, compensationJobId: null },
+              { name: "s2", jobId: step2.id, status: "pending", result: null, compensationJobId: null },
+            ])
+          ]
+        )
+        const wfId = rows[0].id
+
+        yield* cancelWorkflow(wfId)
+
+        const wf = yield* getWorkflow(wfId)
+        expect(wf).not.toBeNull()
+        expect(wf!.status).toBe("failed")
+        expect(wf!.error).toBe("Cancelled")
+
+        // Jobs should be cancelled
+        const j1 = yield* getJob(step1.id)
+        expect(j1!.status).toBe("cancelled")
+      })
+    )
+
+    await workflowPromise
+  })
+
+  test("getWorkflow returns full WorkflowRecord with steps", async () => {
+    const q = uniqueQueue()
+    const steps = [
+      { name: "get-step-1", queue: q, jobName: "g1", data: { x: 1 } },
+    ]
+
+    const result = await run(
+      runSequential("test_get_wf", steps).pipe(
+        Effect.race(autoCompleteLoop(q)),
+        Effect.catchAll(() => Effect.succeed(null))
+      )
+    )
+
+    if (result) {
+      const fetched = await run(getWorkflow(result.id))
+      expect(fetched).not.toBeNull()
+      expect(fetched!.id).toBe(result.id)
+      expect(fetched!.name).toBe("test_get_wf")
+      expect(fetched!.steps.length).toBe(1)
+      expect(fetched!.createdAt).toBeInstanceOf(Date)
+      expect(fetched!.updatedAt).toBeInstanceOf(Date)
+    }
   })
 })

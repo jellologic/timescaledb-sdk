@@ -33,6 +33,42 @@ export const orderProcessingSteps: WorkflowStep[] = [
   },
 ]
 
+/** Saga order processing — each step has a compensation action for rollback */
+export const sagaOrderSteps: WorkflowStep[] = [
+  {
+    name: "charge-payment",
+    queue: "orders",
+    jobName: "charge-payment",
+    data: { orderId: "ORD-002", amount: 49.99 },
+    compensation: {
+      queue: "orders",
+      jobName: "refund-payment",
+      data: { orderId: "ORD-002" },
+    },
+  },
+  {
+    name: "ship-order",
+    queue: "orders",
+    jobName: "ship-order",
+    data: (prev: any) => ({
+      orderId: "ORD-002",
+      paymentId: prev?.chargeId ?? "chg-1",
+    }),
+    compensation: {
+      queue: "orders",
+      jobName: "cancel-shipment",
+      data: { orderId: "ORD-002" },
+    },
+  },
+  {
+    name: "send-receipt",
+    queue: "orders",
+    jobName: "send-receipt",
+    data: { orderId: "ORD-002" },
+    // no compensation — receipts are idempotent
+  },
+]
+
 /** Parallel report generation — all steps run independently */
 export const reportGenerationSteps: WorkflowStep[] = [
   {
