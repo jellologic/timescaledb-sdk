@@ -57,6 +57,19 @@ describe("definitionsToSnapshot", () => {
     expect(snapshot.hypertables[0]!.compressionEnabled).toBe(true)
   })
 
+  test("hypertable snapshot uses SQL column name for timeColumn", () => {
+    const metrics = hypertable("metrics", {
+      fetchedAt: timestamptz("fetched_at").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "fetchedAt",
+      chunkInterval: "7 days",
+    })
+
+    const snapshot = definitionsToSnapshot([metrics])
+    expect(snapshot.hypertables[0]!.timeColumn).toBe("fetched_at")
+  })
+
   test("includes index snapshots", () => {
     const users = pgTable("users", {
       id: serial("id"),

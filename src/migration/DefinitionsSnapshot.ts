@@ -4,6 +4,12 @@ import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
 import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot, ProcedureSnapshot, TriggerFunctionSnapshot, IndexSnapshotColumn } from "./types.js"
 import type { SchemaDefinition } from "./Generator.js"
 
+/** Resolve a TS property key to its SQL column name */
+const resolveColumnName = (def: TableDefinition | HypertableDefinition, propKey: string): string => {
+  const col = (def.columns as Record<string, ColumnDef>)[propKey]
+  return col ? col.name : propKey
+}
+
 export interface PersistedSnapshot {
   readonly version: 1
   readonly definitions: SchemaSnapshot
@@ -61,7 +67,7 @@ const tableDefToSnapshot = (def: TableDefinition | HypertableDefinition): TableS
 const hypertableDefToSnapshot = (def: HypertableDefinition): HypertableSnapshot => ({
   name: def.name,
   schema: def.schema,
-  timeColumn: def.hypertableConfig.timeColumn,
+  timeColumn: resolveColumnName(def, def.hypertableConfig.timeColumn),
   chunkInterval: def.hypertableConfig.chunkInterval ?? null,
   compressionEnabled: def.hypertableConfig.compression !== undefined,
   compressionSettings: def.hypertableConfig.compression ? {

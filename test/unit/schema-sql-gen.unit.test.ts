@@ -429,6 +429,19 @@ describe("SQL Generation — Hypertable", () => {
     expect(htSql).toContain("create_default_indexes => FALSE")
   })
 
+  test("create_hypertable uses SQL column name, not TS property key", () => {
+    const metrics = hypertable("metrics", {
+      fetchedAt: timestamptz("fetched_at").notNull(),
+      value: doublePrecision("value"),
+    }, { timeColumn: "fetchedAt", chunkInterval: "7 days" })
+
+    const up = genUp([metrics])
+    const htSql = up.find((s) => s.includes("create_hypertable"))
+    expect(htSql).toBeDefined()
+    expect(htSql).toContain("'fetched_at'")
+    expect(htSql).not.toContain("'fetchedAt'")
+  })
+
   test("compression policy SQL", () => {
     const metrics = hypertable("metrics", {
       time: timestamptz("time").notNull(),
@@ -936,6 +949,22 @@ describe("SQL Generation — Modern Hypertable WITH Syntax", () => {
     expect(createSql).toContain("tsdb.chunk_interval = '1 day'")
     // Should NOT have create_hypertable call
     expect(up.find((s) => s.includes("create_hypertable"))).toBeUndefined()
+  })
+
+  test("modern syntax uses SQL column name for time_column", () => {
+    const metrics = hypertable("metrics", {
+      crawledAt: timestamptz("crawled_at").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "crawledAt",
+      chunkInterval: "7 days",
+      useModernSyntax: true,
+    })
+
+    const up = genUp([metrics])
+    const createSql = up.find((s) => s.includes("CREATE TABLE"))
+    expect(createSql).toContain("tsdb.time_column = 'crawled_at'")
+    expect(createSql).not.toContain("crawledAt")
   })
 
   test("modern syntax with compression and retention", () => {

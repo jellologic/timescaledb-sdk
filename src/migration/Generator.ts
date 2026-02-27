@@ -7,6 +7,12 @@ import { toSqlValue, quoteIdentifier, quoteString, qualifiedName } from "../inte
 
 export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition | ViewDefinition | MaterializedViewDefinition | FunctionDefinition | ProcedureDefinition | TriggerFunctionDefinition
 
+/** Resolve a TS property key to its SQL column name (e.g. "crawledAt" → "crawled_at") */
+const resolveColumnName = (def: TableDefinition | HypertableDefinition, propKey: string): string => {
+  const col = (def.columns as Record<string, ColumnDef>)[propKey]
+  return col ? col.name : propKey
+}
+
 const TYPE_ALIASES: Record<string, string> = {
   "serial": "integer",
   "bigserial": "bigint",
@@ -1130,7 +1136,7 @@ const generateRlsPolicySql = (tableName: string, policy: RlsPolicyDef): string =
 const generateModernHypertableWith = (def: HypertableDefinition): string[] => {
   const config = def.hypertableConfig
   const parts: string[] = ["tsdb.hypertable"]
-  parts.push(`tsdb.time_column = '${config.timeColumn}'`)
+  parts.push(`tsdb.time_column = '${resolveColumnName(def, config.timeColumn)}'`)
   if (config.chunkInterval) {
     parts.push(`tsdb.chunk_interval = '${config.chunkInterval}'`)
   }
@@ -1322,7 +1328,7 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     if (config.useModernSyntax) continue
 
     // Legacy syntax: create_hypertable()
-    const args = [`'${tableName}'`, `'${config.timeColumn}'`]
+    const args = [`'${tableName}'`, `'${resolveColumnName(def, config.timeColumn)}'`]
     if (config.chunkInterval) {
       args.push(`chunk_time_interval => INTERVAL '${config.chunkInterval}'`)
     }

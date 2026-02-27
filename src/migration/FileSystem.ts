@@ -87,7 +87,7 @@ export const atomicWriteAll = async (
     const downArray = migrationFile.down.map((sql) => `    ${JSON.stringify(sql)},`).join("\n")
 
     let content = AI_WARNING_HEADER
-    content += `import type { MigrationFile } from "timescaledb-sdk/migration"\n\n`
+    content += `import type { MigrationFile } from "@jellologic/timescaledb-sdk/migration"\n\n`
     content += `export default {\n`
     content += `  name: ${JSON.stringify(migrationFile.name)},\n`
     content += `  timestamp: ${migrationFile.timestamp},\n`
@@ -168,7 +168,7 @@ export const writeMigrationFile = async (dir: string, migration: MigrationFile):
   const downArray = migration.down.map((sql) => `    ${JSON.stringify(sql)},`).join("\n")
 
   let content = AI_WARNING_HEADER
-  content += `import type { MigrationFile } from "timescaledb-sdk/migration"\n\n`
+  content += `import type { MigrationFile } from "@jellologic/timescaledb-sdk/migration"\n\n`
   content += `export default {\n`
   content += `  name: ${JSON.stringify(migration.name)},\n`
   content += `  timestamp: ${migration.timestamp},\n`
