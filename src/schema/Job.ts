@@ -1,7 +1,7 @@
 import type { JobDefinition } from "./types.js"
 
 export const backgroundJob = (
-  functionName: string,
+  functionNameOrDef: string | { definition: { name: string } },
   scheduleInterval: string,
   opts?: {
     name?: string
@@ -11,6 +11,10 @@ export const backgroundJob = (
     fixedSchedule?: boolean
   }
 ): JobDefinition => {
+  const functionName = typeof functionNameOrDef === "string"
+    ? functionNameOrDef
+    : functionNameOrDef.definition.name
+
   // Inject sdk_job_name into config if name is provided for stable diff matching
   const config = opts?.name
     ? { ...opts?.config, sdk_job_name: opts.name }

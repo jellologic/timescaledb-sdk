@@ -1,6 +1,8 @@
 import { test, expect, describe } from "bun:test"
 import { pgFunction, pgTriggerFunction, pgProcedure } from "../../src/functions/index.js"
 import { numeric, integer, text, timestamptz } from "../../src/schema/Column.js"
+import { trigger } from "../../src/schema/Trigger.js"
+import { backgroundJob } from "../../src/schema/Job.js"
 
 describe("pgFunction", () => {
   test("creates a FunctionDefinition with correct metadata", () => {
@@ -272,5 +274,63 @@ describe("pgProcedure", () => {
 
     const sql = proc.toCreateOrReplace()
     expect(sql).toContain("CREATE OR REPLACE PROCEDURE")
+  })
+})
+
+describe("Typed trigger references", () => {
+  test("trigger accepts function definition reference", () => {
+    const fn = pgTriggerFunction({
+      name: "audit_fn",
+      body: (NEW: any) => NEW,
+    })
+
+    const trg = trigger("my_trigger", {
+      timing: "AFTER",
+      events: ["INSERT"],
+      forEach: "ROW",
+      function: fn,
+    })
+
+    expect(trg.functionName).toBe("audit_fn")
+  })
+
+  test("trigger still accepts string functionName", () => {
+    const trg = trigger("my_trigger", {
+      timing: "AFTER",
+      events: ["INSERT"],
+      forEach: "ROW",
+      functionName: "legacy_function",
+    })
+
+    expect(trg.functionName).toBe("legacy_function")
+  })
+
+  test("trigger throws if neither functionName nor function provided", () => {
+    expect(() =>
+      trigger("bad_trigger", {
+        timing: "AFTER",
+        events: ["INSERT"],
+        forEach: "ROW",
+      } as any)
+    ).toThrow("Either functionName or function must be provided")
+  })
+})
+
+describe("Typed job references", () => {
+  test("backgroundJob accepts function definition reference", () => {
+    const fn = pgFunction({
+      name: "cleanup_fn",
+      params: { days: integer("days") },
+      returns: integer("result"),
+      body: (days: number): number => days,
+    })
+
+    const job = backgroundJob(fn, "1 day")
+    expect(job.functionName).toBe("cleanup_fn")
+  })
+
+  test("backgroundJob still accepts string function name", () => {
+    const job = backgroundJob("legacy_cleanup", "1 day")
+    expect(job.functionName).toBe("legacy_cleanup")
   })
 })
