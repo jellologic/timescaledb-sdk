@@ -247,6 +247,10 @@ function validateExpr(expr: PgExpr): void {
       }
       break
 
+    case "SpreadElement":
+      validateExpr(expr.expression)
+      break
+
     default: {
       const exhaustive: never = expr
       throw new Error(

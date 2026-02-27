@@ -445,5 +445,10 @@ function inferExprType(expr: PgExpr, types: Map<string, string>): string {
       }
       return "TEXT[]"
     }
+
+    case "SpreadElement": {
+      // Spread of an array has the same type as the array
+      return inferExprType(expr.expression, types)
+    }
   }
 }

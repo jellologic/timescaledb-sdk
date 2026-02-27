@@ -73,6 +73,11 @@ export interface PgArrayLiteral {
   readonly elements: PgExpr[]
 }
 
+export interface PgSpreadElement {
+  readonly kind: "SpreadElement"
+  readonly expression: PgExpr
+}
+
 export type PgExpr =
   | PgBinaryExpr
   | PgUnaryExpr
@@ -86,6 +91,7 @@ export type PgExpr =
   | PgNullishCoalescing
   | PgTypeCast
   | PgArrayLiteral
+  | PgSpreadElement
 
 // ─── Statement IR nodes ──────────────────────────────────────────────
 
@@ -1001,6 +1007,14 @@ function parseExpression(node: ts.Expression): PgExpr {
       kind: "Call",
       callee: `new ${callee}`,
       arguments: args,
+    }
+  }
+
+  // Spread element (...x) — used inside array literals
+  if (ts.isSpreadElement(node)) {
+    return {
+      kind: "SpreadElement",
+      expression: parseExpression(node.expression),
     }
   }
 
