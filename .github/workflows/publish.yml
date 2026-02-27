@@ -20,7 +20,59 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - run: bun run build
+      # Build JS bundles (run directly — `bun run build` hits CouldntReadCurrentDirectory)
+      - name: Bundle JS
+        run: |
+          rm -rf dist
+          bun build \
+            ./src/index.ts ./src/schema/index.ts ./src/query/index.ts \
+            ./src/hypertable/index.ts ./src/cagg/index.ts ./src/compression/index.ts \
+            ./src/retention/index.ts ./src/hyperfunctions/index.ts ./src/jobs/index.ts \
+            ./src/tiering/index.ts ./src/migration/index.ts ./src/view/index.ts \
+            ./src/functions/index.ts ./src/queue/index.ts ./src/bulk/index.ts \
+            ./src/Error.ts ./src/Client.ts ./src/Config.ts \
+            --outdir ./dist --root ./src --target node --splitting
+
+      # Emit .d.ts declarations
+      - name: Generate type declarations
+        run: npx tsc --project tsconfig.build.json
+
+      # Verify dist contains expected exports before publishing
+      - name: Verify dist integrity
+        run: |
+          errors=0
+          for path in \
+            dist/index.js dist/index.d.ts \
+            dist/Client.js dist/Client.d.ts \
+            dist/bulk/index.js dist/bulk/index.d.ts \
+            dist/queue/index.js dist/queue/index.d.ts \
+            dist/schema/index.js dist/schema/index.d.ts \
+            dist/query/index.js dist/query/index.d.ts; do
+            if [ ! -f "$path" ]; then
+              echo "MISSING: $path"
+              errors=$((errors + 1))
+            fi
+          done
+
+          # Check key exports exist in built files
+          for symbol in rawQuery executeSql; do
+            if ! grep -q "$symbol" dist/Client.d.ts; then
+              echo "MISSING EXPORT: $symbol not found in dist/Client.d.ts"
+              errors=$((errors + 1))
+            fi
+          done
+          for symbol in bulkInsert bulkUpsert; do
+            if ! grep -q "$symbol" dist/bulk/index.d.ts; then
+              echo "MISSING EXPORT: $symbol not found in dist/bulk/index.d.ts"
+              errors=$((errors + 1))
+            fi
+          done
+
+          if [ $errors -gt 0 ]; then
+            echo "dist verification failed with $errors error(s)"
+            exit 1
+          fi
+          echo "dist verification passed"
 
       - run: bun test test/**/*.unit.test.ts
 
@@ -29,6 +81,6 @@ jobs:
           node-version: 20
           registry-url: https://npm.pkg.github.com
 
-      - run: npm publish
+      - run: npm publish --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
