@@ -12,13 +12,16 @@ export { addRepeatableJob, removeRepeatableJob, listRepeatableJobs,
          schedulerTick, parseCron, nextCronDate } from "./Scheduler.js"
 // Events
 export { QueueEventBus, eventBusLayer, emitEvent, listenForEvents } from "./Events.js"
+// Registry
+export { registerWorker, deregisterWorker, heartbeat, getActiveWorkers, cleanDeadWorkers, getWorker } from "./Registry.js"
 // Maintenance
 export { pruneCompleted, pruneFailed, recoverStalled, runMaintenance } from "./Maintenance.js"
 // Setup
 export { ensureQueueTables } from "./Setup.js"
 // Schema definitions (for migration integration)
-export { queueDefinitions, jobQueue, jobWorkflows, jobSchedules, jobNotifyFunction } from "./schema.js"
+export { queueDefinitions, jobQueue, jobWorkflows, jobSchedules, jobWorkers, jobNotifyFunction } from "./schema.js"
 // Types
 export type { JobStatus, JobOptions, JobRecord, RepeatOptions, BackoffStrategy,
              QueueConfig, WorkerConfig, WorkflowStep, WorkflowRecord, WorkflowStepStatus,
-             QueueEvent, QueueEventType, QueueStats, ScheduleRecord, MaintenanceConfig } from "./types.js"
+             QueueEvent, QueueEventType, QueueStats, ScheduleRecord, MaintenanceConfig,
+             WorkerRecord, WorkerSignal, WorkerControlMessage } from "./types.js"

@@ -346,6 +346,14 @@ describe("Queue Orchestrator", () => {
       let capturedParams: ReadonlyArray<unknown> | undefined
       const layer = mockClient({
         execute: (query: string, params?: ReadonlyArray<unknown>) => {
+          // Return workflow with no steps for the SELECT
+          if (query.includes("SELECT") && query.includes("_tsdb_sdk_job_workflows") && !query.includes("CREATE")) {
+            return Effect.succeed([{
+              id: "wf-cancel-1", name: "test", type: "sequential", status: "running",
+              steps: [], result: null, error: null,
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
           if (query.includes("UPDATE") && query.includes("_tsdb_sdk_job_workflows") && !query.includes("CREATE")) {
             capturedQuery = query
             capturedParams = params
@@ -358,6 +366,42 @@ describe("Queue Orchestrator", () => {
       expect(capturedQuery).toContain("'failed'")
       expect(capturedQuery).toContain("'Cancelled'")
       expect(capturedParams?.[0]).toBe("wf-cancel-1")
+    })
+
+    test("cancels non-terminal step jobs", async () => {
+      const cancelledJobIds: string[] = []
+      const layer = mockClient({
+        execute: (query: string, params?: ReadonlyArray<unknown>) => {
+          // Return workflow with steps containing jobIds
+          if (query.includes("SELECT") && query.includes("_tsdb_sdk_job_workflows") && !query.includes("CREATE")) {
+            return Effect.succeed([{
+              id: "wf-cancel-2", name: "test", type: "parallel", status: "running",
+              steps: [
+                { name: "s1", jobId: "job-a", status: "completed", result: null, compensationJobId: null },
+                { name: "s2", jobId: "job-b", status: "running", result: null, compensationJobId: null },
+                { name: "s3", jobId: "job-c", status: "pending", result: null, compensationJobId: null },
+                { name: "s4", jobId: null, status: "pending", result: null, compensationJobId: null },
+              ],
+              result: null, error: null,
+              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            }] as any)
+          }
+          // cancelJob UPDATE on _tsdb_sdk_job_queue
+          if (query.includes("UPDATE") && query.includes("_tsdb_sdk_job_queue") && query.includes("'cancelled'")) {
+            cancelledJobIds.push(params?.[0] as string)
+            return Effect.succeed([{ id: params?.[0], status: "cancelled" }] as any)
+          }
+          return Effect.succeed([] as any)
+        },
+      })
+
+      await runTestWith(cancelWorkflow("wf-cancel-2"), layer)
+
+      // Should cancel job-b (running) and job-c (pending), but NOT job-a (completed) or s4 (no jobId)
+      expect(cancelledJobIds).toContain("job-b")
+      expect(cancelledJobIds).toContain("job-c")
+      expect(cancelledJobIds).not.toContain("job-a")
+      expect(cancelledJobIds).toHaveLength(2)
     })
   })
 })

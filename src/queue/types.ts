@@ -65,6 +65,9 @@ export interface WorkerConfig<TData = unknown, TResult = unknown> {
   readonly maxStalledCount?: number
   readonly pollInterval?: number
   readonly useNotify?: boolean
+  readonly hostname?: string
+  readonly metadata?: Record<string, unknown>
+  readonly heartbeatInterval?: number
   readonly processor: (job: JobRecord<TData>) => Effect.Effect<TResult, unknown, TimescaleClient>
 }
 
@@ -110,7 +113,7 @@ export interface WorkflowRecord {
 export type QueueEventType =
   | "job:waiting" | "job:active" | "job:completed" | "job:failed"
   | "job:delayed" | "job:cancelled" | "job:stalled" | "job:progress"
-  | "worker:ready" | "worker:closing" | "worker:error"
+  | "worker:ready" | "worker:closing" | "worker:error" | "worker:heartbeat"
 
 export interface QueueEvent {
   readonly type: QueueEventType
@@ -153,4 +156,27 @@ export interface MaintenanceConfig {
   readonly pruneCompleted?: { readonly maxAge?: number; readonly maxCount?: number }
   readonly pruneFailed?: { readonly maxAge?: number; readonly maxCount?: number }
   readonly stalledThreshold?: number
+}
+
+export interface WorkerRecord {
+  readonly id: string
+  readonly queue: string
+  readonly hostname: string
+  readonly pid: number
+  readonly status: "active" | "draining" | "stopped"
+  readonly concurrency: number
+  readonly activeJobs: number
+  readonly metadata: Record<string, unknown> | null
+  readonly lastHeartbeatAt: Date
+  readonly startedAt: Date
+  readonly stoppedAt: Date | null
+}
+
+export type WorkerSignal = "pause" | "resume" | "shutdown"
+
+export interface WorkerControlMessage {
+  readonly signal: WorkerSignal
+  readonly senderId: string
+  readonly targetWorkerId?: string
+  readonly timestamp: Date
 }

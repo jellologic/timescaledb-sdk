@@ -143,6 +143,32 @@ export const jobSchedules = pgTable("_tsdb_sdk_job_schedules", {
 ])
 
 // ---------------------------------------------------------------------------
+// Table 4: _tsdb_sdk_job_workers
+// ---------------------------------------------------------------------------
+
+export const jobWorkers = pgTable("_tsdb_sdk_job_workers", {
+  id: uuid("id").primaryKey(),
+  queue: text("queue").notNull(),
+  hostname: text("hostname").notNull(),
+  pid: integer("pid").notNull(),
+  status: text("status").notNull().default("active")
+    .check(`"status" IN ('active', 'draining', 'stopped')`),
+  concurrency: integer("concurrency").notNull().default(1 as any),
+  activeJobs: integer("active_jobs").notNull().default(0 as any),
+  metadata: jsonb("metadata"),
+  lastHeartbeatAt: timestamptz("last_heartbeat_at").notNull().defaultNow(),
+  startedAt: timestamptz("started_at").notNull().defaultNow(),
+  stoppedAt: timestamptz("stopped_at"),
+}, () => [
+  index("_tsdb_sdk_job_workers_queue_status_idx",
+    [expr("queue"), expr("status")],
+    { where: `"status" = 'active'` }),
+  index("_tsdb_sdk_job_workers_heartbeat_idx",
+    [expr("last_heartbeat_at")],
+    { where: `"status" = 'active'` }),
+])
+
+// ---------------------------------------------------------------------------
 // All definitions for migration integration
 // ---------------------------------------------------------------------------
 
@@ -151,4 +177,5 @@ export const queueDefinitions: ReadonlyArray<SchemaDefinition> = [
   jobQueue,
   jobWorkflows,
   jobSchedules,
+  jobWorkers,
 ]

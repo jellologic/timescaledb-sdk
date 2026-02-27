@@ -1,9 +1,9 @@
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { QueueError } from "../Error.js"
 import type { WorkflowRecord, WorkflowStep, WorkflowStepStatus } from "./types.js"
 import { ensureQueueTables } from "./Setup.js"
-import { enqueue, getJob } from "./Queue.js"
+import { enqueue, getJob, cancelJob } from "./Queue.js"
 
 interface MutableStep {
   name: string
@@ -99,26 +99,47 @@ const updateWorkflow = (
     )
   )
 
+const isTerminal = (status: string): boolean =>
+  status === "completed" || status === "failed" || status === "cancelled"
+
+const toResult = (job: { status: string; result: unknown; error: string | null }) => ({
+  status: job.status,
+  result: job.status === "completed" ? job.result : null,
+  error: job.status === "failed" ? job.error : job.status === "cancelled" ? "Job was cancelled" : null,
+})
+
 const waitForJobCompletion = (
   jobId: string,
   pollInterval: number = 1000
 ): Effect.Effect<{ readonly status: string; readonly result: unknown; readonly error: string | null }, QueueError, TimescaleClient> =>
   Effect.gen(function* () {
+    const client = yield* TimescaleClient
+
+    // Fast path: check if already terminal
+    const initialJob = yield* getJob(jobId)
+    if (!initialJob) return yield* Effect.fail(new QueueError({ message: `Job not found: ${jobId}` }))
+    if (isTerminal(initialJob.status)) return toResult(initialJob)
+
+    // Main loop: LISTEN/NOTIFY with polling fallback
     while (true) {
+      if (client.listen) {
+        yield* client.listen(`_tsdb_sdk_job_${initialJob.queue}`).pipe(
+          Stream.filter((payload) => {
+            try { return JSON.parse(payload).id === jobId } catch { return false }
+          }),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.timeout(pollInterval),
+          Effect.catchAll(() => Effect.void),
+          Effect.asVoid
+        )
+      } else {
+        yield* Effect.sleep(pollInterval)
+      }
+
       const job = yield* getJob(jobId)
-      if (!job) {
-        return yield* Effect.fail(new QueueError({ message: `Job not found: ${jobId}` }))
-      }
-      if (job.status === "completed") {
-        return { status: "completed" as const, result: job.result, error: null }
-      }
-      if (job.status === "failed") {
-        return { status: "failed" as const, result: null, error: job.error }
-      }
-      if (job.status === "cancelled") {
-        return { status: "cancelled" as const, result: null, error: "Job was cancelled" }
-      }
-      yield* Effect.sleep(pollInterval)
+      if (!job) return yield* Effect.fail(new QueueError({ message: `Job not found: ${jobId}` }))
+      if (isTerminal(job.status)) return toResult(job)
     }
   })
 
@@ -371,6 +392,25 @@ export const cancelWorkflow = (
 ): Effect.Effect<void, QueueError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
+
+    // Fetch workflow to get steps with jobIds
+    const rows = yield* client.execute<any>(
+      `SELECT * FROM "_tsdb_sdk_job_workflows" WHERE "id" = $1`,
+      [workflowId]
+    )
+
+    if (rows.length > 0) {
+      const workflow = rows[0]
+      const steps: ReadonlyArray<{ jobId: string | null; status: string }> =
+        Array.isArray(workflow.steps) ? workflow.steps : []
+
+      // Cancel non-terminal jobs
+      for (const step of steps) {
+        if (step.jobId && !isTerminal(step.status)) {
+          yield* cancelJob(step.jobId).pipe(Effect.catchAll(() => Effect.void))
+        }
+      }
+    }
 
     yield* client.execute(
       `UPDATE "_tsdb_sdk_job_workflows"

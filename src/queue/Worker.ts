@@ -1,9 +1,11 @@
 import { Context, Effect, Fiber, Layer, Ref, Scope, Stream } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { QueueError } from "../Error.js"
-import type { JobRecord, WorkerConfig } from "./types.js"
+import type { JobRecord, QueueEvent, QueueEventType, WorkerConfig } from "./types.js"
 import { ensureQueueTables } from "./Setup.js"
 import { completeJob, dequeue, failJob, promoteDelayed, retryJob } from "./Queue.js"
+import { registerWorker, heartbeat as registryHeartbeat, deregisterWorker } from "./Registry.js"
+import { emitEvent } from "./Events.js"
 
 export class QueueWorker extends Context.Tag("QueueWorker")<QueueWorker, {
   readonly isRunning: Effect.Effect<boolean>
@@ -30,12 +32,18 @@ const waitForWork = (
   return Effect.sleep(pollInterval)
 }
 
+const makeEvent = (type: QueueEventType, queue: string, jobId?: string, data?: unknown): QueueEvent => ({
+  type, queue, jobId, data, timestamp: new Date(),
+})
+
 const processJob = <TData, TResult>(
   job: JobRecord<TData>,
   processor: WorkerConfig<TData, TResult>["processor"],
   timeoutMs: number | null
 ): Effect.Effect<void, never, TimescaleClient> =>
   Effect.gen(function* () {
+    yield* emitEvent(makeEvent("job:active", job.queue, job.id)).pipe(Effect.catchAll(() => Effect.void))
+
     const processorEffect = timeoutMs
       ? processor(job).pipe(
           Effect.timeoutFail({ duration: timeoutMs, onTimeout: () => new Error(`Job timed out after ${timeoutMs}ms`) })
@@ -45,14 +53,20 @@ const processJob = <TData, TResult>(
     const result = yield* processorEffect.pipe(
       Effect.matchEffect({
         onSuccess: (result) =>
-          completeJob(job.id, result).pipe(Effect.asVoid),
+          completeJob(job.id, result).pipe(
+            Effect.tap(() => emitEvent(makeEvent("job:completed", job.queue, job.id, result)).pipe(Effect.catchAll(() => Effect.void))),
+            Effect.asVoid
+          ),
         onFailure: (error) => {
           const errorMsg = error instanceof Error ? error.message : String(error)
           const errorStack = error instanceof Error ? error.stack ?? null : null
           if (job.attempts < job.maxAttempts && job.backoff) {
             return retryJob(job.id).pipe(Effect.asVoid)
           }
-          return failJob(job.id, errorMsg, errorStack ?? undefined).pipe(Effect.asVoid)
+          return failJob(job.id, errorMsg, errorStack ?? undefined).pipe(
+            Effect.tap(() => emitEvent(makeEvent("job:failed", job.queue, job.id, { error: errorMsg })).pipe(Effect.catchAll(() => Effect.void))),
+            Effect.asVoid
+          )
         },
       })
     )
@@ -74,10 +88,20 @@ export const workerLayer = <TData = unknown, TResult = unknown>(
       const lockDuration = config.lockDuration ?? 30000
       const maxStalledCount = config.maxStalledCount ?? 1
       const useNotify = config.useNotify !== false
+      const hostname = config.hostname ?? "unknown"
+      const heartbeatInterval = config.heartbeatInterval ?? 15000
 
       const runningRef = yield* Ref.make(true)
       const pausedRef = yield* Ref.make(false)
       const activeCount = yield* Ref.make(0)
+
+      // Register worker (non-fatal)
+      yield* registerWorker(workerId, config.queue, hostname, typeof process !== "undefined" ? process.pid : 0, concurrency, config.metadata).pipe(
+        Effect.catchAllCause(() => Effect.void)
+      )
+      yield* emitEvent(makeEvent("worker:ready", config.queue, undefined, { workerId })).pipe(
+        Effect.catchAllCause(() => Effect.void)
+      )
 
       // Process loop fiber
       const processLoop = Effect.gen(function* () {
@@ -111,7 +135,11 @@ export const workerLayer = <TData = unknown, TResult = unknown>(
             )
           }
         }
-      }).pipe(Effect.catchAll(() => Effect.void))
+      }).pipe(Effect.catchAll((error) =>
+        emitEvent(makeEvent("worker:error", config.queue, undefined, { workerId, error: String(error) })).pipe(
+          Effect.catchAll(() => Effect.void)
+        )
+      ))
 
       // Stalled job checker fiber
       const stalledChecker = Effect.gen(function* () {
@@ -154,17 +182,31 @@ export const workerLayer = <TData = unknown, TResult = unknown>(
         }
       }).pipe(Effect.catchAll(() => Effect.void))
 
+      // Heartbeat fiber
+      const heartbeatLoop = Effect.gen(function* () {
+        while (yield* Ref.get(runningRef)) {
+          yield* Effect.sleep(heartbeatInterval)
+          const current = yield* Ref.get(activeCount)
+          yield* registryHeartbeat(workerId, current).pipe(Effect.catchAll(() => Effect.void))
+        }
+      }).pipe(Effect.catchAll(() => Effect.void))
+
       const processFiber = yield* Effect.fork(processLoop)
       const stalledFiber = yield* Effect.fork(stalledChecker)
       const promoterFiber = yield* Effect.fork(delayedPromoter)
+      const heartbeatFiber = yield* Effect.fork(heartbeatLoop)
 
       // Clean shutdown on scope finalization
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
+          yield* emitEvent(makeEvent("worker:closing", config.queue, undefined, { workerId })).pipe(
+            Effect.catchAllCause(() => Effect.void)
+          )
           yield* Ref.set(runningRef, false)
           yield* Fiber.interrupt(processFiber)
           yield* Fiber.interrupt(stalledFiber)
           yield* Fiber.interrupt(promoterFiber)
+          yield* Fiber.interrupt(heartbeatFiber)
           // Wait for in-flight jobs to complete (up to 5s)
           let attempts = 0
           while (attempts < 50) {
@@ -173,6 +215,7 @@ export const workerLayer = <TData = unknown, TResult = unknown>(
             yield* Effect.sleep(100)
             attempts++
           }
+          yield* deregisterWorker(workerId).pipe(Effect.catchAllCause(() => Effect.void))
         })
       )
 
@@ -183,6 +226,7 @@ export const workerLayer = <TData = unknown, TResult = unknown>(
           yield* Fiber.interrupt(processFiber)
           yield* Fiber.interrupt(stalledFiber)
           yield* Fiber.interrupt(promoterFiber)
+          yield* Fiber.interrupt(heartbeatFiber)
         }),
         pause: Ref.set(pausedRef, true),
         resume: Ref.set(pausedRef, false),

@@ -328,6 +328,192 @@ describe("Queue Worker", () => {
       expect(dequeueCallCount).toBeGreaterThanOrEqual(1)
     })
 
+    test("registers worker on startup", async () => {
+      const queries: string[] = []
+      const now = new Date().toISOString()
+      const fullLayer = Layer.provide(
+        workerLayer({
+          queue: "reg-q",
+          concurrency: 2,
+          pollInterval: 50,
+          stalledInterval: 60000,
+          processor: makeNoopProcessor(),
+          useNotify: false,
+          hostname: "test-host",
+        }),
+        mockClient({
+          execute: (query: string) => {
+            queries.push(query)
+            // Return a valid worker row for registerWorker INSERT
+            if (query.includes("INSERT") && query.includes("_tsdb_sdk_job_workers")) {
+              return Effect.succeed([{
+                id: "w", queue: "reg-q", hostname: "test-host", pid: 0,
+                status: "active", concurrency: 2, active_jobs: 0, metadata: null,
+                last_heartbeat_at: now, started_at: now, stopped_at: null,
+              }] as any)
+            }
+            return Effect.succeed([] as any)
+          },
+        })
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const worker = yield* QueueWorker
+            yield* Effect.sleep(100)
+            yield* worker.close
+          }).pipe(Effect.provide(fullLayer))
+        )
+      )
+
+      const registerQuery = queries.find(q =>
+        q.includes("INSERT") && q.includes("_tsdb_sdk_job_workers")
+      )
+      expect(registerQuery).toBeDefined()
+      expect(registerQuery).toContain('"hostname"')
+      expect(registerQuery).toContain('"pid"')
+    })
+
+    test("emits worker:ready event via notify on startup", async () => {
+      const notifyCalls: Array<{ channel: string; payload: string }> = []
+      const now = new Date().toISOString()
+      const fullLayer = Layer.provide(
+        workerLayer({
+          queue: "event-q",
+          concurrency: 1,
+          pollInterval: 50,
+          stalledInterval: 60000,
+          processor: makeNoopProcessor(),
+          useNotify: false,
+        }),
+        mockClient({
+          execute: (query: string) => {
+            // Return a valid worker row for registerWorker
+            if (query.includes("INSERT") && query.includes("_tsdb_sdk_job_workers")) {
+              return Effect.succeed([{
+                id: "w", queue: "event-q", hostname: "unknown", pid: 0,
+                status: "active", concurrency: 1, active_jobs: 0, metadata: null,
+                last_heartbeat_at: now, started_at: now, stopped_at: null,
+              }] as any)
+            }
+            return Effect.succeed([] as any)
+          },
+          notify: (channel: string, payload: string) => {
+            notifyCalls.push({ channel, payload })
+            return Effect.succeed(undefined as any)
+          },
+        })
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const worker = yield* QueueWorker
+            yield* Effect.sleep(100)
+            yield* worker.close
+          }).pipe(Effect.provide(fullLayer))
+        )
+      )
+
+      const readyEvent = notifyCalls.find(c => {
+        try {
+          const parsed = JSON.parse(c.payload)
+          return parsed.type === "worker:ready"
+        } catch { return false }
+      })
+      expect(readyEvent).toBeDefined()
+    })
+
+    test("deregisters worker on close", async () => {
+      const queries: string[] = []
+      const now = new Date().toISOString()
+      const fullLayer = Layer.provide(
+        workerLayer({
+          queue: "dereg-q",
+          concurrency: 1,
+          pollInterval: 50,
+          stalledInterval: 60000,
+          processor: makeNoopProcessor(),
+          useNotify: false,
+        }),
+        mockClient({
+          execute: (query: string) => {
+            queries.push(query)
+            if (query.includes("INSERT") && query.includes("_tsdb_sdk_job_workers")) {
+              return Effect.succeed([{
+                id: "w", queue: "dereg-q", hostname: "unknown", pid: 0,
+                status: "active", concurrency: 1, active_jobs: 0, metadata: null,
+                last_heartbeat_at: now, started_at: now, stopped_at: null,
+              }] as any)
+            }
+            return Effect.succeed([] as any)
+          },
+        })
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const worker = yield* QueueWorker
+            yield* Effect.sleep(100)
+            yield* worker.close
+          }).pipe(Effect.provide(fullLayer))
+        )
+      )
+
+      const deregQuery = queries.find(q =>
+        q.includes("UPDATE") && q.includes("_tsdb_sdk_job_workers") && q.includes("'stopped'")
+      )
+      expect(deregQuery).toBeDefined()
+    })
+
+    test("heartbeat updates appear after interval", async () => {
+      const queries: string[] = []
+      const now = new Date().toISOString()
+      const fullLayer = Layer.provide(
+        workerLayer({
+          queue: "hb-q",
+          concurrency: 1,
+          pollInterval: 50,
+          stalledInterval: 60000,
+          heartbeatInterval: 100, // very short for testing
+          processor: makeNoopProcessor(),
+          useNotify: false,
+        }),
+        mockClient({
+          execute: (query: string) => {
+            queries.push(query)
+            if (query.includes("INSERT") && query.includes("_tsdb_sdk_job_workers")) {
+              return Effect.succeed([{
+                id: "w", queue: "hb-q", hostname: "unknown", pid: 0,
+                status: "active", concurrency: 1, active_jobs: 0, metadata: null,
+                last_heartbeat_at: now, started_at: now, stopped_at: null,
+              }] as any)
+            }
+            return Effect.succeed([] as any)
+          },
+        })
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const worker = yield* QueueWorker
+            // Wait for at least one heartbeat
+            yield* Effect.sleep(300)
+            yield* worker.close
+          }).pipe(Effect.provide(fullLayer))
+        )
+      )
+
+      const heartbeatQuery = queries.find(q =>
+        q.includes("UPDATE") && q.includes("_tsdb_sdk_job_workers") &&
+        q.includes("last_heartbeat_at") && q.includes("active_jobs")
+      )
+      expect(heartbeatQuery).toBeDefined()
+    })
+
     test("workerId is a UUID format", async () => {
       let capturedWorkerId = ""
       const fullLayer = Layer.provide(

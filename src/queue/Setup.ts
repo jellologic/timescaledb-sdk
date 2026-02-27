@@ -5,7 +5,7 @@ import { quoteIdentifier, toSqlValue } from "../internal/sql.js"
 import type { TableDefinition, ColumnDef, ConstraintDef, IndexDef, TriggerDef, IndexColumn } from "../schema/types.js"
 import type { TriggerFunctionDefinition } from "../functions/types.js"
 import type { SchemaDefinition } from "../migration/Generator.js"
-import { jobNotifyFunction, jobQueue, jobWorkflows, jobSchedules } from "./schema.js"
+import { jobNotifyFunction, jobQueue, jobWorkflows, jobSchedules, jobWorkers } from "./schema.js"
 
 // ---------------------------------------------------------------------------
 // DDL generators (mirrors migration/Generator.ts helpers for idempotent DDL)
@@ -124,7 +124,7 @@ const generateCreateTrigger = (tableName: string, trg: TriggerDef): string => {
 
 const definitionsToSql = (): string[] => {
   const statements: string[] = []
-  const defs: ReadonlyArray<SchemaDefinition> = [jobNotifyFunction, jobQueue, jobWorkflows, jobSchedules]
+  const defs: ReadonlyArray<SchemaDefinition> = [jobNotifyFunction, jobQueue, jobWorkflows, jobSchedules, jobWorkers]
 
   for (const def of defs) {
     if (def._tag === "TriggerFunction") {

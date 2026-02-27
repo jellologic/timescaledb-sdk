@@ -1,7 +1,7 @@
 import { test, expect, describe, beforeEach } from "bun:test"
 import { Effect } from "effect"
 import { ensureQueueTables, resetInitialized } from "../../src/queue/Setup.js"
-import { queueDefinitions, jobQueue, jobWorkflows, jobSchedules, jobNotifyFunction } from "../../src/queue/schema.js"
+import { queueDefinitions, jobQueue, jobWorkflows, jobSchedules, jobWorkers, jobNotifyFunction } from "../../src/queue/schema.js"
 import { mockClient } from "../setup/test-layers.js"
 import { runTestWith } from "../helpers/effect-runner.js"
 
@@ -158,7 +158,7 @@ describe("Queue Setup", () => {
   })
 
   test("queueDefinitions exports valid SchemaDefinition array", () => {
-    expect(queueDefinitions).toHaveLength(4)
+    expect(queueDefinitions).toHaveLength(5)
 
     // Trigger function
     expect(queueDefinitions[0]._tag).toBe("TriggerFunction")
@@ -177,5 +177,28 @@ describe("Queue Setup", () => {
     expect(queueDefinitions[3]._tag).toBe("Table")
     expect(jobSchedules.name).toBe("_tsdb_sdk_job_schedules")
     expect(jobSchedules.constraints.length).toBe(1)
+
+    expect(queueDefinitions[4]._tag).toBe("Table")
+    expect(jobWorkers.name).toBe("_tsdb_sdk_job_workers")
+    expect(Object.keys(jobWorkers.columns)).toContain("status")
+    expect(Object.keys(jobWorkers.columns)).toContain("hostname")
+    expect(jobWorkers.indexes.length).toBe(2)
+  })
+
+  test("ensureQueueTables creates _tsdb_sdk_job_workers table", async () => {
+    const queries: string[] = []
+    const layer = mockClient({
+      execute: (query: string) => {
+        queries.push(query)
+        return Effect.succeed([] as any)
+      },
+    })
+
+    await runTestWith(ensureQueueTables, layer)
+    const createTable = queries.find(q => q.includes('CREATE TABLE IF NOT EXISTS "_tsdb_sdk_job_workers"'))
+    expect(createTable).toBeDefined()
+    expect(createTable).toContain('"hostname" text NOT NULL')
+    expect(createTable).toContain('"pid" integer NOT NULL')
+    expect(createTable).toContain('"active_jobs" integer NOT NULL')
   })
 })
