@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test"
-import { pgFunction } from "../../src/functions/index.js"
+import { pgFunction, pgTriggerFunction, pgProcedure } from "../../src/functions/index.js"
 import { numeric, integer, text, timestamptz } from "../../src/schema/Column.js"
 
 describe("pgFunction", () => {
@@ -175,5 +175,102 @@ describe("pgFunction.toSql()", () => {
     const sql = fn.toSql()
     expect(sql).toContain('"get_one"()')
     expect(sql).toContain("RETURNS INTEGER")
+  })
+})
+
+describe("pgTriggerFunction", () => {
+  test("creates trigger function definition", () => {
+    const fn = pgTriggerFunction({
+      name: "audit_changes",
+      body: (NEW: any, OLD: any, TG_OP: string) => {
+        if (TG_OP === "INSERT") {
+          return NEW
+        }
+        return NEW
+      },
+    })
+
+    expect(fn.definition._tag).toBe("TriggerFunction")
+    expect(fn.definition.name).toBe("audit_changes")
+    expect(fn.definition.schema).toBe("public")
+  })
+
+  test("generates RETURNS TRIGGER SQL", () => {
+    const fn = pgTriggerFunction({
+      name: "set_updated_at",
+      body: (NEW: any) => {
+        return NEW
+      },
+    })
+
+    const sql = fn.toSql()
+    expect(sql).toContain("RETURNS TRIGGER")
+    expect(sql).toContain('CREATE FUNCTION "set_updated_at"()')
+    expect(sql).toContain("LANGUAGE plpgsql")
+  })
+
+  test("generates CREATE OR REPLACE", () => {
+    const fn = pgTriggerFunction({
+      name: "my_trigger_fn",
+      body: (NEW: any) => NEW,
+    })
+
+    const sql = fn.toCreateOrReplace()
+    expect(sql).toContain("CREATE OR REPLACE FUNCTION")
+  })
+})
+
+describe("pgProcedure", () => {
+  test("creates procedure definition", () => {
+    const proc = pgProcedure({
+      name: "cleanup",
+      params: { days: integer("days") },
+      body: (days: number): void => {
+        let x = days + 1
+      },
+    })
+
+    expect(proc.definition._tag).toBe("Procedure")
+    expect(proc.definition.name).toBe("cleanup")
+  })
+
+  test("generates CREATE PROCEDURE SQL (no RETURNS)", () => {
+    const proc = pgProcedure({
+      name: "cleanup",
+      params: { days: integer("days") },
+      body: (days: number): void => {
+        let x = days + 1
+      },
+    })
+
+    const sql = proc.toSql()
+    expect(sql).toContain('CREATE PROCEDURE "cleanup"')
+    expect(sql).not.toContain("RETURNS")
+    expect(sql).toContain("days INTEGER")
+  })
+
+  test(".call() executes the body function", () => {
+    let captured = 0
+    const proc = pgProcedure({
+      name: "set_val",
+      params: { val: integer("val") },
+      body: (val: number): void => {
+        captured = val
+      },
+    })
+
+    proc.call(42)
+    expect(captured).toBe(42)
+  })
+
+  test("generates CREATE OR REPLACE PROCEDURE", () => {
+    const proc = pgProcedure({
+      name: "do_something",
+      params: { x: integer("x") },
+      body: (x: number): void => {},
+    })
+
+    const sql = proc.toCreateOrReplace()
+    expect(sql).toContain("CREATE OR REPLACE PROCEDURE")
   })
 })
