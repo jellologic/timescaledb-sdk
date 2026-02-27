@@ -6,7 +6,7 @@ Move data across tablespaces to balance performance and storage costs. Hot data 
 import {
   moveChunk,
   addTieringPolicy, removeTieringPolicy,
-} from "timescaledb-sdk/tiering"
+} from "@jellologic/timescaledb-sdk/tiering"
 ```
 
 All functions return `Effect.Effect<A, TieringError, TimescaleClient>`.
@@ -17,8 +17,8 @@ Move a specific chunk to a different tablespace:
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { moveChunk } from "timescaledb-sdk/tiering"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { moveChunk } from "@jellologic/timescaledb-sdk/tiering"
 
 const program = Effect.gen(function* () {
   yield* moveChunk(
@@ -39,7 +39,7 @@ yield* moveChunk(
 )
 ```
 
-Note: `moveChunk` is also available from `timescaledb-sdk/hypertable`.
+Note: `moveChunk` is also available from `@jellologic/timescaledb-sdk/hypertable`.
 
 ## Tiering policies
 
@@ -48,7 +48,7 @@ Note: `moveChunk` is also available from `timescaledb-sdk/hypertable`.
 Automatically move chunks older than a threshold to a different tablespace:
 
 ```typescript
-import { addTieringPolicy } from "timescaledb-sdk/tiering"
+import { addTieringPolicy } from "@jellologic/timescaledb-sdk/tiering"
 
 yield* addTieringPolicy("sensor_readings", {
   moveAfter: "30 days",
@@ -70,7 +70,7 @@ yield* addTieringPolicy(readings, {
 Declare tiering in your [schema definition](./schema.md) for migration tracking:
 
 ```typescript
-import { hypertable, timestamptz, text, doublePrecision } from "timescaledb-sdk/schema"
+import { hypertable, timestamptz, text, doublePrecision } from "@jellologic/timescaledb-sdk/schema"
 
 const readings = hypertable(
   "sensor_readings",
@@ -89,7 +89,7 @@ const readings = hypertable(
 ### Removing a policy
 
 ```typescript
-import { removeTieringPolicy } from "timescaledb-sdk/tiering"
+import { removeTieringPolicy } from "@jellologic/timescaledb-sdk/tiering"
 
 yield* removeTieringPolicy("sensor_readings")
 
@@ -103,10 +103,10 @@ Combine tiering with compression and retention for a complete data lifecycle:
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { enableCompression, addCompressionPolicy } from "timescaledb-sdk/compression"
-import { addTieringPolicy } from "timescaledb-sdk/tiering"
-import { addRetentionPolicy } from "timescaledb-sdk/retention"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { enableCompression, addCompressionPolicy } from "@jellologic/timescaledb-sdk/compression"
+import { addTieringPolicy } from "@jellologic/timescaledb-sdk/tiering"
+import { addRetentionPolicy } from "@jellologic/timescaledb-sdk/retention"
 
 const setupLifecycle = Effect.gen(function* () {
   // Stage 1: Compress after 7 days

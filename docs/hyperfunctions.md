@@ -19,7 +19,7 @@ import {
   histogram,
   lttb,
   rollup,
-} from "timescaledb-sdk/hyperfunctions"
+} from "@jellologic/timescaledb-sdk/hyperfunctions"
 ```
 
 Most hyperfunctions require the `timescaledb_toolkit` extension. Install it with:
@@ -35,8 +35,8 @@ CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit;
 Group timestamps into fixed intervals:
 
 ```typescript
-import { select } from "timescaledb-sdk/query"
-import { timeBucket } from "timescaledb-sdk/hyperfunctions"
+import { select } from "@jellologic/timescaledb-sdk/query"
+import { timeBucket } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 select(readings).select({
   bucket: timeBucket("1 hour", readings.columns.time),
@@ -69,7 +69,7 @@ timeBucketRange("1 hour", readings.columns.time, { timezone: "UTC" })
 Fills in missing buckets within a range. Must be used with `locf()` or `interpolate()` to fill values:
 
 ```typescript
-import { timeBucketGapfill, locf, interpolate } from "timescaledb-sdk/hyperfunctions"
+import { timeBucketGapfill, locf, interpolate } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 select(readings).select({
   bucket: timeBucketGapfill("1 hour", readings.columns.time, {
@@ -86,7 +86,7 @@ select(readings).select({
 Get the first or last value ordered by time:
 
 ```typescript
-import { first, last } from "timescaledb-sdk/hyperfunctions"
+import { first, last } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 select(readings).select({
   sensorId: readings.columns.sensorId,
@@ -101,7 +101,7 @@ select(readings).select({
 Analyze monotonically increasing counter metrics (e.g., request counts, bytes transferred):
 
 ```typescript
-import { counterAgg } from "timescaledb-sdk/hyperfunctions"
+import { counterAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const counter = counterAgg(readings.columns.time, readings.columns.value)
 
@@ -154,7 +154,7 @@ select(readings).select({
 Analyze gauge metrics (values that can go up or down, e.g., temperature, CPU usage):
 
 ```typescript
-import { gaugeAgg } from "timescaledb-sdk/hyperfunctions"
+import { gaugeAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const gauge = gaugeAgg(readings.columns.time, readings.columns.value)
 
@@ -190,7 +190,7 @@ select(readings).select({
 ### One-dimensional statistics
 
 ```typescript
-import { statsAgg } from "timescaledb-sdk/hyperfunctions"
+import { statsAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const stats = statsAgg(readings.columns.value)
 
@@ -209,7 +209,7 @@ select(readings).select({
 ### Two-dimensional statistics (regression)
 
 ```typescript
-import { statsAgg2D } from "timescaledb-sdk/hyperfunctions"
+import { statsAgg2D } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const stats2d = statsAgg2D(readings.columns.value, readings.columns.time)
 
@@ -242,7 +242,7 @@ Axis-specific methods: `.average()`, `.stddev()`, `.variance()`, `.kurtosis()`, 
 Calculate averages weighted by time between data points:
 
 ```typescript
-import { timeWeight } from "timescaledb-sdk/hyperfunctions"
+import { timeWeight } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const tw = timeWeight(readings.columns.time, readings.columns.value)
 // Default method: "linear"
@@ -279,7 +279,7 @@ Three algorithms for approximate percentile computation, each with different acc
 ### percentileAgg (default)
 
 ```typescript
-import { percentileAgg } from "timescaledb-sdk/hyperfunctions"
+import { percentileAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const pct = percentileAgg(readings.columns.value)
 
@@ -297,7 +297,7 @@ select(readings).select({
 ### uddsketch (higher accuracy)
 
 ```typescript
-import { uddsketch } from "timescaledb-sdk/hyperfunctions"
+import { uddsketch } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const sketch = uddsketch(readings.columns.value, 200, 0.001)
 // uddsketch(size, maxError, column)
@@ -313,7 +313,7 @@ select(readings).select({
 ### tdigest (memory-efficient)
 
 ```typescript
-import { tdigest } from "timescaledb-sdk/hyperfunctions"
+import { tdigest } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const td = tdigest(readings.columns.value, 100)
 // tdigest(compression, column)
@@ -341,7 +341,7 @@ select(readings).select({
 Compute OHLCV (Open, High, Low, Close, Volume) candlestick data:
 
 ```typescript
-import { candlestickAgg } from "timescaledb-sdk/hyperfunctions"
+import { candlestickAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const candle = candlestickAgg(
   trades.columns.time,
@@ -385,7 +385,7 @@ select(trades).select({
 Track state transitions and compute duration in each state:
 
 ```typescript
-import { stateAgg } from "timescaledb-sdk/hyperfunctions"
+import { stateAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const state = stateAgg(devices.columns.time, devices.columns.status)
 
@@ -420,7 +420,7 @@ timelineAgg(ts, val)      // preserves full timeline
 Track liveness of services or devices:
 
 ```typescript
-import { heartbeatAgg } from "timescaledb-sdk/hyperfunctions"
+import { heartbeatAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const hb = heartbeatAgg(
   pings.columns.time,         // timestamp column
@@ -460,7 +460,7 @@ Note: `heartbeatAgg` does not support `.rollup()`.
 Find the most common values:
 
 ```typescript
-import { freqAgg } from "timescaledb-sdk/hyperfunctions"
+import { freqAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const freq = freqAgg(1.0, events.columns.eventType)
 // freqAgg(skew, column) -- skew is the Zipfian distribution parameter
@@ -480,7 +480,7 @@ select(events).select({
 ### Approximate distinct count
 
 ```typescript
-import { approxCountDistinct } from "timescaledb-sdk/hyperfunctions"
+import { approxCountDistinct } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 select(events).select({
   uniqueUsers: approxCountDistinct(events.columns.userId),
@@ -493,7 +493,7 @@ select(events).select({
 More control over accuracy with configurable buckets:
 
 ```typescript
-import { hyperloglog } from "timescaledb-sdk/hyperfunctions"
+import { hyperloglog } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 const hll = hyperloglog(events.columns.userId, 1024)
 // hyperloglog(buckets, column)
@@ -513,7 +513,7 @@ select(events).select({
 Compute value distribution:
 
 ```typescript
-import { histogram } from "timescaledb-sdk/hyperfunctions"
+import { histogram } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 select(readings).select({
   bucket: timeBucket("1 hour", readings.columns.time),
@@ -527,7 +527,7 @@ select(readings).select({
 Reduce data points while preserving visual shape using the Largest-Triangle-Three-Buckets algorithm:
 
 ```typescript
-import { lttb } from "timescaledb-sdk/hyperfunctions"
+import { lttb } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 select(readings).select({
   downsampled: lttb(readings.columns.time, readings.columns.value, 100),
@@ -540,7 +540,7 @@ select(readings).select({
 Use `rollup()` to re-aggregate partial aggregates from continuous aggregates. This is the key to efficient hierarchical aggregation:
 
 ```typescript
-import { rollup, counterAgg, candlestickAgg } from "timescaledb-sdk/hyperfunctions"
+import { rollup, counterAgg, candlestickAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 // Step 1: Continuous aggregate stores partial aggregates per hour
 // (defined elsewhere, stores counter_agg results)

@@ -6,7 +6,7 @@ Define PostgreSQL functions, procedures, and trigger functions in TypeScript. Th
 import {
   pgFunction, pgProcedure, pgTriggerFunction,
   type FunctionDefinition, type ProcedureDefinition, type TriggerFunctionDefinition,
-} from "timescaledb-sdk/functions"
+} from "@jellologic/timescaledb-sdk/functions"
 ```
 
 ## pgFunction
@@ -14,8 +14,8 @@ import {
 Create a typed PostgreSQL function. The `body` can be a TypeScript arrow function (transpiled to PL/pgSQL) or a raw SQL string (for `LANGUAGE sql` functions).
 
 ```typescript
-import { pgFunction } from "timescaledb-sdk/functions"
-import { numeric, integer, text } from "timescaledb-sdk/schema"
+import { pgFunction } from "@jellologic/timescaledb-sdk/functions"
+import { numeric, integer, text } from "@jellologic/timescaledb-sdk/schema"
 
 const calculateTax = pgFunction({
   name: "calculate_tax",
@@ -161,7 +161,7 @@ const fn = pgFunction({
 Create a trigger function. Trigger functions take no explicit parameters, always return `TRIGGER`, and receive `NEW`, `OLD`, and `TG_OP` as implicit PL/pgSQL variables.
 
 ```typescript
-import { pgTriggerFunction } from "timescaledb-sdk/functions"
+import { pgTriggerFunction } from "@jellologic/timescaledb-sdk/functions"
 
 const setTimestamp = pgTriggerFunction({
   name: "set_updated_at",
@@ -233,8 +233,8 @@ The following variables are available inside trigger function bodies without dec
 Create a stored procedure. Procedures have no return type, no volatility clause, and always use PL/pgSQL.
 
 ```typescript
-import { pgProcedure } from "timescaledb-sdk/functions"
-import { integer } from "timescaledb-sdk/schema"
+import { pgProcedure } from "@jellologic/timescaledb-sdk/functions"
+import { integer } from "@jellologic/timescaledb-sdk/schema"
 
 const cleanupOldData = pgProcedure({
   name: "cleanup_old_data",
@@ -456,9 +456,9 @@ The transpiler maps TypeScript types and column builders to PostgreSQL types:
 Use `pgTriggerFunction` instances directly in `trigger()` definitions for type-safe references:
 
 ```typescript
-import { pgTriggerFunction } from "timescaledb-sdk/functions"
-import { trigger } from "timescaledb-sdk/schema"
-import { pgTable, serial, text, timestamptz } from "timescaledb-sdk/schema"
+import { pgTriggerFunction } from "@jellologic/timescaledb-sdk/functions"
+import { trigger } from "@jellologic/timescaledb-sdk/schema"
+import { pgTable, serial, text, timestamptz } from "@jellologic/timescaledb-sdk/schema"
 
 const setUpdatedAt = pgTriggerFunction({
   name: "set_updated_at",
@@ -489,9 +489,9 @@ const users = pgTable("users", {
 Use function instances in `backgroundJob()` definitions:
 
 ```typescript
-import { pgFunction } from "timescaledb-sdk/functions"
-import { backgroundJob } from "timescaledb-sdk/schema"
-import { integer } from "timescaledb-sdk/schema"
+import { pgFunction } from "@jellologic/timescaledb-sdk/functions"
+import { backgroundJob } from "@jellologic/timescaledb-sdk/schema"
+import { integer } from "@jellologic/timescaledb-sdk/schema"
 
 const cleanupFn = pgFunction({
   name: "daily_cleanup",
@@ -513,7 +513,7 @@ const job = backgroundJob(cleanupFn, "1 day", {
 Function, procedure, and trigger function definitions are tracked by the migration system. Include them in your `generate()` call alongside tables and other definitions:
 
 ```typescript
-import { generate } from "timescaledb-sdk/migration"
+import { generate } from "@jellologic/timescaledb-sdk/migration"
 
 const result = await generate({
   definitions: [users, calculateTax.definition, setUpdatedAt.definition, cleanupOldData.definition],
@@ -535,7 +535,7 @@ For `deployMode: "create-or-replace"` (default), body changes generate `CREATE O
 All function-related errors use `FunctionError`:
 
 ```typescript
-import { Errors } from "timescaledb-sdk"
+import { Errors } from "@jellologic/timescaledb-sdk"
 import { Effect } from "effect"
 
 Effect.catchTag("FunctionError", (err) => {

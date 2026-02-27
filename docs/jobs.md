@@ -6,7 +6,7 @@ Schedule, manage, and monitor background jobs that run custom PostgreSQL procedu
 import {
   addJob, alterJob, deleteJob, runJob,
   listJobs, jobStats,
-} from "timescaledb-sdk/jobs"
+} from "@jellologic/timescaledb-sdk/jobs"
 ```
 
 All functions return `Effect.Effect<A, JobError, TimescaleClient>`.
@@ -17,8 +17,8 @@ Schedule a custom procedure to run on a recurring interval:
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { addJob } from "timescaledb-sdk/jobs"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { addJob } from "@jellologic/timescaledb-sdk/jobs"
 
 const program = Effect.gen(function* () {
   const jobId = yield* addJob({
@@ -56,7 +56,7 @@ const jobId = yield* addJob({
 Define jobs in your [schema](./schema.md) for migration tracking:
 
 ```typescript
-import { backgroundJob } from "timescaledb-sdk/schema"
+import { backgroundJob } from "@jellologic/timescaledb-sdk/schema"
 
 const cleanup = backgroundJob("cleanup_old_data", "1 hour", {
   name: "data_cleanup",
@@ -69,7 +69,7 @@ const cleanup = backgroundJob("cleanup_old_data", "1 hour", {
 Modify schedule, retry behavior, or config of an existing job:
 
 ```typescript
-import { alterJob } from "timescaledb-sdk/jobs"
+import { alterJob } from "@jellologic/timescaledb-sdk/jobs"
 
 yield* alterJob(1001, {
   scheduleInterval: "15 minutes",
@@ -107,7 +107,7 @@ yield* alterJob(1001, { nextStart: "2024-06-01T00:00:00Z" })
 ## Deleting a job
 
 ```typescript
-import { deleteJob } from "timescaledb-sdk/jobs"
+import { deleteJob } from "@jellologic/timescaledb-sdk/jobs"
 
 yield* deleteJob(1001)
 ```
@@ -117,7 +117,7 @@ yield* deleteJob(1001)
 Trigger a job to run immediately (outside its schedule):
 
 ```typescript
-import { runJob } from "timescaledb-sdk/jobs"
+import { runJob } from "@jellologic/timescaledb-sdk/jobs"
 
 yield* runJob(1001)
 ```
@@ -127,7 +127,7 @@ This uses `CALL run_job(jobId)` and blocks until the job completes.
 ## Listing jobs
 
 ```typescript
-import { listJobs } from "timescaledb-sdk/jobs"
+import { listJobs } from "@jellologic/timescaledb-sdk/jobs"
 
 const jobs = yield* listJobs()
 // Returns rows from timescaledb_information.jobs
@@ -136,7 +136,7 @@ const jobs = yield* listJobs()
 ## Job statistics
 
 ```typescript
-import { jobStats } from "timescaledb-sdk/jobs"
+import { jobStats } from "@jellologic/timescaledb-sdk/jobs"
 
 // Stats for all jobs
 const allStats = yield* jobStats()
@@ -150,8 +150,8 @@ const stats = yield* jobStats(1001)
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { addJob, jobStats } from "timescaledb-sdk/jobs"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { addJob, jobStats } from "@jellologic/timescaledb-sdk/jobs"
 
 const setup = Effect.gen(function* () {
   const client = yield* TimescaleClient

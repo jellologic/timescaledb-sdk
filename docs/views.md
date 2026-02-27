@@ -3,7 +3,7 @@
 Define views and materialized views with a type-safe schema DSL, manage them at runtime, and track them through migrations.
 
 ```typescript
-import { pgView, pgMaterializedView } from "timescaledb-sdk/schema"
+import { pgView, pgMaterializedView } from "@jellologic/timescaledb-sdk/schema"
 import {
   createView, dropView,
   createMaterializedView, dropMaterializedView,
@@ -13,7 +13,7 @@ import {
   alterMaterializedViewRename, alterMaterializedViewSetTablespace,
   alterMaterializedViewSetStorageParameters,
   viewInfo, materializedViewInfo,
-} from "timescaledb-sdk/view"
+} from "@jellologic/timescaledb-sdk/view"
 ```
 
 All runtime functions return `Effect.Effect<A, ViewError, TimescaleClient>`.
@@ -25,7 +25,7 @@ All runtime functions return `Effect.Effect<A, ViewError, TimescaleClient>`.
 Define a view with `pgView()`. The `columns` describe the view's output shape for type inference, and `sql` is the SELECT query:
 
 ```typescript
-import { pgView, text, integer, doublePrecision } from "timescaledb-sdk/schema"
+import { pgView, text, integer, doublePrecision } from "@jellologic/timescaledb-sdk/schema"
 
 const activeUsers = pgView(
   "active_users",
@@ -79,7 +79,7 @@ const secureView = pgView(
 When `updatable: true` is set, the view can be used with `insert()`, `update()`, and `deleteFrom()` in the query builder:
 
 ```typescript
-import { select, insert, update, deleteFrom, eq } from "timescaledb-sdk/query"
+import { select, insert, update, deleteFrom, eq } from "@jellologic/timescaledb-sdk/query"
 
 const updatableView = pgView(
   "active_users",
@@ -125,7 +125,7 @@ const orgTree = pgView(
 Define a materialized view with `pgMaterializedView()`. Unlike regular views, materialized views store their data physically and support indexes:
 
 ```typescript
-import { pgMaterializedView, text, doublePrecision, integer, index } from "timescaledb-sdk/schema"
+import { pgMaterializedView, text, doublePrecision, integer, index } from "@jellologic/timescaledb-sdk/schema"
 
 const monthlySummary = pgMaterializedView(
   "monthly_summary",
@@ -171,8 +171,8 @@ const monthlySummary = pgMaterializedView(
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { createView, createMaterializedView } from "timescaledb-sdk/view"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { createView, createMaterializedView } from "@jellologic/timescaledb-sdk/view"
 
 const program = Effect.gen(function* () {
   // Create a view from a schema definition
@@ -192,7 +192,7 @@ Note: `orReplace` and `ifNotExists` cannot be used together (PostgreSQL limitati
 ### Dropping views
 
 ```typescript
-import { dropView, dropMaterializedView } from "timescaledb-sdk/view"
+import { dropView, dropMaterializedView } from "@jellologic/timescaledb-sdk/view"
 
 yield* dropView("active_users")
 yield* dropView("active_users", { ifExists: true, cascade: true })
@@ -204,7 +204,7 @@ yield* dropMaterializedView("monthly_summary", { ifExists: true, cascade: true, 
 ### Refreshing materialized views
 
 ```typescript
-import { refreshMaterializedView } from "timescaledb-sdk/view"
+import { refreshMaterializedView } from "@jellologic/timescaledb-sdk/view"
 
 // Standard refresh
 yield* refreshMaterializedView("monthly_summary")
@@ -221,7 +221,7 @@ yield* refreshMaterializedView("monthly_summary", { withNoData: true })
 #### Views
 
 ```typescript
-import { alterViewSetSchema, alterViewOwner, alterViewRename } from "timescaledb-sdk/view"
+import { alterViewSetSchema, alterViewOwner, alterViewRename } from "@jellologic/timescaledb-sdk/view"
 
 yield* alterViewSetSchema("active_users", "analytics")
 yield* alterViewOwner("active_users", "app_role")
@@ -237,7 +237,7 @@ import {
   alterMaterializedViewRename,
   alterMaterializedViewSetTablespace,
   alterMaterializedViewSetStorageParameters,
-} from "timescaledb-sdk/view"
+} from "@jellologic/timescaledb-sdk/view"
 
 yield* alterMaterializedViewSetSchema("monthly_summary", "analytics")
 yield* alterMaterializedViewOwner("monthly_summary", "analytics_role")
@@ -254,7 +254,7 @@ All ALTER functions accept an optional `{ schema?: string }` parameter (defaults
 ### Information queries
 
 ```typescript
-import { viewInfo, materializedViewInfo } from "timescaledb-sdk/view"
+import { viewInfo, materializedViewInfo } from "@jellologic/timescaledb-sdk/view"
 
 // All views (excludes system schemas)
 const allViews = yield* viewInfo()
@@ -275,7 +275,7 @@ const matInfo = yield* materializedViewInfo("monthly_summary")
 Views and materialized views support the same type inference as tables:
 
 ```typescript
-import { type InferSelect, type InferInsert } from "timescaledb-sdk/schema"
+import { type InferSelect, type InferInsert } from "@jellologic/timescaledb-sdk/schema"
 
 type ActiveUserRow = InferSelect<typeof activeUsers>
 // { id: number | null; name: string | null; email: string | null }
@@ -290,7 +290,7 @@ type NewActiveUser = InferInsert<typeof updatableView>
 Views work seamlessly with the [query builder](./query-builder.md):
 
 ```typescript
-import { select, eq, desc } from "timescaledb-sdk/query"
+import { select, eq, desc } from "@jellologic/timescaledb-sdk/query"
 
 // Type-safe select from a view
 const query = select(activeUsers)
@@ -315,7 +315,7 @@ Views and materialized views defined with `pgView()` and `pgMaterializedView()` 
 Include view definitions alongside tables in your `generate()` call:
 
 ```typescript
-import { generate } from "timescaledb-sdk/migration"
+import { generate } from "@jellologic/timescaledb-sdk/migration"
 
 const result = await generate({
   definitions: [users, activeUsers, monthlySummary],

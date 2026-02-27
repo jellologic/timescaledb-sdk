@@ -9,7 +9,7 @@ import {
   refreshContinuousAggregate,
   addRefreshPolicy, removeRefreshPolicy, alterRefreshPolicy,
   continuousAggregateInfo, continuousAggregateStats,
-} from "timescaledb-sdk/cagg"
+} from "@jellologic/timescaledb-sdk/cagg"
 ```
 
 All functions return `Effect.Effect<A, ContinuousAggregateError, TimescaleClient>`.
@@ -19,7 +19,7 @@ All functions return `Effect.Effect<A, ContinuousAggregateError, TimescaleClient
 Define continuous aggregates in your schema so they are tracked by [migrations](./migrations.md):
 
 ```typescript
-import { continuousAggregateView, aggColumn } from "timescaledb-sdk/schema"
+import { continuousAggregateView, aggColumn } from "@jellologic/timescaledb-sdk/schema"
 
 const hourlyReadings = continuousAggregateView(
   "hourly_readings",           // view name
@@ -110,8 +110,8 @@ From a schema definition:
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { createContinuousAggregate } from "timescaledb-sdk/cagg"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { createContinuousAggregate } from "@jellologic/timescaledb-sdk/cagg"
 
 const program = Effect.gen(function* () {
   yield* createContinuousAggregate({

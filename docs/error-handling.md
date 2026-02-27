@@ -3,7 +3,7 @@
 Handle errors with Effect's tagged error pattern. Every SDK module uses domain-specific error types that can be caught, matched, and recovered from.
 
 ```typescript
-import { Errors } from "timescaledb-sdk"
+import { Errors } from "@jellologic/timescaledb-sdk"
 ```
 
 ## Error types
@@ -33,8 +33,8 @@ Use `Effect.catchTag` to handle a specific error type:
 
 ```typescript
 import { Effect } from "effect"
-import { Errors } from "timescaledb-sdk"
-import { select, eq } from "timescaledb-sdk/query"
+import { Errors } from "@jellologic/timescaledb-sdk"
+import { select, eq } from "@jellologic/timescaledb-sdk/query"
 
 const program = Effect.gen(function* () {
   const rows = yield* select(users)
@@ -86,7 +86,7 @@ const program = Effect.gen(function* () {
 Transform one error type into another with `Effect.mapError`:
 
 ```typescript
-import { Errors } from "timescaledb-sdk"
+import { Errors } from "@jellologic/timescaledb-sdk"
 
 class AppError {
   constructor(readonly code: string, readonly detail: string) {}

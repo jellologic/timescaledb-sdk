@@ -9,7 +9,7 @@ import {
   diffSchema, generateMigrationSql,
   takeSnapshot, definitionsToSnapshot,
   sealMigration, verifyIntegrity,
-} from "timescaledb-sdk/migration"
+} from "@jellologic/timescaledb-sdk/migration"
 ```
 
 ## Overview
@@ -37,7 +37,7 @@ import {
   hypertable, pgTable, pgEnum,
   timestamptz, text, doublePrecision, serial, integer,
   index,
-} from "timescaledb-sdk/schema"
+} from "@jellologic/timescaledb-sdk/schema"
 
 export const statusEnum = pgEnum("status_type", ["active", "inactive"] as const)
 
@@ -75,7 +75,7 @@ export const readings = hypertable(
 ### 2. Generate a migration
 
 ```typescript
-import { generate } from "timescaledb-sdk/migration"
+import { generate } from "@jellologic/timescaledb-sdk/migration"
 import { sensors, readings, statusEnum } from "./schema"
 
 const result = await generate({
@@ -105,8 +105,8 @@ if (result) {
 
 ```typescript
 import { Effect, Layer } from "effect"
-import { TimescaleClient, TimescaleConfigService } from "timescaledb-sdk"
-import { loadAndRun } from "timescaledb-sdk/migration"
+import { TimescaleClient, TimescaleConfigService } from "@jellologic/timescaledb-sdk"
+import { loadAndRun } from "@jellologic/timescaledb-sdk/migration"
 
 const program = Effect.gen(function* () {
   const applied = yield* loadAndRun("./migrations")
@@ -232,7 +232,7 @@ Every generated migration file includes an HMAC-SHA-256 integrity hash. When loa
 If you manually edit a migration file (or write one by hand), re-seal it to update the integrity hash:
 
 ```typescript
-import { sealMigration } from "timescaledb-sdk/migration"
+import { sealMigration } from "@jellologic/timescaledb-sdk/migration"
 
 await sealMigration("./migrations/0002_add_location.ts")
 ```
@@ -270,7 +270,7 @@ The diff engine detects changes across:
 For programmatic access to the diff without generating files:
 
 ```typescript
-import { diffSchema, generateMigrationSql, definitionsToSnapshot } from "timescaledb-sdk/migration"
+import { diffSchema, generateMigrationSql, definitionsToSnapshot } from "@jellologic/timescaledb-sdk/migration"
 
 // Compare definitions against an empty snapshot
 const snapshot = definitionsToSnapshot([]) // or a previously saved snapshot
@@ -290,7 +290,7 @@ console.log("Down SQL:", down)
 Compare your definitions against a live database:
 
 ```typescript
-import { takeSnapshot, diffSchema } from "timescaledb-sdk/migration"
+import { takeSnapshot, diffSchema } from "@jellologic/timescaledb-sdk/migration"
 
 const program = Effect.gen(function* () {
   const liveSnapshot = yield* takeSnapshot

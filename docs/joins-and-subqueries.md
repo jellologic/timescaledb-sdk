@@ -9,7 +9,7 @@ import {
   naturalJoin, naturalLeftJoin, joinUsing,
   lateralJoin, lateralLeftJoin,
   eq, raw,
-} from "timescaledb-sdk/query"
+} from "@jellologic/timescaledb-sdk/query"
 ```
 
 ## JOINs
@@ -143,7 +143,7 @@ See [Where Conditions](./where-conditions.md#subquery-conditions) for `inSubquer
 ### Basic CTE
 
 ```typescript
-import { cte, select, eq } from "timescaledb-sdk/query"
+import { cte, select, eq } from "@jellologic/timescaledb-sdk/query"
 
 const activeUsers = cte("active_users",
   select(users).where(eq(users.columns.active, true))

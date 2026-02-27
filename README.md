@@ -1,12 +1,12 @@
-# timescaledb-sdk
+# @jellologic/timescaledb-sdk
 
 **A complete, type-safe TypeScript SDK for TimescaleDB — built on Effect.**
 
-[![npm version](https://img.shields.io/npm/v/timescaledb-sdk)](https://www.npmjs.com/package/timescaledb-sdk)
+[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-v0.1.3-blue)](https://github.com/jellologic/timescaledb-sdk/packages)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6.svg)](https://www.typescriptlang.org/)
 
-`timescaledb-sdk` gives you a fully typed, modular interface for every TimescaleDB feature: hypertables, continuous aggregates, compression, retention policies, 15+ hyperfunctions, background jobs, data tiering, and schema migrations. All operations compose as Effect values with automatic dependency injection, resource safety, and structured error handling.
+`@jellologic/timescaledb-sdk` gives you a fully typed, modular interface for every TimescaleDB feature: hypertables, continuous aggregates, compression, retention policies, 15+ hyperfunctions, background jobs, data tiering, and schema migrations. All operations compose as Effect values with automatic dependency injection, resource safety, and structured error handling.
 
 ---
 
@@ -14,16 +14,18 @@
 
 | Category | Features | Module |
 |---|---|---|
-| **Schema Definition** | 40+ PostgreSQL column types, indexes, constraints, foreign keys | `timescaledb-sdk/schema` |
-| **Query Builder** | SELECT, INSERT, UPDATE, DELETE, JOINs, CTEs, window functions, aggregates | `timescaledb-sdk/query` |
-| **Hypertables** | Create, alter, drop hypertables; chunk interval configuration | `timescaledb-sdk/hypertable` |
-| **Continuous Aggregates** | Define, refresh, alter, drop materialized views with real-time aggregation | `timescaledb-sdk/cagg` |
-| **Compression** | Enable/disable compression, segment-by/order-by policies, chunk management | `timescaledb-sdk/compression` |
-| **Retention Policies** | Automated data lifecycle with drop_chunks and retention policies | `timescaledb-sdk/retention` |
-| **Hyperfunctions** | time_bucket, gapfill, first/last, percentile, counter, stats, candlestick, and more | `timescaledb-sdk/hyperfunctions` |
-| **Background Jobs** | Schedule, alter, delete, and run custom background jobs | `timescaledb-sdk/jobs` |
-| **Data Tiering** | Move chunks between tablespaces, tiering policies | `timescaledb-sdk/tiering` |
-| **Migrations** | Schema diff, SQL generation, run, rollback, and status tracking | `timescaledb-sdk/migration` |
+| **Schema Definition** | 40+ PostgreSQL column types, indexes, constraints, foreign keys | `@jellologic/timescaledb-sdk/schema` |
+| **Query Builder** | SELECT, INSERT, UPDATE, DELETE, JOINs, CTEs, window functions, aggregates | `@jellologic/timescaledb-sdk/query` |
+| **Hypertables** | Create, alter, drop hypertables; chunk interval configuration | `@jellologic/timescaledb-sdk/hypertable` |
+| **Continuous Aggregates** | Define, refresh, alter, drop materialized views with real-time aggregation | `@jellologic/timescaledb-sdk/cagg` |
+| **Compression** | Enable/disable compression, segment-by/order-by policies, chunk management | `@jellologic/timescaledb-sdk/compression` |
+| **Retention Policies** | Automated data lifecycle with drop_chunks and retention policies | `@jellologic/timescaledb-sdk/retention` |
+| **Hyperfunctions** | time_bucket, gapfill, first/last, percentile, counter, stats, candlestick, and more | `@jellologic/timescaledb-sdk/hyperfunctions` |
+| **Background Jobs** | Schedule, alter, delete, and run custom background jobs | `@jellologic/timescaledb-sdk/jobs` |
+| **Data Tiering** | Move chunks between tablespaces, tiering policies | `@jellologic/timescaledb-sdk/tiering` |
+| **Migrations** | Schema diff, SQL generation, run, rollback, and status tracking | `@jellologic/timescaledb-sdk/migration` |
+| **Views** | Views, materialized views, refresh, alter, and migration tracking | `@jellologic/timescaledb-sdk/view` |
+| **Functions** | PL/pgSQL functions, procedures, triggers with TypeScript-to-PL/pgSQL transpiler | `@jellologic/timescaledb-sdk/functions` |
 
 ---
 
@@ -32,17 +34,17 @@
 Install the SDK and its peer dependencies:
 
 ```bash
-bun add timescaledb-sdk effect @effect/sql @effect/sql-pg
+bun add @jellologic/timescaledb-sdk effect @effect/sql @effect/sql-pg
 ```
 
 Define a hypertable, query it with time_bucket, and execute with Effect:
 
 ```typescript
-import { hypertable, timestamptz, text, doublePrecision, jsonb } from "timescaledb-sdk/schema"
-import { select, gt, desc } from "timescaledb-sdk/query"
-import { timeBucket } from "timescaledb-sdk/hyperfunctions"
-import { enableCompression, addCompressionPolicy } from "timescaledb-sdk/compression"
-import { TimescaleClient, TimescaleConfig } from "timescaledb-sdk"
+import { hypertable, timestamptz, text, doublePrecision, jsonb } from "@jellologic/timescaledb-sdk/schema"
+import { select, gt, desc } from "@jellologic/timescaledb-sdk/query"
+import { timeBucket } from "@jellologic/timescaledb-sdk/hyperfunctions"
+import { enableCompression, addCompressionPolicy } from "@jellologic/timescaledb-sdk/compression"
+import { TimescaleClient, TimescaleConfig } from "@jellologic/timescaledb-sdk"
 import { Effect } from "effect"
 
 // 1. Define your hypertable schema
@@ -93,8 +95,8 @@ Define hypertables with full PostgreSQL column types, indexes, and constraints:
 import {
   hypertable, timestamptz, text, doublePrecision, integer,
   uuid, boolean, jsonb, varchar, bigint, real, numeric,
-} from "timescaledb-sdk/schema"
-import { index, uniqueIndex, check, foreignKey } from "timescaledb-sdk/schema"
+} from "@jellologic/timescaledb-sdk/schema"
+import { index, uniqueIndex, check, foreignKey } from "@jellologic/timescaledb-sdk/schema"
 
 const sensorReadings = hypertable("sensor_readings", {
   time: timestamptz("time").notNull(),
@@ -130,13 +132,13 @@ const sensorFk = foreignKey("sensor_readings", {
 Build type-safe SQL queries with SELECT, INSERT, UPDATE, DELETE, JOINs, CTEs, and window functions:
 
 ```typescript
-import { select, insert, update, deleteFrom } from "timescaledb-sdk/query"
-import { eq, gt, between, and, or, like } from "timescaledb-sdk/query"
-import { asc, desc } from "timescaledb-sdk/query"
-import { count, sum, avg, min, max } from "timescaledb-sdk/query"
-import { innerJoin, leftJoin } from "timescaledb-sdk/query"
-import { rowNumber, rank, lag, lead } from "timescaledb-sdk/query"
-import { cte } from "timescaledb-sdk/query"
+import { select, insert, update, deleteFrom } from "@jellologic/timescaledb-sdk/query"
+import { eq, gt, between, and, or, like } from "@jellologic/timescaledb-sdk/query"
+import { asc, desc } from "@jellologic/timescaledb-sdk/query"
+import { count, sum, avg, min, max } from "@jellologic/timescaledb-sdk/query"
+import { innerJoin, leftJoin } from "@jellologic/timescaledb-sdk/query"
+import { rowNumber, rank, lag, lead } from "@jellologic/timescaledb-sdk/query"
+import { cte } from "@jellologic/timescaledb-sdk/query"
 
 // SELECT with filtering, ordering, and pagination
 const recentReadings = select("sensor_readings")
@@ -193,7 +195,7 @@ import {
   candlestickAgg, gaugeAgg, stateAgg, timeWeight,
   approxCountDistinct, hyperloglog, histogram,
   uddsketch, tdigest, rollup,
-} from "timescaledb-sdk/hyperfunctions"
+} from "@jellologic/timescaledb-sdk/hyperfunctions"
 
 // Time bucketing with gap filling
 const gapfilled = select("sensor_readings")
@@ -244,9 +246,9 @@ timeBucket("1 hour", "time", { timezone: "America/New_York" })
 Manage data lifecycle with compression and automated retention:
 
 ```typescript
-import { enableCompression, disableCompression, compressChunk } from "timescaledb-sdk/compression"
-import { addCompressionPolicy } from "timescaledb-sdk/compression"
-import { addRetentionPolicy, removeRetentionPolicy, dropChunks } from "timescaledb-sdk/retention"
+import { enableCompression, disableCompression, compressChunk } from "@jellologic/timescaledb-sdk/compression"
+import { addCompressionPolicy } from "@jellologic/timescaledb-sdk/compression"
+import { addRetentionPolicy, removeRetentionPolicy, dropChunks } from "@jellologic/timescaledb-sdk/retention"
 import { Effect } from "effect"
 
 const lifecycle = Effect.gen(function* () {
@@ -280,8 +282,8 @@ const lifecycle = Effect.gen(function* () {
 Track schema changes with diff-based migrations:
 
 ```typescript
-import { generate, loadAndRun, loadAndRollback, loadAndStatus } from "timescaledb-sdk/migration"
-import { diffSchema, generateMigrationSql } from "timescaledb-sdk/migration"
+import { generate, loadAndRun, loadAndRollback, loadAndStatus } from "@jellologic/timescaledb-sdk/migration"
+import { diffSchema, generateMigrationSql } from "@jellologic/timescaledb-sdk/migration"
 import { Effect } from "effect"
 
 const migrate = Effect.gen(function* () {
@@ -309,17 +311,21 @@ const migrate = Effect.gen(function* () {
 
 | Import Path | Description |
 |---|---|
-| `timescaledb-sdk` | Core client, config, and connection management |
-| `timescaledb-sdk/schema` | Hypertable definitions, 40+ column types, indexes, constraints |
-| `timescaledb-sdk/query` | Query builder: SELECT, INSERT, UPDATE, DELETE, JOINs, CTEs, window functions |
-| `timescaledb-sdk/hypertable` | Create, alter, and drop hypertables; chunk interval management |
-| `timescaledb-sdk/cagg` | Continuous aggregate creation, refresh, and lifecycle management |
-| `timescaledb-sdk/compression` | Compression policies, chunk compression, segment-by/order-by config |
-| `timescaledb-sdk/retention` | Retention policies and manual chunk dropping |
-| `timescaledb-sdk/hyperfunctions` | 15+ time-series functions: time_bucket, gapfill, percentile, stats, and more |
-| `timescaledb-sdk/jobs` | Background job scheduling, alteration, and management |
-| `timescaledb-sdk/tiering` | Data tiering across tablespaces with automated policies |
-| `timescaledb-sdk/migration` | Schema diffing, migration generation, execution, and rollback |
+| `@jellologic/timescaledb-sdk` | Core client, config, and connection management |
+| `@jellologic/timescaledb-sdk/schema` | Hypertable definitions, 40+ column types, indexes, constraints |
+| `@jellologic/timescaledb-sdk/query` | Query builder: SELECT, INSERT, UPDATE, DELETE, JOINs, CTEs, window functions |
+| `@jellologic/timescaledb-sdk/hypertable` | Create, alter, and drop hypertables; chunk interval management |
+| `@jellologic/timescaledb-sdk/cagg` | Continuous aggregate creation, refresh, and lifecycle management |
+| `@jellologic/timescaledb-sdk/compression` | Compression policies, chunk compression, segment-by/order-by config |
+| `@jellologic/timescaledb-sdk/retention` | Retention policies and manual chunk dropping |
+| `@jellologic/timescaledb-sdk/hyperfunctions` | 15+ time-series functions: time_bucket, gapfill, percentile, stats, and more |
+| `@jellologic/timescaledb-sdk/jobs` | Background job scheduling, alteration, and management |
+| `@jellologic/timescaledb-sdk/tiering` | Data tiering across tablespaces with automated policies |
+| `@jellologic/timescaledb-sdk/migration` | Schema diffing, migration generation, execution, and rollback |
+| `@jellologic/timescaledb-sdk/view` | Views and materialized views: create, drop, refresh, alter |
+| `@jellologic/timescaledb-sdk/functions` | PL/pgSQL functions, procedures, and trigger functions with TS transpiler |
+| `@jellologic/timescaledb-sdk/client` | Direct access to `TimescaleClient` service and layer factories |
+| `@jellologic/timescaledb-sdk/config` | Direct access to `TimescaleConfig` service and environment layer |
 
 ---
 
@@ -327,7 +333,7 @@ const migrate = Effect.gen(function* () {
 
 | Dependency | Version |
 |---|---|
-| [Bun](https://bun.sh) (recommended) or Node.js | Bun 1.x+ / Node.js 18+ |
+| [Bun](https://bun.sh) | Bun 1.x+ (required — uses Bun-specific APIs) |
 | [TimescaleDB](https://www.timescale.com/) | 2.x+ |
 | PostgreSQL | 14+ |
 | [effect](https://effect.website/) | ^3.0.0 |
@@ -350,7 +356,7 @@ PGPASSWORD=secret
 Or configure programmatically:
 
 ```typescript
-import { TimescaleConfig } from "timescaledb-sdk"
+import { TimescaleConfig } from "@jellologic/timescaledb-sdk"
 import { Redacted } from "effect"
 
 const config = new TimescaleConfig({

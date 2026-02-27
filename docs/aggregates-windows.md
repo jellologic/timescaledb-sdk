@@ -14,7 +14,7 @@ import {
   asc, desc,
   eq, gt,
   explain,
-} from "timescaledb-sdk/query"
+} from "@jellologic/timescaledb-sdk/query"
 ```
 
 ## Standard aggregates
@@ -324,7 +324,7 @@ Options:
 Inspect query execution plans:
 
 ```typescript
-import { explain } from "timescaledb-sdk/query"
+import { explain } from "@jellologic/timescaledb-sdk/query"
 
 const query = select(users).where(eq(users.columns.active, true))
 

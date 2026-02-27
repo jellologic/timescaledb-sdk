@@ -6,7 +6,7 @@ Build type-safe SELECT, INSERT, UPDATE, and DELETE queries with an immutable, ch
 import {
   select, selectFrom, insert, update, deleteFrom,
   eq, desc, asc,
-} from "timescaledb-sdk/query"
+} from "@jellologic/timescaledb-sdk/query"
 ```
 
 ## Overview
@@ -21,7 +21,7 @@ Every query builder method returns a new builder instance (immutable -- safe to 
 ### Basic select
 
 ```typescript
-import { select, eq, desc } from "timescaledb-sdk/query"
+import { select, eq, desc } from "@jellologic/timescaledb-sdk/query"
 
 // From a typed table definition -- result type is InferSelect<typeof users>
 const query = select(users)
@@ -60,7 +60,7 @@ query.toSql()
 Columns and expressions both work in the selection object:
 
 ```typescript
-import { count, raw } from "timescaledb-sdk/query"
+import { count, raw } from "@jellologic/timescaledb-sdk/query"
 
 const query = select(users).select({
   name: users.columns.name,
@@ -91,7 +91,7 @@ select(users).distinctOn(users.columns.sensorId).orderBy(desc(users.columns.time
 ### Subquery as FROM source
 
 ```typescript
-import { selectFrom } from "timescaledb-sdk/query"
+import { selectFrom } from "@jellologic/timescaledb-sdk/query"
 
 const inner = select(readings)
   .where(eq(readings.columns.sensorId, "s1"))
@@ -113,7 +113,7 @@ select(users).tableSample("SYSTEM", 5, 42)             // 5% with seed 42
 ### Single row
 
 ```typescript
-import { insert } from "timescaledb-sdk/query"
+import { insert } from "@jellologic/timescaledb-sdk/query"
 
 const query = insert(users).values({
   name: "Alice",
@@ -163,7 +163,7 @@ insert(users).values({ name: "Alice" }).returning("id", "name")
 ## UPDATE
 
 ```typescript
-import { update, eq } from "timescaledb-sdk/query"
+import { update, eq } from "@jellologic/timescaledb-sdk/query"
 
 const query = update(users)
   .set({ active: false, email: null })
@@ -192,7 +192,7 @@ Same three overloads as INSERT: no-arg, typed selection, or string columns.
 ## DELETE
 
 ```typescript
-import { deleteFrom, eq } from "timescaledb-sdk/query"
+import { deleteFrom, eq } from "@jellologic/timescaledb-sdk/query"
 
 const query = deleteFrom(users)
   .where(eq(users.columns.active, false))
@@ -268,7 +268,7 @@ insert(users)
 All four builders support `.with()`:
 
 ```typescript
-import { cte, select, deleteFrom, eq } from "timescaledb-sdk/query"
+import { cte, select, deleteFrom, eq } from "@jellologic/timescaledb-sdk/query"
 
 const activeCte = cte("active_users", select(users).where(eq(users.columns.active, true)))
 
@@ -282,7 +282,7 @@ See [Joins and Subqueries](./joins-and-subqueries.md) for more CTE examples.
 ## Ordering
 
 ```typescript
-import { asc, desc, ascNullsFirst, ascNullsLast, descNullsFirst, descNullsLast } from "timescaledb-sdk/query"
+import { asc, desc, ascNullsFirst, ascNullsLast, descNullsFirst, descNullsLast } from "@jellologic/timescaledb-sdk/query"
 
 select(users).orderBy(
   asc(users.columns.name),           // name ASC
@@ -320,7 +320,7 @@ The `.execute` getter returns an Effect that requires `TimescaleClient` in the c
 
 ```typescript
 import { Effect, Layer } from "effect"
-import { TimescaleClient, TimescaleConfigService } from "timescaledb-sdk"
+import { TimescaleClient, TimescaleConfigService } from "@jellologic/timescaledb-sdk"
 
 const program = Effect.gen(function* () {
   const rows = yield* select(users).execute
@@ -340,7 +340,7 @@ Effect.runPromise(program.pipe(Effect.provide(ClientLayer)))
 For escape-hatch scenarios:
 
 ```typescript
-import { rawSql } from "timescaledb-sdk/query"
+import { rawSql } from "@jellologic/timescaledb-sdk/query"
 
 const stmt = rawSql("SELECT * FROM users WHERE id = $1", [42])
 // { sql: "SELECT * FROM users WHERE id = $1", params: [42] }

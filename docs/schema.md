@@ -6,9 +6,9 @@ Define tables, hypertables, columns, constraints, indexes, and enums with a type
 import {
   pgTable, hypertable,
   text, integer, timestamptz, doublePrecision, serial, boolean, jsonb, uuid,
-  index, uniqueIndex, check, unique, primaryKey, foreignKey,
+  index, uniqueIndex, check, unique, primaryKey, foreignKey, desc, asc,
   type InferSelect, type InferInsert,
-} from "timescaledb-sdk/schema"
+} from "@jellologic/timescaledb-sdk/schema"
 ```
 
 ## Tables
@@ -188,7 +188,7 @@ jsonb<Metadata>("metadata")
 Wrap any column type with `array()`:
 
 ```typescript
-import { array, text, integer } from "timescaledb-sdk/schema"
+import { array, text, integer } from "@jellologic/timescaledb-sdk/schema"
 
 const table = pgTable("example", {
   tags: array(text("tags")),           // TEXT[]
@@ -240,7 +240,7 @@ Foreign key actions: `"CASCADE"`, `"RESTRICT"`, `"SET NULL"`, `"SET DEFAULT"`, `
 Define indexes in the `extra` callback (third argument to `pgTable`/`hypertable`):
 
 ```typescript
-import { pgTable, text, timestamptz, index, uniqueIndex, brinIndex, expr } from "timescaledb-sdk/schema"
+import { pgTable, text, timestamptz, index, uniqueIndex, brinIndex, expr } from "@jellologic/timescaledb-sdk/schema"
 
 const events = pgTable(
   "events",
@@ -284,12 +284,43 @@ index("idx_active_users", ["email"], {
 })
 ```
 
+### Column ordering (ASC/DESC/NULLS FIRST/LAST)
+
+Use `desc()` and `asc()` to specify sort direction and nulls ordering on index columns:
+
+```typescript
+import { index, desc, asc } from "@jellologic/timescaledb-sdk/schema"
+
+const events = pgTable(
+  "events",
+  {
+    time: timestamptz("time").notNull(),
+    eventId: integer("event_id").notNull(),
+  },
+  (cols) => [
+    // Single column DESC
+    index("idx_events_time", [desc("time")]),
+    // Mixed: event_id ASC (default), time DESC NULLS FIRST
+    index("idx_events_comp", ["event_id", desc("time", "FIRST")]),
+    // Explicit ASC with NULLS LAST
+    index("idx_events_asc", [asc("time", "LAST")]),
+  ]
+)
+```
+
+Generates:
+```sql
+CREATE INDEX "idx_events_time" ON "events" USING btree ("time" DESC);
+CREATE INDEX "idx_events_comp" ON "events" USING btree ("event_id", "time" DESC NULLS FIRST);
+CREATE INDEX "idx_events_asc" ON "events" USING btree ("time" ASC NULLS LAST);
+```
+
 ### Expression indexes
 
 Use `expr()` for functional indexes and `colWithOp()` for operator class qualifiers:
 
 ```typescript
-import { expr, colWithOp, ginIndex } from "timescaledb-sdk/schema"
+import { expr, colWithOp, ginIndex } from "@jellologic/timescaledb-sdk/schema"
 
 ginIndex("idx_data_trgm", [colWithOp("data", "gin_trgm_ops")])
 index("idx_lower_email", [expr("lower(email)")])
@@ -300,7 +331,7 @@ index("idx_lower_email", [expr("lower(email)")])
 Define table-level constraints in the `extra` callback:
 
 ```typescript
-import { pgTable, integer, text, check, unique, primaryKey, foreignKey, exclude, deferrable } from "timescaledb-sdk/schema"
+import { pgTable, integer, text, check, unique, primaryKey, foreignKey, exclude, deferrable } from "@jellologic/timescaledb-sdk/schema"
 
 const orders = pgTable(
   "orders",
@@ -335,7 +366,7 @@ const orders = pgTable(
 ## Enums
 
 ```typescript
-import { pgEnum, enumColumn, pgTable } from "timescaledb-sdk/schema"
+import { pgEnum, enumColumn, pgTable } from "@jellologic/timescaledb-sdk/schema"
 
 const statusEnum = pgEnum("status_type", ["active", "inactive", "pending"] as const)
 
@@ -351,7 +382,7 @@ const accounts = pgTable("accounts", {
 The schema DSL tracks nullability and defaults at the type level. Extract row types with `InferSelect` and `InferInsert`:
 
 ```typescript
-import { type InferSelect, type InferInsert } from "timescaledb-sdk/schema"
+import { type InferSelect, type InferInsert } from "@jellologic/timescaledb-sdk/schema"
 
 const users = pgTable("users", {
   id: serial("id"),
@@ -374,7 +405,7 @@ Rules:
 ## Row-Level Security
 
 ```typescript
-import { pgTable, text, rlsPolicy } from "timescaledb-sdk/schema"
+import { pgTable, text, rlsPolicy } from "@jellologic/timescaledb-sdk/schema"
 
 const documents = pgTable(
   "documents",
@@ -406,7 +437,7 @@ const documents = pgTable(
 ## Triggers
 
 ```typescript
-import { pgTable, timestamptz, trigger } from "timescaledb-sdk/schema"
+import { pgTable, timestamptz, trigger } from "@jellologic/timescaledb-sdk/schema"
 
 const events = pgTable(
   "events",
@@ -428,7 +459,7 @@ const events = pgTable(
 Define continuous aggregates at the schema level for migration tracking:
 
 ```typescript
-import { continuousAggregateView, aggColumn } from "timescaledb-sdk/schema"
+import { continuousAggregateView, aggColumn } from "@jellologic/timescaledb-sdk/schema"
 
 const hourlyReadings = continuousAggregateView(
   "hourly_readings",
@@ -458,7 +489,7 @@ See [Continuous Aggregates](./continuous-aggregates.md) for runtime operations.
 Define background jobs at the schema level so migrations can track them:
 
 ```typescript
-import { backgroundJob } from "timescaledb-sdk/schema"
+import { backgroundJob } from "@jellologic/timescaledb-sdk/schema"
 
 const cleanupJob = backgroundJob("cleanup_old_data", "1 hour", {
   name: "data_cleanup",

@@ -14,7 +14,7 @@ import {
   and, or, not,
   raw, column, value, func, cast, coalesce, nullif, greatest, least, concat,
   caseWhen, sql,
-} from "timescaledb-sdk/query"
+} from "@jellologic/timescaledb-sdk/query"
 ```
 
 ## Comparison operators
@@ -22,7 +22,7 @@ import {
 All comparison functions accept a column reference (typed `ColumnDef`, `Expression`, or string) and a value:
 
 ```typescript
-import { select, eq, neq, gt, gte, lt, lte } from "timescaledb-sdk/query"
+import { select, eq, neq, gt, gte, lt, lte } from "@jellologic/timescaledb-sdk/query"
 
 select(users).where(eq(users.columns.name, "Alice"))
 // WHERE "name" = $1
@@ -46,7 +46,7 @@ select(readings).where(lte(readings.columns.value, 0))
 ## Range
 
 ```typescript
-import { between, notBetween } from "timescaledb-sdk/query"
+import { between, notBetween } from "@jellologic/timescaledb-sdk/query"
 
 select(readings).where(between(readings.columns.value, 10, 100))
 // WHERE "value" BETWEEN $1 AND $2
@@ -58,7 +58,7 @@ select(readings).where(notBetween(readings.columns.value, 0, 5))
 ## Pattern matching
 
 ```typescript
-import { like, notLike, ilike, notIlike, similarTo, regexpMatch, regexpIMatch } from "timescaledb-sdk/query"
+import { like, notLike, ilike, notIlike, similarTo, regexpMatch, regexpIMatch } from "@jellologic/timescaledb-sdk/query"
 
 select(users).where(like(users.columns.name, "A%"))
 // WHERE "name" LIKE $1
@@ -85,7 +85,7 @@ select(users).where(regexpIMatch(users.columns.name, "^alice"))
 ## Null checks
 
 ```typescript
-import { isNull, isNotNull } from "timescaledb-sdk/query"
+import { isNull, isNotNull } from "@jellologic/timescaledb-sdk/query"
 
 select(users).where(isNull(users.columns.email))
 // WHERE "email" IS NULL
@@ -99,7 +99,7 @@ select(users).where(isNotNull(users.columns.email))
 Unlike `eq`/`neq`, these treat NULL as a comparable value:
 
 ```typescript
-import { isDistinctFrom, isNotDistinctFrom } from "timescaledb-sdk/query"
+import { isDistinctFrom, isNotDistinctFrom } from "@jellologic/timescaledb-sdk/query"
 
 select(users).where(isDistinctFrom(users.columns.email, "old@example.com"))
 // WHERE "email" IS DISTINCT FROM $1
@@ -111,7 +111,7 @@ select(users).where(isNotDistinctFrom(users.columns.status, null))
 ## Set membership
 
 ```typescript
-import { inArray, anyOf, allOf } from "timescaledb-sdk/query"
+import { inArray, anyOf, allOf } from "@jellologic/timescaledb-sdk/query"
 
 select(users).where(inArray(users.columns.status, ["active", "pending"]))
 // WHERE "status" IN ($1, $2)
@@ -126,7 +126,7 @@ select(readings).where(allOf(readings.columns.tags, ["verified", "reviewed"]))
 ## Subquery conditions
 
 ```typescript
-import { inSubquery, notInSubquery, exists, notExists, select } from "timescaledb-sdk/query"
+import { inSubquery, notInSubquery, exists, notExists, select } from "@jellologic/timescaledb-sdk/query"
 
 const activeIds = select(users)
   .select({ id: users.columns.id })
@@ -169,7 +169,7 @@ select(users).where(
 ### Explicit AND / OR / NOT
 
 ```typescript
-import { and, or, not } from "timescaledb-sdk/query"
+import { and, or, not } from "@jellologic/timescaledb-sdk/query"
 
 select(users).where(
   or(
@@ -191,7 +191,7 @@ select(users).where(not(eq(users.columns.status, "deleted")))
 ### Raw SQL
 
 ```typescript
-import { raw } from "timescaledb-sdk/query"
+import { raw } from "@jellologic/timescaledb-sdk/query"
 
 select(users).where(raw<boolean>("age > 21 AND active = true"))
 // WHERE age > 21 AND active = true
@@ -205,7 +205,7 @@ select(users).where(raw<boolean>("created_at > $?", [new Date("2024-01-01")]))
 Reference a qualified column from another table:
 
 ```typescript
-import { column } from "timescaledb-sdk/query"
+import { column } from "@jellologic/timescaledb-sdk/query"
 
 const userIdExpr = column("orders", "user_id")  // "orders"."user_id"
 ```
@@ -213,7 +213,7 @@ const userIdExpr = column("orders", "user_id")  // "orders"."user_id"
 ### Parameterized values
 
 ```typescript
-import { value } from "timescaledb-sdk/query"
+import { value } from "@jellologic/timescaledb-sdk/query"
 
 const threshold = value(100)  // $1 with params: [100]
 ```
@@ -221,7 +221,7 @@ const threshold = value(100)  // $1 with params: [100]
 ### Function calls
 
 ```typescript
-import { func } from "timescaledb-sdk/query"
+import { func } from "@jellologic/timescaledb-sdk/query"
 
 select(users).where(gt(func<number>("length", "name"), value(3)))
 // WHERE length("name") > $1
@@ -230,7 +230,7 @@ select(users).where(gt(func<number>("length", "name"), value(3)))
 ### Type casting
 
 ```typescript
-import { cast } from "timescaledb-sdk/query"
+import { cast } from "@jellologic/timescaledb-sdk/query"
 
 cast<number>(raw("'42'"), "integer")
 // CAST('42' AS integer)
@@ -239,7 +239,7 @@ cast<number>(raw("'42'"), "integer")
 ### Scalar functions
 
 ```typescript
-import { coalesce, nullif, greatest, least } from "timescaledb-sdk/query"
+import { coalesce, nullif, greatest, least } from "@jellologic/timescaledb-sdk/query"
 
 coalesce(users.columns.email, value("no-email"))
 // COALESCE("email", $1)
@@ -257,7 +257,7 @@ least(users.columns.score, value(100))
 ### String concatenation
 
 ```typescript
-import { concat } from "timescaledb-sdk/query"
+import { concat } from "@jellologic/timescaledb-sdk/query"
 
 concat(users.columns.firstName, value(" "), users.columns.lastName)
 // "firstName" || $1 || "lastName"
@@ -266,7 +266,7 @@ concat(users.columns.firstName, value(" "), users.columns.lastName)
 ### Arithmetic
 
 ```typescript
-import { sql } from "timescaledb-sdk/query"
+import { sql } from "@jellologic/timescaledb-sdk/query"
 
 sql.add(users.columns.score, value(10))   // "score" + $1
 sql.sub(users.columns.score, value(5))    // "score" - $1
@@ -278,7 +278,7 @@ sql.mod(users.columns.count, value(3))    // "count" % $1
 ### CASE expressions
 
 ```typescript
-import { caseWhen, eq, value } from "timescaledb-sdk/query"
+import { caseWhen, eq, value } from "@jellologic/timescaledb-sdk/query"
 
 const tier = caseWhen<string>()
   .when(gte(users.columns.score, value(90)), value("gold"))
@@ -296,7 +296,7 @@ select(users).select({
 ### Array and JSON constructors
 
 ```typescript
-import { arrayOf, jsonBuildObject, jsonbBuildObject } from "timescaledb-sdk/query"
+import { arrayOf, jsonBuildObject, jsonbBuildObject } from "@jellologic/timescaledb-sdk/query"
 
 arrayOf(value(1), value(2), value(3))
 // ARRAY[$1, $2, $3]

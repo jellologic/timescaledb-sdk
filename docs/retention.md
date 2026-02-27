@@ -6,7 +6,7 @@ Automatically drop old data with retention policies or manually remove chunks by
 import {
   addRetentionPolicy, removeRetentionPolicy,
   dropChunks,
-} from "timescaledb-sdk/retention"
+} from "@jellologic/timescaledb-sdk/retention"
 ```
 
 All functions return `Effect.Effect<A, RetentionError, TimescaleClient>`.
@@ -19,8 +19,8 @@ Automatically drop chunks containing data older than the specified threshold:
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { addRetentionPolicy } from "timescaledb-sdk/retention"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { addRetentionPolicy } from "@jellologic/timescaledb-sdk/retention"
 
 const program = Effect.gen(function* () {
   yield* addRetentionPolicy("sensor_readings", {
@@ -49,7 +49,7 @@ yield* addRetentionPolicy(readings, { dropAfter: "90 days" })
 Declare retention in your [schema definition](./schema.md) for migration tracking:
 
 ```typescript
-import { hypertable, timestamptz, doublePrecision, text } from "timescaledb-sdk/schema"
+import { hypertable, timestamptz, doublePrecision, text } from "@jellologic/timescaledb-sdk/schema"
 
 const readings = hypertable(
   "sensor_readings",
@@ -68,7 +68,7 @@ const readings = hypertable(
 ### Removing a policy
 
 ```typescript
-import { removeRetentionPolicy } from "timescaledb-sdk/retention"
+import { removeRetentionPolicy } from "@jellologic/timescaledb-sdk/retention"
 
 yield* removeRetentionPolicy("sensor_readings")
 
@@ -81,7 +81,7 @@ yield* removeRetentionPolicy("sensor_readings", { ifExists: true })
 Drop chunks directly without a policy:
 
 ```typescript
-import { dropChunks } from "timescaledb-sdk/retention"
+import { dropChunks } from "@jellologic/timescaledb-sdk/retention"
 
 // Drop chunks older than 90 days
 const dropped = yield* dropChunks("sensor_readings", "90 days")
@@ -93,7 +93,7 @@ const dropped = yield* dropChunks("sensor_readings", "90 days", "30 days")
 
 The `dropChunks` function returns the list of dropped chunks.
 
-Note: `dropChunks` is also available from `timescaledb-sdk/hypertable` -- both produce the same result.
+Note: `dropChunks` is also available from `@jellologic/timescaledb-sdk/hypertable` -- both produce the same result.
 
 ## Example: retention with compression
 
@@ -101,9 +101,9 @@ A common pattern is to compress data before eventually dropping it:
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { enableCompression, addCompressionPolicy } from "timescaledb-sdk/compression"
-import { addRetentionPolicy } from "timescaledb-sdk/retention"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { enableCompression, addCompressionPolicy } from "@jellologic/timescaledb-sdk/compression"
+import { addRetentionPolicy } from "@jellologic/timescaledb-sdk/retention"
 
 const setupLifecycle = Effect.gen(function* () {
   // Compress chunks older than 7 days

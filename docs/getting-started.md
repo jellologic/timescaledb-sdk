@@ -11,7 +11,7 @@ Set up the TimescaleDB SDK, connect to a database, and run your first query.
 ## Installation
 
 ```bash
-bun add timescaledb-sdk effect @effect/sql @effect/sql-pg
+bun add @jellologic/timescaledb-sdk effect @effect/sql @effect/sql-pg
 ```
 
 The three `effect` packages are peer dependencies and must be installed alongside the SDK.
@@ -43,7 +43,7 @@ PGPASSWORD=secret
 You can also build the config object directly:
 
 ```typescript
-import { TimescaleConfig, TimescaleConfigService } from "timescaledb-sdk"
+import { TimescaleConfig, TimescaleConfigService } from "@jellologic/timescaledb-sdk"
 import { Redacted } from "effect"
 
 const config = new TimescaleConfig({
@@ -65,7 +65,7 @@ Every effectful operation in the SDK requires a `TimescaleClient` in the Effect 
 
 ```typescript
 import { Effect, Layer } from "effect"
-import { TimescaleClient, TimescaleConfigService } from "timescaledb-sdk"
+import { TimescaleClient, TimescaleConfigService } from "@jellologic/timescaledb-sdk"
 
 // Reads PGHOST, PGPORT, etc. from env
 const ConfigLayer = TimescaleConfigService.layerFromEnv
@@ -79,7 +79,7 @@ const ClientLayer = TimescaleClient.layerFromConfig.pipe(
 ### From a config object
 
 ```typescript
-import { TimescaleClient, TimescaleConfig, TimescaleConfigService } from "timescaledb-sdk"
+import { TimescaleClient, TimescaleConfig, TimescaleConfigService } from "@jellologic/timescaledb-sdk"
 import { Layer, Redacted } from "effect"
 
 const config = new TimescaleConfig({
@@ -99,7 +99,7 @@ Define a hypertable, insert a row, and read it back:
 
 ```typescript
 import { Effect } from "effect"
-import { Schema, Query, TimescaleClient, TimescaleConfigService } from "timescaledb-sdk"
+import { Schema, Query, TimescaleClient, TimescaleConfigService } from "@jellologic/timescaledb-sdk"
 
 // 1. Define a hypertable
 const readings = Schema.hypertable(
@@ -166,28 +166,32 @@ console.log(params)
 
 ## Import paths
 
-The SDK provides 11 entry points. You can import from the root or from dedicated subpaths:
+The SDK provides 15 entry points. You can import from the root or from dedicated subpaths:
 
 | Import Path | Contents |
 |---|---|
-| `timescaledb-sdk` | Root -- re-exports all modules as namespaces, plus `TimescaleClient`, `TimescaleConfig`, `TimescaleConfigService`, `Errors` |
-| `timescaledb-sdk/schema` | Table/column definitions, type inference |
-| `timescaledb-sdk/query` | Query builders (SELECT, INSERT, UPDATE, DELETE), expressions, conditions |
-| `timescaledb-sdk/hypertable` | Hypertable creation, chunk management |
-| `timescaledb-sdk/cagg` | Continuous aggregate operations |
-| `timescaledb-sdk/compression` | Compression and columnstore management |
-| `timescaledb-sdk/retention` | Retention policies |
-| `timescaledb-sdk/hyperfunctions` | TimescaleDB-specific analytical functions |
-| `timescaledb-sdk/jobs` | Background job scheduling |
-| `timescaledb-sdk/tiering` | Data tiering across tablespaces |
-| `timescaledb-sdk/migration` | Schema diffing and migration lifecycle |
+| `@jellologic/timescaledb-sdk` | Root -- re-exports all modules as namespaces, plus `TimescaleClient`, `TimescaleConfig`, `TimescaleConfigService`, `Errors` |
+| `@jellologic/timescaledb-sdk/schema` | Table/column definitions, type inference |
+| `@jellologic/timescaledb-sdk/query` | Query builders (SELECT, INSERT, UPDATE, DELETE), expressions, conditions |
+| `@jellologic/timescaledb-sdk/hypertable` | Hypertable creation, chunk management |
+| `@jellologic/timescaledb-sdk/cagg` | Continuous aggregate operations |
+| `@jellologic/timescaledb-sdk/compression` | Compression and columnstore management |
+| `@jellologic/timescaledb-sdk/retention` | Retention policies |
+| `@jellologic/timescaledb-sdk/hyperfunctions` | TimescaleDB-specific analytical functions |
+| `@jellologic/timescaledb-sdk/jobs` | Background job scheduling |
+| `@jellologic/timescaledb-sdk/tiering` | Data tiering across tablespaces |
+| `@jellologic/timescaledb-sdk/migration` | Schema diffing and migration lifecycle |
+| `@jellologic/timescaledb-sdk/view` | Views and materialized views |
+| `@jellologic/timescaledb-sdk/functions` | PL/pgSQL functions, procedures, and trigger functions |
+| `@jellologic/timescaledb-sdk/client` | Direct access to `TimescaleClient` and layer factories |
+| `@jellologic/timescaledb-sdk/config` | Direct access to `TimescaleConfig` and environment layer |
 
 ### Root namespace imports
 
 When importing from the root, each module is available as a namespace:
 
 ```typescript
-import { Schema, Query, Hypertable, Compression, Hyperfunctions } from "timescaledb-sdk"
+import { Schema, Query, Hypertable, Compression, Hyperfunctions } from "@jellologic/timescaledb-sdk"
 
 const table = Schema.pgTable("users", { /* ... */ })
 const query = Query.select(table)
@@ -198,9 +202,9 @@ const query = Query.select(table)
 For tree-shaking or explicit imports:
 
 ```typescript
-import { pgTable, hypertable, text, timestamptz } from "timescaledb-sdk/schema"
-import { select, insert, eq, desc } from "timescaledb-sdk/query"
-import { timeBucket, counterAgg } from "timescaledb-sdk/hyperfunctions"
+import { pgTable, hypertable, text, timestamptz } from "@jellologic/timescaledb-sdk/schema"
+import { select, insert, eq, desc } from "@jellologic/timescaledb-sdk/query"
+import { timeBucket, counterAgg } from "@jellologic/timescaledb-sdk/hyperfunctions"
 ```
 
 ## Next steps

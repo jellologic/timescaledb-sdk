@@ -9,7 +9,7 @@ import {
   convertToColumnstore, convertToRowstore,
   addCompressionPolicy, removeCompressionPolicy,
   compressionInfo,
-} from "timescaledb-sdk/compression"
+} from "@jellologic/timescaledb-sdk/compression"
 ```
 
 All functions return `Effect.Effect<A, CompressionError, TimescaleClient>`.
@@ -20,8 +20,8 @@ All functions return `Effect.Effect<A, CompressionError, TimescaleClient>`.
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { enableCompression } from "timescaledb-sdk/compression"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { enableCompression } from "@jellologic/timescaledb-sdk/compression"
 
 const program = Effect.gen(function* () {
   yield* enableCompression("sensor_readings")
@@ -69,7 +69,7 @@ yield* enableCompression(readings, {
 You can also declare compression in your [schema definition](./schema.md) so it is applied during migration:
 
 ```typescript
-import { hypertable, timestamptz, text, doublePrecision } from "timescaledb-sdk/schema"
+import { hypertable, timestamptz, text, doublePrecision } from "@jellologic/timescaledb-sdk/schema"
 
 const readings = hypertable(
   "sensor_readings",
@@ -141,7 +141,7 @@ yield* convertToRowstore("_timescaledb_internal._hyper_1_1_chunk", {
 Automatically compress chunks older than a threshold:
 
 ```typescript
-import { addCompressionPolicy } from "timescaledb-sdk/compression"
+import { addCompressionPolicy } from "@jellologic/timescaledb-sdk/compression"
 
 yield* addCompressionPolicy("sensor_readings", {
   compressAfter: "7 days",
@@ -157,7 +157,7 @@ yield* addCompressionPolicy("sensor_readings", {
 ### Removing a policy
 
 ```typescript
-import { removeCompressionPolicy } from "timescaledb-sdk/compression"
+import { removeCompressionPolicy } from "@jellologic/timescaledb-sdk/compression"
 
 yield* removeCompressionPolicy("sensor_readings")
 
@@ -170,7 +170,7 @@ yield* removeCompressionPolicy("sensor_readings", { ifExists: true })
 Query compression settings for a hypertable:
 
 ```typescript
-import { compressionInfo } from "timescaledb-sdk/compression"
+import { compressionInfo } from "@jellologic/timescaledb-sdk/compression"
 
 const info = yield* compressionInfo("sensor_readings")
 // Returns rows from timescaledb_information.compression_settings
@@ -180,8 +180,8 @@ const info = yield* compressionInfo("sensor_readings")
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { enableCompression, addCompressionPolicy } from "timescaledb-sdk/compression"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { enableCompression, addCompressionPolicy } from "@jellologic/timescaledb-sdk/compression"
 
 const setupCompression = Effect.gen(function* () {
   // Enable compression with optimal settings

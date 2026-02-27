@@ -9,7 +9,7 @@ import {
   hypertableInfo, chunkInfo, dimensionInfo,
   addDimension, setNumberPartitions,
   showChunks, dropChunks, reorderChunk, moveChunk,
-} from "timescaledb-sdk/hypertable"
+} from "@jellologic/timescaledb-sdk/hypertable"
 ```
 
 All functions return `Effect.Effect<A, HypertableError, TimescaleClient>` and must be run within an Effect context.
@@ -22,9 +22,9 @@ If you defined a hypertable with the [schema DSL](./schema.md), pass it directly
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { createHypertable } from "timescaledb-sdk/hypertable"
-import { hypertable, timestamptz, text, doublePrecision } from "timescaledb-sdk/schema"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { createHypertable } from "@jellologic/timescaledb-sdk/hypertable"
+import { hypertable, timestamptz, text, doublePrecision } from "@jellologic/timescaledb-sdk/schema"
 
 const readings = hypertable(
   "sensor_readings",
@@ -209,8 +209,8 @@ See [Tiering](./tiering.md) for automated data tiering policies.
 
 ```typescript
 import { Effect } from "effect"
-import { TimescaleClient } from "timescaledb-sdk"
-import { createHypertable, addDimension } from "timescaledb-sdk/hypertable"
+import { TimescaleClient } from "@jellologic/timescaledb-sdk"
+import { createHypertable, addDimension } from "@jellologic/timescaledb-sdk/hypertable"
 
 const setup = Effect.gen(function* () {
   const client = yield* TimescaleClient
