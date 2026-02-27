@@ -19,7 +19,7 @@ export class DeleteBuilder<
   private _where: WhereCondition[] = []
   private _returning: string[] = []
   private _returningMap: Record<string, ColumnDef<any, any, any> | Expression<any>> | null = null
-  private _using: string[] = []
+  private _using: Array<{ name: string; schema?: string }> = []
   private _ctes: CteClause[] = []
 
   constructor(table: TableDefinition | string) {
@@ -35,7 +35,9 @@ export class DeleteBuilder<
 
   using(...tables: Array<TableDefinition | string>): DeleteBuilder<TTable, TResult> {
     const b = this._clone()
-    b._using = [...this._using, ...tables.map((t) => typeof t === "string" ? t : t.name)]
+    b._using = [...this._using, ...tables.map((t) =>
+      typeof t === "string" ? { name: t } : { name: t.name, schema: t.schema !== "public" ? t.schema : undefined }
+    )]
     return b
   }
 
@@ -102,7 +104,7 @@ export class DeleteBuilder<
     sql += `DELETE FROM ${tableRef(this._table, this._schema)}`
 
     if (this._using.length > 0) {
-      sql += ` USING ${this._using.map((t) => `"${t}"`).join(", ")}`
+      sql += ` USING ${this._using.map((t) => tableRef(t.name, t.schema)).join(", ")}`
     }
 
     if (this._where.length > 0) {

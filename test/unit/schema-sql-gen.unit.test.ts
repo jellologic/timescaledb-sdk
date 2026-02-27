@@ -686,7 +686,7 @@ describe("SQL Generation — Table Renames", () => {
     }
 
     const diff = diffSchema([accounts], snapshot)
-    expect(diff.tablesToRename).toEqual([{ oldName: "users", newName: "accounts" }])
+    expect(diff.tablesToRename).toEqual([{ oldName: "users", newName: "accounts", schema: "public" }])
     expect(diff.tablesToCreate).toEqual([])
     expect(diff.tablesToDrop).toEqual([])
 
@@ -702,7 +702,7 @@ describe("SQL Generation — Table Renames", () => {
 
     const diff = diffSchema([accounts], emptySnapshot)
     expect(diff.tablesToRename).toEqual([])
-    expect(diff.tablesToCreate).toEqual(["accounts"])
+    expect(diff.tablesToCreate).toEqual([{ name: "accounts", schema: "public" }])
   })
 
   test("table rename + column changes on same table", () => {
@@ -758,7 +758,7 @@ describe("SQL Generation — Column Renames", () => {
     }
 
     const diff = diffSchema([users], snapshot)
-    expect(diff.columnsToRename).toEqual([{ table: "users", oldColumn: "name", newColumn: "full_name" }])
+    expect(diff.columnsToRename).toEqual([{ table: "users", schema: "public", oldColumn: "name", newColumn: "full_name" }])
     expect(diff.columnsToAdd).toEqual([])
     expect(diff.columnsToRemove).toEqual([])
 
@@ -844,8 +844,8 @@ describe("SQL Generation — Column Renames", () => {
     }
 
     const diff = diffSchema([accounts], snapshot)
-    expect(diff.tablesToRename).toEqual([{ oldName: "users", newName: "accounts" }])
-    expect(diff.columnsToRename).toEqual([{ table: "accounts", oldColumn: "name", newColumn: "full_name" }])
+    expect(diff.tablesToRename).toEqual([{ oldName: "users", newName: "accounts", schema: "public" }])
+    expect(diff.columnsToRename).toEqual([{ table: "accounts", schema: "public", oldColumn: "name", newColumn: "full_name" }])
 
     const { up } = generateMigrationSql(diff, [accounts])
     const renameTableIdx = up.findIndex((s) => s.includes("RENAME TO"))
@@ -1353,7 +1353,7 @@ describe("SQL Generation — CAGG Diffing", () => {
     }
 
     const diff = diffSchema([], snapshot)
-    expect(diff.caggsToDrop).toContain("old_agg")
+    expect(diff.caggsToDrop).toContainEqual({ name: "old_agg", schema: "public" })
     const { up } = generateMigrationSql(diff, [])
     expect(up.some((s) => s.includes('DROP MATERIALIZED VIEW IF EXISTS "old_agg"'))).toBe(true)
   })
@@ -2325,7 +2325,7 @@ describe("RLS Policy Diffing — existing tables", () => {
     expect(diff.rlsPoliciesToCreate.length).toBe(1)
     expect(diff.rlsPoliciesToCreate[0]!.policy.name).toBe("tenant_isolation")
     expect(diff.rlsToEnable.length).toBe(1)
-    expect(diff.rlsToEnable[0]).toBe("users")
+    expect(diff.rlsToEnable[0]).toEqual({ name: "users", schema: "public" })
 
     const { up } = generateMigrationSql(diff, [t])
     expect(up.some((s) => s.includes("ENABLE ROW LEVEL SECURITY"))).toBe(true)

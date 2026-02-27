@@ -333,14 +333,17 @@ export class SelectBuilder<
         const onSql = j.on ? resolvePlaceholders(j.on.sql, j.on.params) : "TRUE"
         sql += ` ${j.type} JOIN LATERAL (${subSql})${aliasClause} ON ${onSql}`
       } else if (j.joinMode === "NATURAL") {
-        const tRef = j.alias ? `"${j.table}" AS "${j.alias}"` : `"${j.table}"`
+        const tbl = tableRef(j.table, j.schema)
+        const tRef = j.alias ? `${tbl} AS "${j.alias}"` : tbl
         sql += ` NATURAL ${j.type} JOIN ${tRef}`
       } else if (j.joinMode === "USING" && j.usingColumns) {
-        const tRef = j.alias ? `"${j.table}" AS "${j.alias}"` : `"${j.table}"`
+        const tbl = tableRef(j.table, j.schema)
+        const tRef = j.alias ? `${tbl} AS "${j.alias}"` : tbl
         const usingCols = j.usingColumns.map((c) => `"${c}"`).join(", ")
         sql += ` ${j.type} JOIN ${tRef} USING (${usingCols})`
       } else {
-        const tRef = j.alias ? `"${j.table}" AS "${j.alias}"` : `"${j.table}"`
+        const tbl = tableRef(j.table, j.schema)
+        const tRef = j.alias ? `${tbl} AS "${j.alias}"` : tbl
         if (j.type === "CROSS") {
           sql += ` CROSS JOIN ${tRef}`
         } else if (j.on) {

@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { ContinuousAggregateError } from "../Error.js"
+import { qualifiedName } from "../internal/sql.js"
 import type { ContinuousAggregateConfig, ContinuousAggregateDefinition } from "./types.js"
 
 export const continuousAggregate = (config: ContinuousAggregateConfig): ContinuousAggregateDefinition => ({
@@ -12,14 +13,17 @@ export const continuousAggregate = (config: ContinuousAggregateConfig): Continuo
 })
 
 export const createContinuousAggregate = (
-  def: ContinuousAggregateDefinition | ContinuousAggregateConfig
+  def: ContinuousAggregateDefinition | ContinuousAggregateConfig,
+  schema?: string
 ): Effect.Effect<void, ContinuousAggregateError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
     const config = "_tag" in def ? def : continuousAggregate(def)
+    const effectiveSchema = schema ?? ("schema" in config ? (config as any).schema : undefined)
+    const qn = qualifiedName(config.viewName, effectiveSchema)
     const withNoData = config.withNoData ? " WITH NO DATA" : ""
     yield* client.execute(
-      `CREATE MATERIALIZED VIEW "${config.viewName}" WITH (timescaledb.continuous) AS ${config.query}${withNoData}`
+      `CREATE MATERIALIZED VIEW ${qn} WITH (timescaledb.continuous) AS ${config.query}${withNoData}`
     )
   }).pipe(
     Effect.mapError((e) => new ContinuousAggregateError({ message: `Failed to create continuous aggregate: ${e}`, cause: e }))
@@ -27,27 +31,30 @@ export const createContinuousAggregate = (
 
 export const dropContinuousAggregate = (
   viewName: string,
-  opts?: { cascade?: boolean; ifExists?: boolean }
+  opts?: { cascade?: boolean; ifExists?: boolean; schema?: string }
 ): Effect.Effect<void, ContinuousAggregateError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
     const ifExists = opts?.ifExists ? "IF EXISTS " : ""
     const cascade = opts?.cascade ? " CASCADE" : ""
-    yield* client.execute(`DROP MATERIALIZED VIEW ${ifExists}"${viewName}"${cascade}`)
+    const qn = qualifiedName(viewName, opts?.schema)
+    yield* client.execute(`DROP MATERIALIZED VIEW ${ifExists}${qn}${cascade}`)
   }).pipe(
     Effect.mapError((e) => new ContinuousAggregateError({ message: `Failed to drop continuous aggregate: ${e}`, cause: e }))
   )
 
 export const refreshContinuousAggregate = (
   viewName: string,
-  window?: { start?: string; end?: string }
+  window?: { start?: string; end?: string },
+  schema?: string
 ): Effect.Effect<void, ContinuousAggregateError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
+    const qn = qualifiedName(viewName, schema)
     const start = window?.start ? `'${window.start}'` : "NULL"
     const end = window?.end ? `'${window.end}'` : "NULL"
     yield* client.execute(
-      `CALL refresh_continuous_aggregate('"${viewName}"', ${start}, ${end})`
+      `CALL refresh_continuous_aggregate('${qn}', ${start}, ${end})`
     )
   }).pipe(
     Effect.mapError((e) => new ContinuousAggregateError({ message: `Failed to refresh continuous aggregate: ${e}`, cause: e }))

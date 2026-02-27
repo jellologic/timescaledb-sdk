@@ -3,9 +3,14 @@ import type { FunctionDefinition, ProcedureDefinition, TriggerFunctionDefinition
 import { transpile } from "../functions/transpiler/index.js"
 import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
 import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot, ViewDependency, IndexSnapshotColumn } from "./types.js"
-import { toSqlValue, quoteIdentifier, quoteString, qualifiedName } from "../internal/sql.js"
+import { toSqlValue, quoteIdentifier, quoteString, qualifiedName, qualifiedNameLiteral } from "../internal/sql.js"
 
 export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition | ViewDefinition | MaterializedViewDefinition | FunctionDefinition | ProcedureDefinition | TriggerFunctionDefinition
+
+export interface TableRef {
+  readonly name: string
+  readonly schema: string
+}
 
 /** Resolve a TS property key to its SQL column name (e.g. "crawledAt" → "crawled_at") */
 const resolveColumnName = (def: TableDefinition | HypertableDefinition, propKey: string): string => {
@@ -22,60 +27,60 @@ const TYPE_ALIASES: Record<string, string> = {
 const normalizeType = (t: string): string => TYPE_ALIASES[t] ?? t
 
 export interface SchemaDiff {
-  readonly tablesToCreate: ReadonlyArray<string>
-  readonly tablesToDrop: ReadonlyArray<string>
-  readonly tablesToRename: ReadonlyArray<{ oldName: string; newName: string }>
-  readonly columnsToAdd: ReadonlyArray<{ table: string; column: string; dataType: string; isNotNull: boolean; defaultValue: unknown }>
-  readonly columnsToRemove: ReadonlyArray<{ table: string; column: string }>
-  readonly columnsToAlter: ReadonlyArray<{ table: string; column: string; oldType: string; newType: string }>
-  readonly columnsToRename: ReadonlyArray<{ table: string; oldColumn: string; newColumn: string }>
-  readonly columnsToSetNotNull: ReadonlyArray<{ table: string; column: string }>
-  readonly columnsToDropNotNull: ReadonlyArray<{ table: string; column: string }>
-  readonly columnsToSetDefault: ReadonlyArray<{ table: string; column: string; defaultValue: unknown }>
-  readonly columnsToDropDefault: ReadonlyArray<{ table: string; column: string }>
-  readonly hypertablesToCreate: ReadonlyArray<string>
+  readonly tablesToCreate: ReadonlyArray<TableRef>
+  readonly tablesToDrop: ReadonlyArray<TableRef>
+  readonly tablesToRename: ReadonlyArray<{ oldName: string; newName: string; schema: string }>
+  readonly columnsToAdd: ReadonlyArray<{ table: string; schema: string; column: string; dataType: string; isNotNull: boolean; defaultValue: unknown }>
+  readonly columnsToRemove: ReadonlyArray<{ table: string; schema: string; column: string }>
+  readonly columnsToAlter: ReadonlyArray<{ table: string; schema: string; column: string; oldType: string; newType: string }>
+  readonly columnsToRename: ReadonlyArray<{ table: string; schema: string; oldColumn: string; newColumn: string }>
+  readonly columnsToSetNotNull: ReadonlyArray<{ table: string; schema: string; column: string }>
+  readonly columnsToDropNotNull: ReadonlyArray<{ table: string; schema: string; column: string }>
+  readonly columnsToSetDefault: ReadonlyArray<{ table: string; schema: string; column: string; defaultValue: unknown }>
+  readonly columnsToDropDefault: ReadonlyArray<{ table: string; schema: string; column: string }>
+  readonly hypertablesToCreate: ReadonlyArray<TableRef>
   readonly enumsToCreate: ReadonlyArray<EnumTypeDef>
   readonly enumsToDrop: ReadonlyArray<string>
   readonly enumsToAddValues: ReadonlyArray<{ name: string; newValues: ReadonlyArray<string> }>
   readonly caggsToCreate: ReadonlyArray<CaggDefinition>
-  readonly caggsToDrop: ReadonlyArray<string>
-  readonly indexesToCreate: ReadonlyArray<{ table: string; index: import("../schema/types.js").IndexDef }>
-  readonly indexesToDrop: ReadonlyArray<{ table: string; indexName: string }>
-  readonly constraintsToAdd: ReadonlyArray<{ table: string; constraint: ConstraintDef }>
-  readonly constraintsToDrop: ReadonlyArray<{ table: string; constraintName: string }>
-  readonly triggersToCreate: ReadonlyArray<{ table: string; trigger: import("../schema/types.js").TriggerDef }>
-  readonly triggersToDrop: ReadonlyArray<{ table: string; triggerName: string }>
+  readonly caggsToDrop: ReadonlyArray<TableRef>
+  readonly indexesToCreate: ReadonlyArray<{ table: string; schema: string; index: import("../schema/types.js").IndexDef }>
+  readonly indexesToDrop: ReadonlyArray<{ table: string; schema: string; indexName: string }>
+  readonly constraintsToAdd: ReadonlyArray<{ table: string; schema: string; constraint: ConstraintDef }>
+  readonly constraintsToDrop: ReadonlyArray<{ table: string; schema: string; constraintName: string }>
+  readonly triggersToCreate: ReadonlyArray<{ table: string; schema: string; trigger: import("../schema/types.js").TriggerDef }>
+  readonly triggersToDrop: ReadonlyArray<{ table: string; schema: string; triggerName: string }>
   readonly jobsToCreate: ReadonlyArray<JobDefinition>
   readonly jobsToDelete: ReadonlyArray<{ procName: string }>
   readonly jobsToAlter: ReadonlyArray<{ procName: string; scheduleInterval?: string; config?: Record<string, unknown> | null }>
-  readonly rlsToEnable: ReadonlyArray<string>
-  readonly rlsToDisable: ReadonlyArray<string>
-  readonly rlsPoliciesToCreate: ReadonlyArray<{ table: string; policy: RlsPolicyDef }>
-  readonly rlsPoliciesToDrop: ReadonlyArray<{ table: string; policyName: string }>
-  readonly rlsPoliciesToAlter: ReadonlyArray<{ table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string> }>
-  readonly compressionPoliciesToAdd: ReadonlyArray<{ table: string; after: string }>
-  readonly compressionPoliciesToRemove: ReadonlyArray<string>
-  readonly retentionPoliciesToAdd: ReadonlyArray<{ table: string; dropAfter: string }>
-  readonly retentionPoliciesToRemove: ReadonlyArray<string>
-  readonly reorderPoliciesToAdd: ReadonlyArray<{ table: string; indexName: string }>
-  readonly reorderPoliciesToRemove: ReadonlyArray<string>
-  readonly caggRefreshPoliciesToAdd: ReadonlyArray<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }>
-  readonly caggRefreshPoliciesToRemove: ReadonlyArray<string>
-  readonly caggRetentionPoliciesToAdd: ReadonlyArray<{ viewName: string; dropAfter: string }>
-  readonly caggRetentionPoliciesToRemove: ReadonlyArray<string>
-  readonly caggCompressionToEnable: ReadonlyArray<string>
-  readonly caggCompressionToDisable: ReadonlyArray<string>
-  readonly hypercoreToEnable: ReadonlyArray<string>
-  readonly hypercoreToDisable: ReadonlyArray<string>
-  readonly hypercoreSettingsToAlter: ReadonlyArray<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: ReadonlyArray<string> }>
-  readonly chunkIntervalsToAlter: ReadonlyArray<{ table: string; interval: string }>
-  readonly compressionSettingsToAlter: ReadonlyArray<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: string }>
-  readonly tieringToAdd: ReadonlyArray<{ table: string; tierAfter: string }>
-  readonly tieringToRemove: ReadonlyArray<string>
-  readonly compressionPoliciesToAlter: ReadonlyArray<{ table: string; after: string }>
-  readonly retentionPoliciesToAlter: ReadonlyArray<{ table: string; dropAfter: string }>
-  readonly caggRefreshPoliciesToAlter: ReadonlyArray<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }>
-  readonly caggMigrations: ReadonlyArray<string>
+  readonly rlsToEnable: ReadonlyArray<TableRef>
+  readonly rlsToDisable: ReadonlyArray<TableRef>
+  readonly rlsPoliciesToCreate: ReadonlyArray<{ table: string; schema: string; policy: RlsPolicyDef }>
+  readonly rlsPoliciesToDrop: ReadonlyArray<{ table: string; schema: string; policyName: string }>
+  readonly rlsPoliciesToAlter: ReadonlyArray<{ table: string; schema: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string> }>
+  readonly compressionPoliciesToAdd: ReadonlyArray<{ table: string; schema: string; after: string }>
+  readonly compressionPoliciesToRemove: ReadonlyArray<TableRef>
+  readonly retentionPoliciesToAdd: ReadonlyArray<{ table: string; schema: string; dropAfter: string }>
+  readonly retentionPoliciesToRemove: ReadonlyArray<TableRef>
+  readonly reorderPoliciesToAdd: ReadonlyArray<{ table: string; schema: string; indexName: string }>
+  readonly reorderPoliciesToRemove: ReadonlyArray<TableRef>
+  readonly caggRefreshPoliciesToAdd: ReadonlyArray<{ viewName: string; schema: string; startOffset: string; endOffset: string; scheduleInterval: string }>
+  readonly caggRefreshPoliciesToRemove: ReadonlyArray<TableRef>
+  readonly caggRetentionPoliciesToAdd: ReadonlyArray<{ viewName: string; schema: string; dropAfter: string }>
+  readonly caggRetentionPoliciesToRemove: ReadonlyArray<TableRef>
+  readonly caggCompressionToEnable: ReadonlyArray<TableRef>
+  readonly caggCompressionToDisable: ReadonlyArray<TableRef>
+  readonly hypercoreToEnable: ReadonlyArray<TableRef>
+  readonly hypercoreToDisable: ReadonlyArray<TableRef>
+  readonly hypercoreSettingsToAlter: ReadonlyArray<{ table: string; schema: string; segmentby?: ReadonlyArray<string>; orderby?: ReadonlyArray<string> }>
+  readonly chunkIntervalsToAlter: ReadonlyArray<{ table: string; schema: string; interval: string }>
+  readonly compressionSettingsToAlter: ReadonlyArray<{ table: string; schema: string; segmentby?: ReadonlyArray<string>; orderby?: string }>
+  readonly tieringToAdd: ReadonlyArray<{ table: string; schema: string; tierAfter: string }>
+  readonly tieringToRemove: ReadonlyArray<TableRef>
+  readonly compressionPoliciesToAlter: ReadonlyArray<{ table: string; schema: string; after: string }>
+  readonly retentionPoliciesToAlter: ReadonlyArray<{ table: string; schema: string; dropAfter: string }>
+  readonly caggRefreshPoliciesToAlter: ReadonlyArray<{ viewName: string; schema: string; startOffset: string; endOffset: string; scheduleInterval: string }>
+  readonly caggMigrations: ReadonlyArray<TableRef>
   readonly viewsToCreate: ReadonlyArray<ViewDefinition>
   readonly viewsToDrop: ReadonlyArray<string>
   readonly viewsToReplace: ReadonlyArray<ViewDefinition>
@@ -110,45 +115,48 @@ export const diffSchema = (
   const enumDefs = definitions.filter((d): d is EnumTypeDef => d._tag === "EnumType")
   const caggDefs = definitions.filter((d): d is CaggDefinition => d._tag === "CaggDefinition")
 
-  const snapshotTables = new Set(snapshot.tables.map((t) => t.name))
-  const snapshotHypertables = new Set(snapshot.hypertables.map((h) => h.name))
+  const tableKey = (name: string, schema: string) => `${schema}.${name}`
+  const snapshotTableKeys = new Set(snapshot.tables.map((t) => tableKey(t.name, t.schema)))
+  const snapshotTableMap = new Map(snapshot.tables.map((t) => [tableKey(t.name, t.schema), t]))
+  const snapshotHypertableKeys = new Set(snapshot.hypertables.map((h) => tableKey(h.name, h.schema)))
 
   // 1. Resolve table renames: definition.renamedFrom matches a snapshot table
-  const tablesToRename: Array<{ oldName: string; newName: string }> = []
-  const renamedOldNames = new Set<string>()
-  const renamedNewNames = new Set<string>()
+  const tablesToRename: Array<{ oldName: string; newName: string; schema: string }> = []
+  const renamedOldKeys = new Set<string>()
+  const renamedNewKeys = new Set<string>()
 
   for (const def of tableDefs) {
-    if (def.renamedFrom && snapshotTables.has(def.renamedFrom) && !snapshotTables.has(def.name)) {
-      tablesToRename.push({ oldName: def.renamedFrom, newName: def.name })
-      renamedOldNames.add(def.renamedFrom)
-      renamedNewNames.add(def.name)
+    if (def.renamedFrom && snapshotTableKeys.has(tableKey(def.renamedFrom, def.schema)) && !snapshotTableKeys.has(tableKey(def.name, def.schema))) {
+      tablesToRename.push({ oldName: def.renamedFrom, newName: def.name, schema: def.schema })
+      renamedOldKeys.add(tableKey(def.renamedFrom, def.schema))
+      renamedNewKeys.add(tableKey(def.name, def.schema))
     }
   }
 
-  const definedTables = new Set(tableDefs.map((d) => d.name))
+  const definedTableKeys = new Set(tableDefs.map((d) => tableKey(d.name, d.schema)))
 
-  const tablesToCreate = tableDefs
-    .filter((d) => !snapshotTables.has(d.name) && !renamedNewNames.has(d.name))
-    .map((d) => d.name)
+  const tablesToCreate: TableRef[] = tableDefs
+    .filter((d) => !snapshotTableKeys.has(tableKey(d.name, d.schema)) && !renamedNewKeys.has(tableKey(d.name, d.schema)))
+    .map((d) => ({ name: d.name, schema: d.schema }))
 
-  const tablesToDrop = snapshot.tables
-    .filter((t) => !definedTables.has(t.name) && !t.name.startsWith("_") && !renamedOldNames.has(t.name))
-    .map((t) => t.name)
+  const tablesToDrop: TableRef[] = snapshot.tables
+    .filter((t) => !definedTableKeys.has(tableKey(t.name, t.schema)) && !t.name.startsWith("_") && !renamedOldKeys.has(tableKey(t.name, t.schema)))
+    .map((t) => ({ name: t.name, schema: t.schema }))
 
   // 2. Column diffing — also handles renamed tables by mapping old→new
-  const columnsToAdd: Array<{ table: string; column: string; dataType: string; isNotNull: boolean; defaultValue: unknown }> = []
-  const columnsToRemove: Array<{ table: string; column: string }> = []
-  const columnsToAlter: Array<{ table: string; column: string; oldType: string; newType: string }> = []
-  const columnsToRename: Array<{ table: string; oldColumn: string; newColumn: string }> = []
+  const columnsToAdd: Array<{ table: string; schema: string; column: string; dataType: string; isNotNull: boolean; defaultValue: unknown }> = []
+  const columnsToRemove: Array<{ table: string; schema: string; column: string }> = []
+  const columnsToAlter: Array<{ table: string; schema: string; column: string; oldType: string; newType: string }> = []
+  const columnsToRename: Array<{ table: string; schema: string; oldColumn: string; newColumn: string }> = []
 
-  // Build a map from old table name → new table name for renamed tables
-  const oldToNewTable = new Map(tablesToRename.map((r) => [r.oldName, r.newName]))
+  // Build a map from old table key → new table name for renamed tables
+  const oldKeyToNewName = new Map(tablesToRename.map((r) => [tableKey(r.oldName, r.schema), r.newName]))
 
   for (const def of tableDefs) {
     // For renamed tables, look up the snapshot entry by old name
-    const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
-    const existing = snapshot.tables.find((t) => t.name === snapshotName)
+    const snapshotName = [...oldKeyToNewName.entries()].find(([, newName]) => newName === def.name)?.[0]
+    const existingKey = snapshotName ?? tableKey(def.name, def.schema)
+    const existing = snapshotTableMap.get(existingKey)
     if (!existing) continue
 
     const existingCols = new Map(existing.columns.map((c) => [c.name, c]))
@@ -160,7 +168,7 @@ export const diffSchema = (
 
     for (const col of definedCols) {
       if (col.renamedFrom && existingCols.has(col.renamedFrom) && !existingCols.has(col.name)) {
-        columnsToRename.push({ table: def.name, oldColumn: col.renamedFrom, newColumn: col.name })
+        columnsToRename.push({ table: def.name, schema: def.schema, oldColumn: col.renamedFrom, newColumn: col.name })
         colRenamedOld.add(col.renamedFrom)
         colRenamedNew.add(col.name)
       }
@@ -172,6 +180,7 @@ export const diffSchema = (
       if (!existingCol) {
         columnsToAdd.push({
           table: def.name,
+          schema: def.schema,
           column: col.name,
           dataType: col.sqlType,
           isNotNull: col.isNotNull,
@@ -180,6 +189,7 @@ export const diffSchema = (
       } else if (normalizeType(existingCol.dataType) !== normalizeType(col.sqlType)) {
         columnsToAlter.push({
           table: def.name,
+          schema: def.schema,
           column: col.name,
           oldType: existingCol.dataType,
           newType: col.sqlType,
@@ -190,14 +200,14 @@ export const diffSchema = (
     for (const [colName] of existingCols) {
       if (colRenamedOld.has(colName)) continue
       if (!definedCols.find((c) => c.name === colName)) {
-        columnsToRemove.push({ table: def.name, column: colName })
+        columnsToRemove.push({ table: def.name, schema: def.schema, column: colName })
       }
     }
   }
 
-  const hypertablesToCreate = tableDefs
-    .filter((d): d is HypertableDefinition => d._tag === "Hypertable" && !snapshotHypertables.has(d.name))
-    .map((d) => d.name)
+  const hypertablesToCreate: TableRef[] = tableDefs
+    .filter((d): d is HypertableDefinition => d._tag === "Hypertable" && !snapshotHypertableKeys.has(tableKey(d.name, d.schema)))
+    .map((d) => ({ name: d.name, schema: d.schema }))
 
   const snapshotEnumNames = new Set((snapshot.enums ?? []).map((e) => e.name))
   const enumsToCreate = enumDefs.filter((e) => !snapshotEnumNames.has(e.name))
@@ -234,21 +244,23 @@ export const diffSchema = (
     }
   }
 
-  const snapshotCaggNames = new Set(snapshot.continuousAggregates.map((c) => c.viewName))
-  const caggsToCreate = caggDefs.filter((c) => !snapshotCaggNames.has(c.viewName))
-  const caggsToDrop = snapshot.continuousAggregates
-    .filter((c) => !caggDefs.find((d) => d.viewName === c.viewName))
-    .map((c) => c.viewName)
+  const caggKey = (viewName: string, schema: string) => `${schema}.${viewName}`
+  const snapshotCaggKeys = new Set(snapshot.continuousAggregates.map((c) => caggKey(c.viewName, c.viewSchema ?? "public")))
+  const caggsToCreate = caggDefs.filter((c) => !snapshotCaggKeys.has(caggKey(c.viewName, c.schema)))
+  const caggsToDrop: TableRef[] = snapshot.continuousAggregates
+    .filter((c) => !caggDefs.find((d) => caggKey(d.viewName, d.schema) === caggKey(c.viewName, c.viewSchema ?? "public")))
+    .map((c) => ({ name: c.viewName, schema: c.viewSchema ?? "public" }))
 
   // Column NOT NULL and DEFAULT change detection
-  const columnsToSetNotNull: Array<{ table: string; column: string }> = []
-  const columnsToDropNotNull: Array<{ table: string; column: string }> = []
-  const columnsToSetDefault: Array<{ table: string; column: string; defaultValue: unknown }> = []
-  const columnsToDropDefault: Array<{ table: string; column: string }> = []
+  const columnsToSetNotNull: Array<{ table: string; schema: string; column: string }> = []
+  const columnsToDropNotNull: Array<{ table: string; schema: string; column: string }> = []
+  const columnsToSetDefault: Array<{ table: string; schema: string; column: string; defaultValue: unknown }> = []
+  const columnsToDropDefault: Array<{ table: string; schema: string; column: string }> = []
 
   for (const def of tableDefs) {
-    const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
-    const existing = snapshot.tables.find((t) => t.name === snapshotName)
+    const snapshotName = [...oldKeyToNewName.entries()].find(([, newName]) => newName === def.name)?.[0]
+    const existingKey = snapshotName ?? tableKey(def.name, def.schema)
+    const existing = snapshotTableMap.get(existingKey)
     if (!existing) continue
 
     const existingCols = new Map(existing.columns.map((c) => [c.name, c]))
@@ -260,30 +272,30 @@ export const diffSchema = (
 
       // NOT NULL changes
       if (col.isNotNull && existingCol.isNullable) {
-        columnsToSetNotNull.push({ table: def.name, column: col.name })
+        columnsToSetNotNull.push({ table: def.name, schema: def.schema, column: col.name })
       } else if (!col.isNotNull && !existingCol.isNullable && !col.isPrimaryKey) {
-        columnsToDropNotNull.push({ table: def.name, column: col.name })
+        columnsToDropNotNull.push({ table: def.name, schema: def.schema, column: col.name })
       }
 
       // DEFAULT changes
       const defHasDefault = col.defaultValue !== undefined
       const existingHasDefault = existingCol.defaultValue !== null
       if (defHasDefault && !existingHasDefault) {
-        columnsToSetDefault.push({ table: def.name, column: col.name, defaultValue: col.defaultValue })
+        columnsToSetDefault.push({ table: def.name, schema: def.schema, column: col.name, defaultValue: col.defaultValue })
       } else if (!defHasDefault && existingHasDefault) {
-        columnsToDropDefault.push({ table: def.name, column: col.name })
+        columnsToDropDefault.push({ table: def.name, schema: def.schema, column: col.name })
       } else if (defHasDefault && existingHasDefault) {
         const defStr = toSqlValue(col.defaultValue)
         if (defStr !== existingCol.defaultValue) {
-          columnsToSetDefault.push({ table: def.name, column: col.name, defaultValue: col.defaultValue })
+          columnsToSetDefault.push({ table: def.name, schema: def.schema, column: col.name, defaultValue: col.defaultValue })
         }
       }
     }
   }
 
   // Index diffing for existing tables
-  const indexesToCreate: Array<{ table: string; index: import("../schema/types.js").IndexDef }> = []
-  const indexesToDrop: Array<{ table: string; indexName: string }> = []
+  const indexesToCreate: Array<{ table: string; schema: string; index: import("../schema/types.js").IndexDef }> = []
+  const indexesToDrop: Array<{ table: string; schema: string; indexName: string }> = []
 
   const normalizeSnapshotCol = (c: string | IndexSnapshotColumn): string => {
     if (typeof c === "string") return c
@@ -302,9 +314,10 @@ export const diffSchema = (
   }
 
   for (const def of tableDefs) {
-    if (tablesToCreate.includes(def.name)) continue // skip new tables, indexes handled in CREATE TABLE
-    const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
-    const existing = snapshot.tables.find((t) => t.name === snapshotName)
+    if (tablesToCreate.some((t) => t.name === def.name && t.schema === def.schema)) continue // skip new tables, indexes handled in CREATE TABLE
+    const snapshotName = [...oldKeyToNewName.entries()].find(([, newName]) => newName === def.name)?.[0]
+    const existingKey = snapshotName ?? tableKey(def.name, def.schema)
+    const existing = snapshotTableMap.get(existingKey)
     if (!existing) continue
 
     const existingIndexes = new Map(existing.indexes.map((i) => [i.name, i]))
@@ -313,7 +326,7 @@ export const diffSchema = (
     // New indexes
     for (const [name, idx] of definedIndexes) {
       if (!existingIndexes.has(name)) {
-        indexesToCreate.push({ table: def.name, index: idx })
+        indexesToCreate.push({ table: def.name, schema: def.schema, index: idx })
       } else {
         // Check if index changed (different columns, type, or ordering)
         const existingIdx = existingIndexes.get(name)!
@@ -324,8 +337,8 @@ export const diffSchema = (
           idx.unique !== existingIdx.isUnique ||
           JSON.stringify(defCols) !== JSON.stringify(existCols)
         ) {
-          indexesToDrop.push({ table: def.name, indexName: name })
-          indexesToCreate.push({ table: def.name, index: idx })
+          indexesToDrop.push({ table: def.name, schema: def.schema, indexName: name })
+          indexesToCreate.push({ table: def.name, schema: def.schema, index: idx })
         }
       }
     }
@@ -333,19 +346,20 @@ export const diffSchema = (
     // Removed indexes
     for (const [name] of existingIndexes) {
       if (!definedIndexes.has(name)) {
-        indexesToDrop.push({ table: def.name, indexName: name })
+        indexesToDrop.push({ table: def.name, schema: def.schema, indexName: name })
       }
     }
   }
 
   // Constraint diffing for existing tables
-  const constraintsToAdd: Array<{ table: string; constraint: ConstraintDef }> = []
-  const constraintsToDrop: Array<{ table: string; constraintName: string }> = []
+  const constraintsToAdd: Array<{ table: string; schema: string; constraint: ConstraintDef }> = []
+  const constraintsToDrop: Array<{ table: string; schema: string; constraintName: string }> = []
 
   for (const def of tableDefs) {
-    if (tablesToCreate.includes(def.name)) continue
-    const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
-    const existing = snapshot.tables.find((t) => t.name === snapshotName)
+    if (tablesToCreate.some((t) => t.name === def.name && t.schema === def.schema)) continue
+    const snapshotName = [...oldKeyToNewName.entries()].find(([, newName]) => newName === def.name)?.[0]
+    const existingKey = snapshotName ?? tableKey(def.name, def.schema)
+    const existing = snapshotTableMap.get(existingKey)
     if (!existing || !existing.constraints) continue
 
     const existingConstraints = new Map(existing.constraints.map((c) => [c.name, c]))
@@ -353,25 +367,26 @@ export const diffSchema = (
 
     for (const [name, constraint] of definedConstraints) {
       if (!existingConstraints.has(name)) {
-        constraintsToAdd.push({ table: def.name, constraint })
+        constraintsToAdd.push({ table: def.name, schema: def.schema, constraint })
       }
     }
 
     for (const [name] of existingConstraints) {
       if (!definedConstraints.has(name)) {
-        constraintsToDrop.push({ table: def.name, constraintName: name })
+        constraintsToDrop.push({ table: def.name, schema: def.schema, constraintName: name })
       }
     }
   }
 
   // Trigger diffing for existing tables
-  const triggersToCreate: Array<{ table: string; trigger: import("../schema/types.js").TriggerDef }> = []
-  const triggersToDrop: Array<{ table: string; triggerName: string }> = []
+  const triggersToCreate: Array<{ table: string; schema: string; trigger: import("../schema/types.js").TriggerDef }> = []
+  const triggersToDrop: Array<{ table: string; schema: string; triggerName: string }> = []
 
   for (const def of tableDefs) {
-    if (tablesToCreate.includes(def.name)) continue
-    const snapshotName = [...oldToNewTable.entries()].find(([, newName]) => newName === def.name)?.[0] ?? def.name
-    const existing = snapshot.tables.find((t) => t.name === snapshotName)
+    if (tablesToCreate.some((t) => t.name === def.name && t.schema === def.schema)) continue
+    const snapshotName = [...oldKeyToNewName.entries()].find(([, newName]) => newName === def.name)?.[0]
+    const existingKey = snapshotName ?? tableKey(def.name, def.schema)
+    const existing = snapshotTableMap.get(existingKey)
     if (!existing || !existing.triggers) continue
 
     const existingTriggers = new Map(existing.triggers.map((t) => [t.name, t]))
@@ -379,13 +394,13 @@ export const diffSchema = (
 
     for (const [name, trg] of definedTriggers) {
       if (!existingTriggers.has(name)) {
-        triggersToCreate.push({ table: def.name, trigger: trg })
+        triggersToCreate.push({ table: def.name, schema: def.schema, trigger: trg })
       }
     }
 
     for (const [name] of existingTriggers) {
       if (!definedTriggers.has(name)) {
-        triggersToDrop.push({ table: def.name, triggerName: name })
+        triggersToDrop.push({ table: def.name, schema: def.schema, triggerName: name })
       }
     }
   }
@@ -429,13 +444,15 @@ export const diffSchema = (
   }
 
   // RLS policy diffing on existing tables
-  const rlsToEnable: string[] = []
-  const rlsToDisable: string[] = []
-  const rlsPoliciesToCreate: Array<{ table: string; policy: RlsPolicyDef }> = []
-  const rlsPoliciesToDrop: Array<{ table: string; policyName: string }> = []
-  const rlsPoliciesToAlter: Array<{ table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string> }> = []
+  const rlsToEnable: TableRef[] = []
+  const rlsToDisable: TableRef[] = []
+  const rlsPoliciesToCreate: Array<{ table: string; schema: string; policy: RlsPolicyDef }> = []
+  const rlsPoliciesToDrop: Array<{ table: string; schema: string; policyName: string }> = []
+  const rlsPoliciesToAlter: Array<{ table: string; schema: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string> }> = []
 
   const snapshotRlsPolicies = snapshot.rlsPolicies ?? []
+  // RlsPolicySnapshot doesn't carry schema — index by table name alone
+  // and use table-level schema from definitions for output
   const snapshotRlsByTable = new Map<string, typeof snapshotRlsPolicies[number][]>()
   for (const p of snapshotRlsPolicies) {
     if (!snapshotRlsByTable.has(p.tableName)) snapshotRlsByTable.set(p.tableName, [])
@@ -443,7 +460,7 @@ export const diffSchema = (
   }
 
   for (const def of tableDefs) {
-    if (tablesToCreate.includes(def.name)) continue // new tables handled in CREATE
+    if (tablesToCreate.some((t) => t.name === def.name && t.schema === def.schema)) continue // new tables handled in CREATE
     const existingPolicies = snapshotRlsByTable.get(def.name) ?? []
     const existingPolicyMap = new Map(existingPolicies.map((p) => [p.policyName, p]))
     const definedPolicies = def.rlsPolicies ?? []
@@ -451,19 +468,19 @@ export const diffSchema = (
     // Check if RLS needs to be enabled/disabled
     const hasSnapshotPolicies = existingPolicies.length > 0
     if (def.enableRls && !hasSnapshotPolicies && definedPolicies.length > 0) {
-      rlsToEnable.push(def.name)
+      rlsToEnable.push({ name: def.name, schema: def.schema })
     }
     if (!def.enableRls && !definedPolicies.length && hasSnapshotPolicies) {
-      rlsToDisable.push(def.name)
+      rlsToDisable.push({ name: def.name, schema: def.schema })
     }
 
     for (const policy of definedPolicies) {
       const existing = existingPolicyMap.get(policy.name)
       if (!existing) {
-        rlsPoliciesToCreate.push({ table: def.name, policy })
+        rlsPoliciesToCreate.push({ table: def.name, schema: def.schema, policy })
       } else {
         // Check for alterations
-        const alteration: { table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string> } = { table: def.name, policyName: policy.name }
+        const alteration: { table: string; schema: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string> } = { table: def.name, schema: def.schema, policyName: policy.name }
         let hasChanges = false
         if (policy.using && policy.using !== existing.using) {
           alteration.using = policy.using
@@ -487,7 +504,7 @@ export const diffSchema = (
     const definedPolicyNames = new Set(definedPolicies.map((p) => p.name))
     for (const [name] of existingPolicyMap) {
       if (!definedPolicyNames.has(name)) {
-        rlsPoliciesToDrop.push({ table: def.name, policyName: name })
+        rlsPoliciesToDrop.push({ table: def.name, schema: def.schema, policyName: name })
       }
     }
   }
@@ -497,61 +514,61 @@ export const diffSchema = (
   const snapshotHtPolicies = snapshot.hypertablePolicies ?? []
   const snapshotHtPolicyMap = new Map(snapshotHtPolicies.map((p) => [p.hypertableName, p]))
 
-  const compressionPoliciesToAdd: Array<{ table: string; after: string }> = []
-  const compressionPoliciesToRemove: string[] = []
-  const retentionPoliciesToAdd: Array<{ table: string; dropAfter: string }> = []
-  const retentionPoliciesToRemove: string[] = []
-  const reorderPoliciesToAdd: Array<{ table: string; indexName: string }> = []
-  const reorderPoliciesToRemove: string[] = []
-  const chunkIntervalsToAlter: Array<{ table: string; interval: string }> = []
-  const compressionSettingsToAlter: Array<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: string }> = []
-  const tieringToAdd: Array<{ table: string; tierAfter: string }> = []
-  const tieringToRemove: string[] = []
-  const compressionPoliciesToAlter: Array<{ table: string; after: string }> = []
-  const retentionPoliciesToAlter: Array<{ table: string; dropAfter: string }> = []
+  const compressionPoliciesToAdd: Array<{ table: string; schema: string; after: string }> = []
+  const compressionPoliciesToRemove: TableRef[] = []
+  const retentionPoliciesToAdd: Array<{ table: string; schema: string; dropAfter: string }> = []
+  const retentionPoliciesToRemove: TableRef[] = []
+  const reorderPoliciesToAdd: Array<{ table: string; schema: string; indexName: string }> = []
+  const reorderPoliciesToRemove: TableRef[] = []
+  const chunkIntervalsToAlter: Array<{ table: string; schema: string; interval: string }> = []
+  const compressionSettingsToAlter: Array<{ table: string; schema: string; segmentby?: ReadonlyArray<string>; orderby?: string }> = []
+  const tieringToAdd: Array<{ table: string; schema: string; tierAfter: string }> = []
+  const tieringToRemove: TableRef[] = []
+  const compressionPoliciesToAlter: Array<{ table: string; schema: string; after: string }> = []
+  const retentionPoliciesToAlter: Array<{ table: string; schema: string; dropAfter: string }> = []
 
   // CAGG migrations — populate when migrate flag is set and CAGG exists in snapshot
-  const caggMigrations: string[] = []
+  const caggMigrations: TableRef[] = []
   for (const cagg of caggDefs) {
-    if (cagg.migrate && snapshotCaggNames.has(cagg.viewName)) {
-      caggMigrations.push(cagg.viewName)
+    if (cagg.migrate && snapshotCaggKeys.has(caggKey(cagg.viewName, cagg.schema))) {
+      caggMigrations.push({ name: cagg.viewName, schema: cagg.schema })
     }
   }
 
   for (const htDef of htDefs) {
-    if (hypertablesToCreate.includes(htDef.name)) continue // new hypertables handled in creation
+    if (hypertablesToCreate.some((t) => t.name === htDef.name && t.schema === htDef.schema)) continue // new hypertables handled in creation
     const existingPolicy = snapshotHtPolicyMap.get(htDef.name)
     const config = htDef.hypertableConfig
 
     // Compression policy
     if (config.compression?.after && !existingPolicy?.compressionPolicy) {
-      compressionPoliciesToAdd.push({ table: htDef.name, after: config.compression.after })
+      compressionPoliciesToAdd.push({ table: htDef.name, schema: htDef.schema, after: config.compression.after })
     } else if (!config.compression?.after && existingPolicy?.compressionPolicy) {
-      compressionPoliciesToRemove.push(htDef.name)
+      compressionPoliciesToRemove.push({ name: htDef.name, schema: htDef.schema })
     } else if (config.compression?.after && existingPolicy?.compressionPolicy && config.compression.after !== existingPolicy.compressionPolicy.after) {
-      compressionPoliciesToAlter.push({ table: htDef.name, after: config.compression.after })
+      compressionPoliciesToAlter.push({ table: htDef.name, schema: htDef.schema, after: config.compression.after })
     }
 
     // Retention policy
     if (config.retention && !existingPolicy?.retentionPolicy) {
-      retentionPoliciesToAdd.push({ table: htDef.name, dropAfter: config.retention.dropAfter })
+      retentionPoliciesToAdd.push({ table: htDef.name, schema: htDef.schema, dropAfter: config.retention.dropAfter })
     } else if (!config.retention && existingPolicy?.retentionPolicy) {
-      retentionPoliciesToRemove.push(htDef.name)
+      retentionPoliciesToRemove.push({ name: htDef.name, schema: htDef.schema })
     } else if (config.retention && existingPolicy?.retentionPolicy && config.retention.dropAfter !== existingPolicy.retentionPolicy.dropAfter) {
-      retentionPoliciesToAlter.push({ table: htDef.name, dropAfter: config.retention.dropAfter })
+      retentionPoliciesToAlter.push({ table: htDef.name, schema: htDef.schema, dropAfter: config.retention.dropAfter })
     }
 
     // Reorder policy
     if (config.reorderPolicy && !existingPolicy?.reorderPolicy) {
-      reorderPoliciesToAdd.push({ table: htDef.name, indexName: config.reorderPolicy.indexName })
+      reorderPoliciesToAdd.push({ table: htDef.name, schema: htDef.schema, indexName: config.reorderPolicy.indexName })
     } else if (!config.reorderPolicy && existingPolicy?.reorderPolicy) {
-      reorderPoliciesToRemove.push(htDef.name)
+      reorderPoliciesToRemove.push({ name: htDef.name, schema: htDef.schema })
     }
 
     // Chunk interval changes (5A)
     const existingHt = snapshot.hypertables.find((h) => h.name === htDef.name)
     if (existingHt && config.chunkInterval && existingHt.chunkInterval && config.chunkInterval !== existingHt.chunkInterval) {
-      chunkIntervalsToAlter.push({ table: htDef.name, interval: config.chunkInterval })
+      chunkIntervalsToAlter.push({ table: htDef.name, schema: htDef.schema, interval: config.chunkInterval })
     }
 
     // Compression settings changes (5B)
@@ -569,6 +586,7 @@ export const diffSchema = (
       if (JSON.stringify([...defSegmentby]) !== JSON.stringify([...snapSegmentby]) || defOrderby !== snapOrderby) {
         compressionSettingsToAlter.push({
           table: htDef.name,
+          schema: htDef.schema,
           segmentby: defSegmentby.length > 0 ? defSegmentby : undefined,
           orderby: defOrderby || undefined,
         })
@@ -578,13 +596,13 @@ export const diffSchema = (
 
   // Tiering detection for existing hypertables
   for (const htDef of htDefs) {
-    if (hypertablesToCreate.includes(htDef.name)) continue
+    if (hypertablesToCreate.some((t) => t.name === htDef.name && t.schema === htDef.schema)) continue
     const config = htDef.hypertableConfig
     const existingPolicy = snapshotHtPolicyMap.get(htDef.name)
     if (config.tiering?.tierAfter && !existingPolicy?.tierAfter) {
-      tieringToAdd.push({ table: htDef.name, tierAfter: config.tiering.tierAfter })
+      tieringToAdd.push({ table: htDef.name, schema: htDef.schema, tierAfter: config.tiering.tierAfter })
     } else if (!config.tiering?.tierAfter && existingPolicy?.tierAfter) {
-      tieringToRemove.push(htDef.name)
+      tieringToRemove.push({ name: htDef.name, schema: htDef.schema })
     }
   }
 
@@ -598,16 +616,16 @@ export const diffSchema = (
   const snapshotCaggPolicies = snapshot.caggPolicies ?? []
   const snapshotCaggPolicyMap = new Map(snapshotCaggPolicies.map((p) => [p.viewName, p]))
 
-  const caggRefreshPoliciesToAdd: Array<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }> = []
-  const caggRefreshPoliciesToRemove: string[] = []
-  const caggRefreshPoliciesToAlter: Array<{ viewName: string; startOffset: string; endOffset: string; scheduleInterval: string }> = []
-  const caggRetentionPoliciesToAdd: Array<{ viewName: string; dropAfter: string }> = []
-  const caggRetentionPoliciesToRemove: string[] = []
-  const caggCompressionToEnable: string[] = []
-  const caggCompressionToDisable: string[] = []
+  const caggRefreshPoliciesToAdd: Array<{ viewName: string; schema: string; startOffset: string; endOffset: string; scheduleInterval: string }> = []
+  const caggRefreshPoliciesToRemove: TableRef[] = []
+  const caggRefreshPoliciesToAlter: Array<{ viewName: string; schema: string; startOffset: string; endOffset: string; scheduleInterval: string }> = []
+  const caggRetentionPoliciesToAdd: Array<{ viewName: string; schema: string; dropAfter: string }> = []
+  const caggRetentionPoliciesToRemove: TableRef[] = []
+  const caggCompressionToEnable: TableRef[] = []
+  const caggCompressionToDisable: TableRef[] = []
 
   for (const cagg of caggDefs) {
-    if (caggsToCreate.some((c) => c.viewName === cagg.viewName)) continue // new CAGGs handled in creation
+    if (caggsToCreate.some((c) => caggKey(c.viewName, c.schema) === caggKey(cagg.viewName, cagg.schema))) continue // new CAGGs handled in creation
     const existingPolicy = snapshotCaggPolicyMap.get(cagg.viewName)
     const defPolicies = cagg.refreshPolicies ?? (cagg.refreshPolicy ? [cagg.refreshPolicy] : [])
 
@@ -615,32 +633,32 @@ export const diffSchema = (
     const existingRefresh = existingPolicy?.refreshPolicies ?? []
     if (defPolicies.length > 0 && existingRefresh.length === 0) {
       for (const p of defPolicies) {
-        caggRefreshPoliciesToAdd.push({ viewName: cagg.viewName, ...p })
+        caggRefreshPoliciesToAdd.push({ viewName: cagg.viewName, schema: cagg.schema, ...p })
       }
     } else if (defPolicies.length === 0 && existingRefresh.length > 0) {
-      caggRefreshPoliciesToRemove.push(cagg.viewName)
+      caggRefreshPoliciesToRemove.push({ name: cagg.viewName, schema: cagg.schema })
     } else if (defPolicies.length === 1 && existingRefresh.length === 1) {
       // Detect changed intervals on single refresh policy
       const defP = defPolicies[0]!
       const exP = existingRefresh[0]!
       if (defP.startOffset !== exP.startOffset || defP.endOffset !== exP.endOffset || defP.scheduleInterval !== exP.scheduleInterval) {
-        caggRefreshPoliciesToAlter.push({ viewName: cagg.viewName, ...defP })
+        caggRefreshPoliciesToAlter.push({ viewName: cagg.viewName, schema: cagg.schema, ...defP })
       }
     }
 
     // Retention policy
     if (cagg.retentionPolicy && !existingPolicy?.retentionPolicy) {
-      caggRetentionPoliciesToAdd.push({ viewName: cagg.viewName, dropAfter: cagg.retentionPolicy.dropAfter })
+      caggRetentionPoliciesToAdd.push({ viewName: cagg.viewName, schema: cagg.schema, dropAfter: cagg.retentionPolicy.dropAfter })
     } else if (!cagg.retentionPolicy && existingPolicy?.retentionPolicy) {
-      caggRetentionPoliciesToRemove.push(cagg.viewName)
+      caggRetentionPoliciesToRemove.push({ name: cagg.viewName, schema: cagg.schema })
     }
 
     // Compression
     const existingCaggSnap = snapshot.continuousAggregates.find((c) => c.viewName === cagg.viewName)
     if (cagg.compress && !existingCaggSnap?.compressionEnabled) {
-      caggCompressionToEnable.push(cagg.viewName)
+      caggCompressionToEnable.push({ name: cagg.viewName, schema: cagg.schema })
     } else if (!cagg.compress && existingCaggSnap?.compressionEnabled) {
-      caggCompressionToDisable.push(cagg.viewName)
+      caggCompressionToDisable.push({ name: cagg.viewName, schema: cagg.schema })
     }
   }
 
@@ -782,12 +800,12 @@ export const diffSchema = (
   }
 
   // Hypercore diffing
-  const hypercoreToEnable: string[] = []
-  const hypercoreToDisable: string[] = []
-  const hypercoreSettingsToAlter: Array<{ table: string; segmentby?: ReadonlyArray<string>; orderby?: ReadonlyArray<string> }> = []
+  const hypercoreToEnable: TableRef[] = []
+  const hypercoreToDisable: TableRef[] = []
+  const hypercoreSettingsToAlter: Array<{ table: string; schema: string; segmentby?: ReadonlyArray<string>; orderby?: ReadonlyArray<string> }> = []
 
   for (const htDef of htDefs) {
-    if (hypertablesToCreate.includes(htDef.name)) continue
+    if (hypertablesToCreate.some((t) => t.name === htDef.name && t.schema === htDef.schema)) continue
     const existingHt = snapshot.hypertables.find((h) => h.name === htDef.name)
     if (!existingHt) continue
 
@@ -795,9 +813,9 @@ export const diffSchema = (
     const isCurrentlyHypercore = existingHt.accessMethod === "hypercore"
 
     if (defHypercore?.enabled && !isCurrentlyHypercore) {
-      hypercoreToEnable.push(htDef.name)
+      hypercoreToEnable.push({ name: htDef.name, schema: htDef.schema })
     } else if (!defHypercore?.enabled && isCurrentlyHypercore) {
-      hypercoreToDisable.push(htDef.name)
+      hypercoreToDisable.push({ name: htDef.name, schema: htDef.schema })
     } else if (defHypercore?.enabled && isCurrentlyHypercore) {
       // Check settings changes
       const defSegmentby = defHypercore.segmentby ?? []
@@ -813,6 +831,7 @@ export const diffSchema = (
           JSON.stringify(defOrderby) !== JSON.stringify([...snapOrderby])) {
         hypercoreSettingsToAlter.push({
           table: htDef.name,
+          schema: htDef.schema,
           segmentby: defSegmentby.length > 0 ? defSegmentby : undefined,
           orderby: defOrderby.length > 0 ? defOrderby : undefined,
         })
@@ -1106,7 +1125,7 @@ const generateIndexSql = (tableName: string, idx: IndexDef, schema?: string): st
   return sql + ";"
 }
 
-const generateTriggerSql = (tableName: string, trg: import("../schema/types.js").TriggerDef): string => {
+const generateTriggerSql = (tableName: string, trg: import("../schema/types.js").TriggerDef, schema?: string): string => {
   const eventParts = trg.events.map((e, i) => {
     if (e === "UPDATE" && trg.columns && trg.columns.length > 0 && i === trg.events.indexOf("UPDATE")) {
       return `UPDATE OF ${trg.columns.map(quoteIdentifier).join(", ")}`
@@ -1114,15 +1133,15 @@ const generateTriggerSql = (tableName: string, trg: import("../schema/types.js")
     return e
   })
 
-  let sql = `CREATE TRIGGER ${quoteIdentifier(trg.name)} ${trg.timing} ${eventParts.join(" OR ")} ON ${quoteIdentifier(tableName)}`
+  let sql = `CREATE TRIGGER ${quoteIdentifier(trg.name)} ${trg.timing} ${eventParts.join(" OR ")} ON ${qualifiedName(tableName, schema)}`
   sql += ` FOR EACH ${trg.forEach}`
   if (trg.when) sql += ` WHEN (${trg.when})`
   sql += ` EXECUTE FUNCTION ${trg.functionName}();`
   return sql
 }
 
-const generateRlsPolicySql = (tableName: string, policy: RlsPolicyDef): string => {
-  let sql = `CREATE POLICY ${quoteIdentifier(policy.name)} ON ${quoteIdentifier(tableName)}`
+const generateRlsPolicySql = (tableName: string, policy: RlsPolicyDef, schema?: string): string => {
+  let sql = `CREATE POLICY ${quoteIdentifier(policy.name)} ON ${qualifiedName(tableName, schema)}`
   if (policy.command) sql += ` FOR ${policy.command}`
   if (policy.roles && policy.roles.length > 0) {
     sql += ` TO ${policy.roles.join(", ")}`
@@ -1301,18 +1320,32 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     down.push(`-- Cannot auto-generate recreation of dropped trigger function ${quoteIdentifier(trigFnName)}`)
   }
 
+  // CREATE SCHEMA IF NOT EXISTS for non-public schemas
+  const allSchemas = new Set<string>()
+  for (const def of definitions) {
+    if ('schema' in def && typeof (def as any).schema === 'string' && (def as any).schema !== 'public') {
+      allSchemas.add((def as any).schema)
+    }
+  }
+  for (const s of allSchemas) {
+    up.push(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(s)};`)
+  }
+
   // Table renames BEFORE creates (so new name is available for column ops)
   for (const rename of diff.tablesToRename) {
-    up.push(`ALTER TABLE ${quoteIdentifier(rename.oldName)} RENAME TO ${quoteIdentifier(rename.newName)};`)
-    down.push(`ALTER TABLE ${quoteIdentifier(rename.newName)} RENAME TO ${quoteIdentifier(rename.oldName)};`)
+    const qnOld = qualifiedName(rename.oldName, rename.schema)
+    up.push(`ALTER TABLE ${qnOld} RENAME TO ${quoteIdentifier(rename.newName)};`)
+    const qnNew = qualifiedName(rename.newName, rename.schema)
+    down.push(`ALTER TABLE ${qnNew} RENAME TO ${quoteIdentifier(rename.oldName)};`)
   }
 
   const tableDefs = definitions.filter((d): d is TableDefinition | HypertableDefinition => d._tag === "Table" || d._tag === "Hypertable")
 
-  for (const tableName of diff.tablesToCreate) {
-    const def = tableDefs.find((d) => d.name === tableName)
+  for (const ref of diff.tablesToCreate) {
+    const def = tableDefs.find((d) => d.name === ref.name && d.schema === ref.schema)
     if (!def) continue
 
+    const qn = qualifiedName(ref.name, ref.schema)
     const cols = Object.values(def.columns) as ColumnDef[]
     const colDefs = cols.map(generateColumnSql)
 
@@ -1325,7 +1358,7 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     if (def.unlogged) createSql += " UNLOGGED"
     createSql += " TABLE"
     if (def.ifNotExists) createSql += " IF NOT EXISTS"
-    createSql += ` ${quoteIdentifier(tableName)} (\n  ${allDefs.join(",\n  ")}\n)`
+    createSql += ` ${qn} (\n  ${allDefs.join(",\n  ")}\n)`
 
     // Modern hypertable WITH syntax
     if (def._tag === "Hypertable") {
@@ -1338,43 +1371,45 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
 
     createSql += ";"
     up.push(createSql)
-    down.push(`DROP TABLE IF EXISTS ${quoteIdentifier(tableName)};`)
+    down.push(`DROP TABLE IF EXISTS ${qn};`)
 
     // Generate index creation statements
     for (const idx of def.indexes) {
-      up.push(generateIndexSql(tableName, idx))
+      up.push(generateIndexSql(ref.name, idx, ref.schema))
     }
 
     // Generate trigger creation statements
     for (const trg of def.triggers) {
-      up.push(generateTriggerSql(tableName, trg))
-      down.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.name)} ON ${quoteIdentifier(tableName)};`)
+      up.push(generateTriggerSql(ref.name, trg, ref.schema))
+      down.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.name)} ON ${qn};`)
     }
 
     // RLS (M2)
     if (def.enableRls) {
-      up.push(`ALTER TABLE ${quoteIdentifier(tableName)} ENABLE ROW LEVEL SECURITY;`)
-      down.push(`ALTER TABLE ${quoteIdentifier(tableName)} DISABLE ROW LEVEL SECURITY;`)
+      up.push(`ALTER TABLE ${qn} ENABLE ROW LEVEL SECURITY;`)
+      down.push(`ALTER TABLE ${qn} DISABLE ROW LEVEL SECURITY;`)
     }
     if (def.rlsPolicies) {
       for (const policy of def.rlsPolicies) {
-        up.push(generateRlsPolicySql(tableName, policy))
-        down.push(`DROP POLICY IF EXISTS ${quoteIdentifier(policy.name)} ON ${quoteIdentifier(tableName)};`)
+        up.push(generateRlsPolicySql(ref.name, policy, ref.schema))
+        down.push(`DROP POLICY IF EXISTS ${quoteIdentifier(policy.name)} ON ${qn};`)
       }
     }
   }
 
-  for (const tableName of diff.hypertablesToCreate) {
-    const def = tableDefs.find((d) => d.name === tableName) as HypertableDefinition | undefined
+  for (const htRef of diff.hypertablesToCreate) {
+    const def = tableDefs.find((d) => d.name === htRef.name && d.schema === htRef.schema) as HypertableDefinition | undefined
     if (!def) continue
 
     const config = def.hypertableConfig
+    const htQn = qualifiedName(htRef.name, htRef.schema)
+    const htLit = qualifiedNameLiteral(htRef.name, htRef.schema)
 
     // Modern syntax folds everything into CREATE TABLE WITH clause (already handled above)
     if (config.useModernSyntax) continue
 
     // Legacy syntax: create_hypertable()
-    const args = [`'${tableName}'`, `'${resolveColumnName(def, config.timeColumn)}'`]
+    const args = [`'${htLit}'`, `'${resolveColumnName(def, config.timeColumn)}'`]
     if (config.chunkInterval) {
       args.push(`chunk_time_interval => INTERVAL '${config.chunkInterval}'`)
     }
@@ -1388,13 +1423,13 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
 
     // Integer time column: set_integer_now_func
     if (config.integerNowFunc) {
-      up.push(`SELECT set_integer_now_func('${tableName}', '${config.integerNowFunc}');`)
+      up.push(`SELECT set_integer_now_func('${htLit}', '${config.integerNowFunc}');`)
     }
 
     // Space partitioning dimensions
     if (config.partitioning) {
       for (const part of config.partitioning) {
-        const dimArgs = [`'${tableName}'`, `'${part.column}'`]
+        const dimArgs = [`'${htLit}'`, `'${part.column}'`]
         if (part.numberOfPartitions) {
           dimArgs.push(String(part.numberOfPartitions))
         }
@@ -1423,31 +1458,31 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       if (compConfig.chunkTimeInterval) {
         compParts.push(`${prefix}_chunk_time_interval = '${compConfig.chunkTimeInterval}'`)
       }
-      up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (${compParts.join(", ")});`)
+      up.push(`ALTER TABLE ${htQn} SET (${compParts.join(", ")});`)
 
       if (compConfig.after) {
         const policyFn = useModern ? "add_columnstore_policy" : "add_compression_policy"
-        up.push(`SELECT ${policyFn}('${tableName}', INTERVAL '${compConfig.after}');`)
+        up.push(`SELECT ${policyFn}('${htLit}', INTERVAL '${compConfig.after}');`)
       }
     }
 
     // Retention policy
     if (config.retention) {
-      up.push(`SELECT add_retention_policy('${tableName}', INTERVAL '${config.retention.dropAfter}');`)
+      up.push(`SELECT add_retention_policy('${htLit}', INTERVAL '${config.retention.dropAfter}');`)
     }
 
     // Reorder policy (H5)
     if (config.reorderPolicy) {
-      up.push(`SELECT add_reorder_policy('${tableName}', '${config.reorderPolicy.indexName}');`)
-      down.push(`SELECT remove_reorder_policy('${tableName}');`)
+      up.push(`SELECT add_reorder_policy('${htLit}', '${config.reorderPolicy.indexName}');`)
+      down.push(`SELECT remove_reorder_policy('${htLit}');`)
     }
 
     // Chunk operations (M5)
     if (config.chunkOperations?.moveCompletedTo) {
-      up.push(`SELECT add_chunk_move_policy('${tableName}', '${config.chunkOperations.moveCompletedTo}');`)
+      up.push(`SELECT add_chunk_move_policy('${htLit}', '${config.chunkOperations.moveCompletedTo}');`)
     }
     if (config.enableChunkSkipping) {
-      up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (timescaledb.enable_chunk_skipping = true);`)
+      up.push(`ALTER TABLE ${htQn} SET (timescaledb.enable_chunk_skipping = true);`)
     }
 
     // Direct compress settings (v2.18+)
@@ -1466,15 +1501,15 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
         dcParts.push(`timescaledb.enable_direct_compress_copy_client_sorted = ${config.directCompress.copyClientSorted}`)
       }
       if (dcParts.length > 0) {
-        up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (${dcParts.join(", ")});`)
+        up.push(`ALTER TABLE ${htQn} SET (${dcParts.join(", ")});`)
       }
     }
 
     // Hypercore (H1) — set access method to columnar store
     if (config.hypercore?.enabled) {
-      let hypercoreSql = `ALTER TABLE ${quoteIdentifier(tableName)} SET ACCESS METHOD hypercore`
+      let hypercoreSql = `ALTER TABLE ${htQn} SET ACCESS METHOD hypercore`
       up.push(`${hypercoreSql};`)
-      down.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET ACCESS METHOD heap;`)
+      down.push(`ALTER TABLE ${htQn} SET ACCESS METHOD heap;`)
 
       // Hypercore-specific compression settings (segmentby, orderby)
       const hcParts: string[] = []
@@ -1490,60 +1525,69 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
         hcParts.push(`timescaledb.compress_orderby = '${orderParts.join(", ")}'`)
       }
       if (hcParts.length > 0) {
-        up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (${hcParts.join(", ")});`)
+        up.push(`ALTER TABLE ${htQn} SET (${hcParts.join(", ")});`)
       }
     }
   }
 
-  for (const tableName of diff.tablesToDrop) {
-    up.push(`DROP TABLE IF EXISTS ${quoteIdentifier(tableName)};`)
-    down.push(`-- Cannot auto-generate recreation of dropped table ${quoteIdentifier(tableName)}`)
+  for (const ref of diff.tablesToDrop) {
+    const qn = qualifiedName(ref.name, ref.schema)
+    up.push(`DROP TABLE IF EXISTS ${qn};`)
+    down.push(`-- Cannot auto-generate recreation of dropped table ${qn}`)
   }
 
   // Column renames BEFORE adds/alters/removes
   for (const rename of diff.columnsToRename) {
-    up.push(`ALTER TABLE ${quoteIdentifier(rename.table)} RENAME COLUMN ${quoteIdentifier(rename.oldColumn)} TO ${quoteIdentifier(rename.newColumn)};`)
-    down.push(`ALTER TABLE ${quoteIdentifier(rename.table)} RENAME COLUMN ${quoteIdentifier(rename.newColumn)} TO ${quoteIdentifier(rename.oldColumn)};`)
+    const tqn = qualifiedName(rename.table, rename.schema)
+    up.push(`ALTER TABLE ${tqn} RENAME COLUMN ${quoteIdentifier(rename.oldColumn)} TO ${quoteIdentifier(rename.newColumn)};`)
+    down.push(`ALTER TABLE ${tqn} RENAME COLUMN ${quoteIdentifier(rename.newColumn)} TO ${quoteIdentifier(rename.oldColumn)};`)
   }
 
   for (const col of diff.columnsToAdd) {
-    let sql = `ALTER TABLE ${quoteIdentifier(col.table)} ADD COLUMN ${quoteIdentifier(col.column)} ${col.dataType}`
+    const tqn = qualifiedName(col.table, col.schema)
+    let sql = `ALTER TABLE ${tqn} ADD COLUMN ${quoteIdentifier(col.column)} ${col.dataType}`
     if (col.isNotNull && col.defaultValue !== undefined) sql += ` NOT NULL DEFAULT ${toSqlValue(col.defaultValue)}`
     else if (col.isNotNull) sql += ` NOT NULL`
     up.push(`${sql};`)
-    down.push(`ALTER TABLE ${quoteIdentifier(col.table)} DROP COLUMN ${quoteIdentifier(col.column)};`)
+    down.push(`ALTER TABLE ${tqn} DROP COLUMN ${quoteIdentifier(col.column)};`)
   }
 
   for (const col of diff.columnsToRemove) {
-    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} DROP COLUMN ${quoteIdentifier(col.column)};`)
-    down.push(`-- Cannot auto-generate re-addition of column ${quoteIdentifier(col.column)} on ${quoteIdentifier(col.table)}`)
+    const tqn = qualifiedName(col.table, col.schema)
+    up.push(`ALTER TABLE ${tqn} DROP COLUMN ${quoteIdentifier(col.column)};`)
+    down.push(`-- Cannot auto-generate re-addition of column ${quoteIdentifier(col.column)} on ${tqn}`)
   }
 
   for (const col of diff.columnsToAlter) {
-    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.newType};`)
-    down.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.oldType};`)
+    const tqn = qualifiedName(col.table, col.schema)
+    up.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.newType};`)
+    down.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.oldType};`)
   }
 
   // Column NOT NULL changes
   for (const col of diff.columnsToSetNotNull) {
-    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} SET NOT NULL;`)
-    down.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} DROP NOT NULL;`)
+    const tqn = qualifiedName(col.table, col.schema)
+    up.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} SET NOT NULL;`)
+    down.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} DROP NOT NULL;`)
   }
 
   for (const col of diff.columnsToDropNotNull) {
-    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} DROP NOT NULL;`)
-    down.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} SET NOT NULL;`)
+    const tqn = qualifiedName(col.table, col.schema)
+    up.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} DROP NOT NULL;`)
+    down.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} SET NOT NULL;`)
   }
 
   // Column DEFAULT changes
   for (const col of diff.columnsToSetDefault) {
-    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} SET DEFAULT ${toSqlValue(col.defaultValue)};`)
-    down.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} DROP DEFAULT;`)
+    const tqn = qualifiedName(col.table, col.schema)
+    up.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} SET DEFAULT ${toSqlValue(col.defaultValue)};`)
+    down.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} DROP DEFAULT;`)
   }
 
   for (const col of diff.columnsToDropDefault) {
-    up.push(`ALTER TABLE ${quoteIdentifier(col.table)} ALTER COLUMN ${quoteIdentifier(col.column)} DROP DEFAULT;`)
-    down.push(`-- Cannot auto-generate re-addition of default for column ${quoteIdentifier(col.column)} on ${quoteIdentifier(col.table)}`)
+    const tqn = qualifiedName(col.table, col.schema)
+    up.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} DROP DEFAULT;`)
+    down.push(`-- Cannot auto-generate re-addition of default for column ${quoteIdentifier(col.column)} on ${tqn}`)
   }
 
   // Enum ALTER TYPE ADD VALUE (irreversible — PostgreSQL cannot remove enum values)
@@ -1561,19 +1605,21 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
   }
 
   for (const idx of diff.indexesToCreate) {
-    up.push(generateIndexSql(idx.table, idx.index))
+    up.push(generateIndexSql(idx.table, idx.index, idx.schema))
     down.push(`DROP INDEX IF EXISTS ${quoteIdentifier(idx.index.name)};`)
   }
 
   // Constraint changes on existing tables
   for (const con of diff.constraintsToDrop) {
-    up.push(`ALTER TABLE ${quoteIdentifier(con.table)} DROP CONSTRAINT ${quoteIdentifier(con.constraintName)};`)
+    const tqn = qualifiedName(con.table, con.schema)
+    up.push(`ALTER TABLE ${tqn} DROP CONSTRAINT ${quoteIdentifier(con.constraintName)};`)
     down.push(`-- Cannot auto-generate recreation of dropped constraint ${quoteIdentifier(con.constraintName)}`)
   }
 
   for (const con of diff.constraintsToAdd) {
-    up.push(`ALTER TABLE ${quoteIdentifier(con.table)} ADD ${generateConstraintSql(con.constraint)};`)
-    down.push(`ALTER TABLE ${quoteIdentifier(con.table)} DROP CONSTRAINT ${quoteIdentifier(con.constraint.name)};`)
+    const tqn = qualifiedName(con.table, con.schema)
+    up.push(`ALTER TABLE ${tqn} ADD ${generateConstraintSql(con.constraint)};`)
+    down.push(`ALTER TABLE ${tqn} DROP CONSTRAINT ${quoteIdentifier(con.constraint.name)};`)
   }
 
   // Function changes (after table creation, before triggers)
@@ -1719,13 +1765,15 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
 
   // Trigger changes on existing tables
   for (const trg of diff.triggersToDrop) {
-    up.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.triggerName)} ON ${quoteIdentifier(trg.table)};`)
-    down.push(`-- Cannot auto-generate recreation of dropped trigger ${quoteIdentifier(trg.triggerName)} on ${quoteIdentifier(trg.table)}`)
+    const tqn = qualifiedName(trg.table, trg.schema)
+    up.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.triggerName)} ON ${tqn};`)
+    down.push(`-- Cannot auto-generate recreation of dropped trigger ${quoteIdentifier(trg.triggerName)} on ${tqn}`)
   }
 
   for (const trg of diff.triggersToCreate) {
-    up.push(generateTriggerSql(trg.table, trg.trigger))
-    down.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.trigger.name)} ON ${quoteIdentifier(trg.table)};`)
+    const tqn = qualifiedName(trg.table, trg.schema)
+    up.push(generateTriggerSql(trg.table, trg.trigger, trg.schema))
+    down.push(`DROP TRIGGER IF EXISTS ${quoteIdentifier(trg.trigger.name)} ON ${tqn};`)
   }
 
   // View renames
@@ -1923,31 +1971,33 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     if (cagg.createGroupIndexes === false) withOpts.push("timescaledb.create_group_indexes = false")
     if (cagg.invalidateUsing === "wal") withOpts.push("timescaledb.invalidate_using = 'wal'")
 
-    let sql = `CREATE MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} WITH (${withOpts.join(", ")}) AS\nSELECT ${selectParts.join(",\n  ")}\nFROM ${fromClause}`
+    const caggQn = qualifiedName(cagg.viewName, cagg.schema)
+    let sql = `CREATE MATERIALIZED VIEW ${caggQn} WITH (${withOpts.join(", ")}) AS\nSELECT ${selectParts.join(",\n  ")}\nFROM ${fromClause}`
     if (cagg.where) sql += `\nWHERE ${cagg.where}`
     sql += `\nGROUP BY ${groupByParts.join(", ")}`
     if (cagg.withNoData) sql += `\nWITH NO DATA`
     sql += ";"
 
     up.push(sql)
-    down.push(`DROP MATERIALIZED VIEW IF EXISTS ${quoteIdentifier(cagg.viewName)};`)
+    down.push(`DROP MATERIALIZED VIEW IF EXISTS ${caggQn};`)
 
     // H3: materialized_only setting
     if (cagg.materializedOnly !== undefined) {
-      up.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} SET (timescaledb.materialized_only = ${cagg.materializedOnly});`)
+      up.push(`ALTER MATERIALIZED VIEW ${caggQn} SET (timescaledb.materialized_only = ${cagg.materializedOnly});`)
     }
 
     // H3: enable compression on CAGG
     if (cagg.compress) {
-      up.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} SET (timescaledb.compress = true);`)
-      down.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(cagg.viewName)} SET (timescaledb.compress = false);`)
+      up.push(`ALTER MATERIALIZED VIEW ${caggQn} SET (timescaledb.compress = true);`)
+      down.push(`ALTER MATERIALIZED VIEW ${caggQn} SET (timescaledb.compress = false);`)
     }
 
     // H6: Multiple refresh policies
+    const caggLit = qualifiedNameLiteral(cagg.viewName, cagg.schema)
     const policies = cagg.refreshPolicies ?? (cagg.refreshPolicy ? [cagg.refreshPolicy] : [])
     for (const policy of policies) {
       up.push(
-        `SELECT add_continuous_aggregate_policy(${quoteString(cagg.viewName)},\n` +
+        `SELECT add_continuous_aggregate_policy(${quoteString(caggLit)},\n` +
         `  start_offset => INTERVAL '${policy.startOffset}',\n` +
         `  end_offset => INTERVAL '${policy.endOffset}',\n` +
         `  schedule_interval => INTERVAL '${policy.scheduleInterval}');`
@@ -1956,13 +2006,14 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
 
     // H3: retention policy on CAGG
     if (cagg.retentionPolicy) {
-      up.push(`SELECT add_retention_policy(${quoteString(cagg.viewName)}, INTERVAL '${cagg.retentionPolicy.dropAfter}');`)
+      up.push(`SELECT add_retention_policy(${quoteString(caggLit)}, INTERVAL '${cagg.retentionPolicy.dropAfter}');`)
     }
   }
 
-  for (const caggName of diff.caggsToDrop) {
-    up.push(`DROP MATERIALIZED VIEW IF EXISTS ${quoteIdentifier(caggName)};`)
-    down.push(`-- Cannot auto-generate recreation of dropped continuous aggregate ${quoteIdentifier(caggName)}`)
+  for (const caggRef of diff.caggsToDrop) {
+    const caggQn = qualifiedName(caggRef.name, caggRef.schema)
+    up.push(`DROP MATERIALIZED VIEW IF EXISTS ${caggQn};`)
+    down.push(`-- Cannot auto-generate recreation of dropped continuous aggregate ${caggQn}`)
   }
 
   // Background jobs (M3)
@@ -2005,29 +2056,34 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
   }
 
   // RLS enable/disable on existing tables
-  for (const table of diff.rlsToEnable) {
-    up.push(`ALTER TABLE ${quoteIdentifier(table)} ENABLE ROW LEVEL SECURITY;`)
-    down.push(`ALTER TABLE ${quoteIdentifier(table)} DISABLE ROW LEVEL SECURITY;`)
+  for (const ref of diff.rlsToEnable) {
+    const tqn = qualifiedName(ref.name, ref.schema)
+    up.push(`ALTER TABLE ${tqn} ENABLE ROW LEVEL SECURITY;`)
+    down.push(`ALTER TABLE ${tqn} DISABLE ROW LEVEL SECURITY;`)
   }
 
-  for (const table of diff.rlsToDisable) {
-    up.push(`ALTER TABLE ${quoteIdentifier(table)} DISABLE ROW LEVEL SECURITY;`)
-    down.push(`ALTER TABLE ${quoteIdentifier(table)} ENABLE ROW LEVEL SECURITY;`)
+  for (const ref of diff.rlsToDisable) {
+    const tqn = qualifiedName(ref.name, ref.schema)
+    up.push(`ALTER TABLE ${tqn} DISABLE ROW LEVEL SECURITY;`)
+    down.push(`ALTER TABLE ${tqn} ENABLE ROW LEVEL SECURITY;`)
   }
 
   // RLS policy changes on existing tables
-  for (const { table, policyName } of diff.rlsPoliciesToDrop) {
-    up.push(`DROP POLICY ${quoteIdentifier(policyName)} ON ${quoteIdentifier(table)};`)
+  for (const { table, schema, policyName } of diff.rlsPoliciesToDrop) {
+    const tqn = qualifiedName(table, schema)
+    up.push(`DROP POLICY ${quoteIdentifier(policyName)} ON ${tqn};`)
     down.push(`-- Cannot auto-generate recreation of dropped policy ${quoteIdentifier(policyName)}`)
   }
 
-  for (const { table, policy } of diff.rlsPoliciesToCreate) {
-    up.push(generateRlsPolicySql(table, policy))
-    down.push(`DROP POLICY IF EXISTS ${quoteIdentifier(policy.name)} ON ${quoteIdentifier(table)};`)
+  for (const { table, schema, policy } of diff.rlsPoliciesToCreate) {
+    const tqn = qualifiedName(table, schema)
+    up.push(generateRlsPolicySql(table, policy, schema))
+    down.push(`DROP POLICY IF EXISTS ${quoteIdentifier(policy.name)} ON ${tqn};`)
   }
 
   for (const alt of diff.rlsPoliciesToAlter) {
-    let sql = `ALTER POLICY ${quoteIdentifier(alt.policyName)} ON ${quoteIdentifier(alt.table)}`
+    const tqn = qualifiedName(alt.table, alt.schema)
+    let sql = `ALTER POLICY ${quoteIdentifier(alt.policyName)} ON ${tqn}`
     if (alt.roles && alt.roles.length > 0) {
       sql += ` TO ${alt.roles.join(", ")}`
     }
@@ -2037,7 +2093,7 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     up.push(sql)
 
     // Down migration: restore old values
-    let downSql = `ALTER POLICY ${quoteIdentifier(alt.policyName)} ON ${quoteIdentifier(alt.table)}`
+    let downSql = `ALTER POLICY ${quoteIdentifier(alt.policyName)} ON ${tqn}`
     let hasDown = false
     if (alt.oldRoles && alt.oldRoles.length > 0) {
       downSql += ` TO ${alt.oldRoles.join(", ")}`
@@ -2059,88 +2115,103 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
 
   // Compression policy changes on existing hypertables
   for (const p of diff.compressionPoliciesToAdd) {
-    up.push(`SELECT add_compression_policy('${p.table}', INTERVAL '${p.after}');`)
-    down.push(`SELECT remove_compression_policy('${p.table}');`)
+    const lit = qualifiedNameLiteral(p.table, p.schema)
+    up.push(`SELECT add_compression_policy('${lit}', INTERVAL '${p.after}');`)
+    down.push(`SELECT remove_compression_policy('${lit}');`)
   }
 
-  for (const table of diff.compressionPoliciesToRemove) {
-    up.push(`SELECT remove_compression_policy('${table}');`)
-    down.push(`-- Cannot auto-generate recreation of removed compression policy on '${table}'`)
+  for (const ref of diff.compressionPoliciesToRemove) {
+    const lit = qualifiedNameLiteral(ref.name, ref.schema)
+    up.push(`SELECT remove_compression_policy('${lit}');`)
+    down.push(`-- Cannot auto-generate recreation of removed compression policy on '${lit}'`)
   }
 
   // Retention policy changes on existing hypertables
   for (const p of diff.retentionPoliciesToAdd) {
-    up.push(`SELECT add_retention_policy('${p.table}', INTERVAL '${p.dropAfter}');`)
-    down.push(`SELECT remove_retention_policy('${p.table}');`)
+    const lit = qualifiedNameLiteral(p.table, p.schema)
+    up.push(`SELECT add_retention_policy('${lit}', INTERVAL '${p.dropAfter}');`)
+    down.push(`SELECT remove_retention_policy('${lit}');`)
   }
 
-  for (const table of diff.retentionPoliciesToRemove) {
-    up.push(`SELECT remove_retention_policy('${table}');`)
-    down.push(`-- Cannot auto-generate recreation of removed retention policy on '${table}'`)
+  for (const ref of diff.retentionPoliciesToRemove) {
+    const lit = qualifiedNameLiteral(ref.name, ref.schema)
+    up.push(`SELECT remove_retention_policy('${lit}');`)
+    down.push(`-- Cannot auto-generate recreation of removed retention policy on '${lit}'`)
   }
 
   // Reorder policy changes on existing hypertables
   for (const p of diff.reorderPoliciesToAdd) {
-    up.push(`SELECT add_reorder_policy('${p.table}', '${p.indexName}');`)
-    down.push(`SELECT remove_reorder_policy('${p.table}');`)
+    const lit = qualifiedNameLiteral(p.table, p.schema)
+    up.push(`SELECT add_reorder_policy('${lit}', '${p.indexName}');`)
+    down.push(`SELECT remove_reorder_policy('${lit}');`)
   }
 
-  for (const table of diff.reorderPoliciesToRemove) {
-    up.push(`SELECT remove_reorder_policy('${table}');`)
-    down.push(`-- Cannot auto-generate recreation of removed reorder policy on '${table}'`)
+  for (const ref of diff.reorderPoliciesToRemove) {
+    const lit = qualifiedNameLiteral(ref.name, ref.schema)
+    up.push(`SELECT remove_reorder_policy('${lit}');`)
+    down.push(`-- Cannot auto-generate recreation of removed reorder policy on '${lit}'`)
   }
 
   // CAGG refresh policy changes
   for (const p of diff.caggRefreshPoliciesToAdd) {
+    const lit = qualifiedNameLiteral(p.viewName, p.schema)
     up.push(
-      `SELECT add_continuous_aggregate_policy(${quoteString(p.viewName)},\n` +
+      `SELECT add_continuous_aggregate_policy(${quoteString(lit)},\n` +
       `  start_offset => INTERVAL '${p.startOffset}',\n` +
       `  end_offset => INTERVAL '${p.endOffset}',\n` +
       `  schedule_interval => INTERVAL '${p.scheduleInterval}');`
     )
-    down.push(`SELECT remove_continuous_aggregate_policy(${quoteString(p.viewName)});`)
+    down.push(`SELECT remove_continuous_aggregate_policy(${quoteString(lit)});`)
   }
 
-  for (const viewName of diff.caggRefreshPoliciesToRemove) {
-    up.push(`SELECT remove_continuous_aggregate_policy(${quoteString(viewName)});`)
-    down.push(`-- Cannot auto-generate recreation of removed refresh policy on '${viewName}'`)
+  for (const ref of diff.caggRefreshPoliciesToRemove) {
+    const lit = qualifiedNameLiteral(ref.name, ref.schema)
+    up.push(`SELECT remove_continuous_aggregate_policy(${quoteString(lit)});`)
+    down.push(`-- Cannot auto-generate recreation of removed refresh policy on '${lit}'`)
   }
 
   // CAGG retention policy changes
   for (const p of diff.caggRetentionPoliciesToAdd) {
-    up.push(`SELECT add_retention_policy(${quoteString(p.viewName)}, INTERVAL '${p.dropAfter}');`)
-    down.push(`SELECT remove_retention_policy(${quoteString(p.viewName)});`)
+    const lit = qualifiedNameLiteral(p.viewName, p.schema)
+    up.push(`SELECT add_retention_policy(${quoteString(lit)}, INTERVAL '${p.dropAfter}');`)
+    down.push(`SELECT remove_retention_policy(${quoteString(lit)});`)
   }
 
-  for (const viewName of diff.caggRetentionPoliciesToRemove) {
-    up.push(`SELECT remove_retention_policy(${quoteString(viewName)});`)
-    down.push(`-- Cannot auto-generate recreation of removed retention policy on '${viewName}'`)
+  for (const ref of diff.caggRetentionPoliciesToRemove) {
+    const lit = qualifiedNameLiteral(ref.name, ref.schema)
+    up.push(`SELECT remove_retention_policy(${quoteString(lit)});`)
+    down.push(`-- Cannot auto-generate recreation of removed retention policy on '${lit}'`)
   }
 
   // CAGG compression enable/disable
-  for (const viewName of diff.caggCompressionToEnable) {
-    up.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(viewName)} SET (timescaledb.compress = true);`)
-    down.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(viewName)} SET (timescaledb.compress = false);`)
+  for (const ref of diff.caggCompressionToEnable) {
+    const qn = qualifiedName(ref.name, ref.schema)
+    up.push(`ALTER MATERIALIZED VIEW ${qn} SET (timescaledb.compress = true);`)
+    down.push(`ALTER MATERIALIZED VIEW ${qn} SET (timescaledb.compress = false);`)
   }
 
-  for (const viewName of diff.caggCompressionToDisable) {
-    up.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(viewName)} SET (timescaledb.compress = false);`)
-    down.push(`ALTER MATERIALIZED VIEW ${quoteIdentifier(viewName)} SET (timescaledb.compress = true);`)
+  for (const ref of diff.caggCompressionToDisable) {
+    const qn = qualifiedName(ref.name, ref.schema)
+    up.push(`ALTER MATERIALIZED VIEW ${qn} SET (timescaledb.compress = false);`)
+    down.push(`ALTER MATERIALIZED VIEW ${qn} SET (timescaledb.compress = true);`)
   }
 
   // Hypercore enable/disable
-  for (const table of diff.hypercoreToEnable) {
-    up.push(`ALTER TABLE ${quoteIdentifier(table)} SET ACCESS METHOD hypercore;`)
-    down.push(`ALTER TABLE ${quoteIdentifier(table)} SET ACCESS METHOD heap;`)
+  for (const ref of diff.hypercoreToEnable) {
+    const tqn = qualifiedName(ref.name, ref.schema)
+    up.push(`ALTER TABLE ${tqn} SET ACCESS METHOD hypercore;`)
+    down.push(`ALTER TABLE ${tqn} SET ACCESS METHOD heap;`)
   }
 
-  for (const table of diff.hypercoreToDisable) {
-    up.push(`ALTER TABLE ${quoteIdentifier(table)} SET ACCESS METHOD heap;`)
-    down.push(`ALTER TABLE ${quoteIdentifier(table)} SET ACCESS METHOD hypercore;`)
+  for (const ref of diff.hypercoreToDisable) {
+    const tqn = qualifiedName(ref.name, ref.schema)
+    up.push(`ALTER TABLE ${tqn} SET ACCESS METHOD heap;`)
+    down.push(`ALTER TABLE ${tqn} SET ACCESS METHOD hypercore;`)
   }
 
   // Hypercore settings changes
   for (const h of diff.hypercoreSettingsToAlter) {
+    const tqn = qualifiedName(h.table, h.schema)
     const hcParts: string[] = []
     if (h.segmentby && h.segmentby.length > 0) {
       hcParts.push(`timescaledb.compress_segmentby = '${h.segmentby.join(", ")}'`)
@@ -2149,18 +2220,20 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       hcParts.push(`timescaledb.compress_orderby = '${h.orderby.join(", ")}'`)
     }
     if (hcParts.length > 0) {
-      up.push(`ALTER TABLE ${quoteIdentifier(h.table)} SET (${hcParts.join(", ")});`)
+      up.push(`ALTER TABLE ${tqn} SET (${hcParts.join(", ")});`)
     }
   }
 
   // Chunk interval changes (5A)
   for (const ci of diff.chunkIntervalsToAlter) {
-    up.push(`SELECT set_chunk_time_interval('${ci.table}', INTERVAL '${ci.interval}');`)
-    down.push(`-- Cannot auto-determine previous chunk interval for '${ci.table}'`)
+    const lit = qualifiedNameLiteral(ci.table, ci.schema)
+    up.push(`SELECT set_chunk_time_interval('${lit}', INTERVAL '${ci.interval}');`)
+    down.push(`-- Cannot auto-determine previous chunk interval for '${lit}'`)
   }
 
   // Compression settings changes (5B)
   for (const cs of diff.compressionSettingsToAlter) {
+    const tqn = qualifiedName(cs.table, cs.schema)
     const parts: string[] = []
     if (cs.segmentby && cs.segmentby.length > 0) {
       parts.push(`timescaledb.compress_segmentby = '${cs.segmentby.join(", ")}'`)
@@ -2169,27 +2242,30 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       parts.push(`timescaledb.compress_orderby = '${cs.orderby}'`)
     }
     if (parts.length > 0) {
-      up.push(`ALTER TABLE ${quoteIdentifier(cs.table)} SET (${parts.join(", ")});`)
+      up.push(`ALTER TABLE ${tqn} SET (${parts.join(", ")});`)
     }
   }
 
   // Compression policy interval alteration (remove + re-add)
   for (const p of diff.compressionPoliciesToAlter) {
-    up.push(`SELECT remove_compression_policy('${p.table}');`)
-    up.push(`SELECT add_compression_policy('${p.table}', INTERVAL '${p.after}');`)
+    const lit = qualifiedNameLiteral(p.table, p.schema)
+    up.push(`SELECT remove_compression_policy('${lit}');`)
+    up.push(`SELECT add_compression_policy('${lit}', INTERVAL '${p.after}');`)
   }
 
   // Retention policy interval alteration (remove + re-add)
   for (const p of diff.retentionPoliciesToAlter) {
-    up.push(`SELECT remove_retention_policy('${p.table}');`)
-    up.push(`SELECT add_retention_policy('${p.table}', INTERVAL '${p.dropAfter}');`)
+    const lit = qualifiedNameLiteral(p.table, p.schema)
+    up.push(`SELECT remove_retention_policy('${lit}');`)
+    up.push(`SELECT add_retention_policy('${lit}', INTERVAL '${p.dropAfter}');`)
   }
 
   // CAGG refresh policy alteration (remove + re-add with if_not_exists)
   for (const p of diff.caggRefreshPoliciesToAlter) {
-    up.push(`SELECT remove_continuous_aggregate_policy(${quoteString(p.viewName)});`)
+    const lit = qualifiedNameLiteral(p.viewName, p.schema)
+    up.push(`SELECT remove_continuous_aggregate_policy(${quoteString(lit)});`)
     up.push(
-      `SELECT add_continuous_aggregate_policy(${quoteString(p.viewName)},\n` +
+      `SELECT add_continuous_aggregate_policy(${quoteString(lit)},\n` +
       `  start_offset => INTERVAL '${p.startOffset}',\n` +
       `  end_offset => INTERVAL '${p.endOffset}',\n` +
       `  schedule_interval => INTERVAL '${p.scheduleInterval}');`
@@ -2198,26 +2274,30 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
 
   // Data tiering
   for (const t of diff.tieringToAdd) {
-    up.push(`SELECT add_tiering_policy('${t.table}', INTERVAL '${t.tierAfter}');`)
-    down.push(`SELECT remove_tiering_policy('${t.table}');`)
+    const lit = qualifiedNameLiteral(t.table, t.schema)
+    up.push(`SELECT add_tiering_policy('${lit}', INTERVAL '${t.tierAfter}');`)
+    down.push(`SELECT remove_tiering_policy('${lit}');`)
   }
 
-  for (const table of diff.tieringToRemove) {
-    up.push(`SELECT remove_tiering_policy('${table}');`)
-    down.push(`-- Cannot auto-generate recreation of removed tiering policy on '${table}'`)
+  for (const ref of diff.tieringToRemove) {
+    const lit = qualifiedNameLiteral(ref.name, ref.schema)
+    up.push(`SELECT remove_tiering_policy('${lit}');`)
+    down.push(`-- Cannot auto-generate recreation of removed tiering policy on '${lit}'`)
   }
 
   // CAGG migrations
-  for (const viewName of diff.caggMigrations) {
-    up.push(`CALL cagg_migrate(${quoteString(viewName)});`)
+  for (const ref of diff.caggMigrations) {
+    const lit = qualifiedNameLiteral(ref.name, ref.schema)
+    up.push(`CALL cagg_migrate(${quoteString(lit)});`)
   }
 
   // Tiering for new hypertables
-  for (const tableName of diff.hypertablesToCreate) {
-    const def = tableDefs.find((d) => d.name === tableName) as HypertableDefinition | undefined
+  for (const htRef of diff.hypertablesToCreate) {
+    const def = tableDefs.find((d) => d.name === htRef.name && d.schema === htRef.schema) as HypertableDefinition | undefined
     if (def?.hypertableConfig.tiering?.tierAfter) {
-      up.push(`SELECT add_tiering_policy('${tableName}', INTERVAL '${def.hypertableConfig.tiering.tierAfter}');`)
-      down.push(`SELECT remove_tiering_policy('${tableName}');`)
+      const lit = qualifiedNameLiteral(htRef.name, htRef.schema)
+      up.push(`SELECT add_tiering_policy('${lit}', INTERVAL '${def.hypertableConfig.tiering.tierAfter}');`)
+      down.push(`SELECT remove_tiering_policy('${lit}');`)
     }
   }
 
