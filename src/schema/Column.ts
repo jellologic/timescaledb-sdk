@@ -43,6 +43,18 @@ export class ColumnBuilder<T, TNotNull extends boolean = false, THasDefault exte
     return col as any
   }
 
+  /** DEFAULT NOW() — common for created_at / updated_at columns */
+  defaultNow(): ColumnBuilder<T, TNotNull, true> { return this.defaultSql("NOW()") }
+
+  /** DEFAULT gen_random_uuid() — common for UUID primary keys */
+  defaultRandomUuid(): ColumnBuilder<T, TNotNull, true> { return this.defaultSql("gen_random_uuid()") }
+
+  /** DEFAULT CURRENT_DATE — for date-only columns */
+  defaultCurrentDate(): ColumnBuilder<T, TNotNull, true> { return this.defaultSql("CURRENT_DATE") }
+
+  /** DEFAULT CURRENT_TIMESTAMP — alias for NOW() preferred by some teams */
+  defaultCurrentTimestamp(): ColumnBuilder<T, TNotNull, true> { return this.defaultSql("CURRENT_TIMESTAMP") }
+
   primaryKey(): ColumnBuilder<T, true, THasDefault> {
     const col = this._clone()
     col._isPrimaryKey = true

@@ -121,6 +121,30 @@ describe("SQL Generation — DEFAULT value quoting", () => {
     const up = genUp([t])
     expect(up[0]).toContain("DEFAULT NOW()")
   })
+
+  test("defaultNow() emits DEFAULT NOW()", () => {
+    const t = pgTable("t", { createdAt: timestamptz("created_at").defaultNow() })
+    const up = genUp([t])
+    expect(up[0]).toContain("DEFAULT NOW()")
+  })
+
+  test("defaultRandomUuid() emits DEFAULT gen_random_uuid()", () => {
+    const t = pgTable("t", { id: uuid("id").defaultRandomUuid() })
+    const up = genUp([t])
+    expect(up[0]).toContain("DEFAULT gen_random_uuid()")
+  })
+
+  test("defaultCurrentDate() emits DEFAULT CURRENT_DATE", () => {
+    const t = pgTable("t", { d: text("d").defaultCurrentDate() })
+    const up = genUp([t])
+    expect(up[0]).toContain("DEFAULT CURRENT_DATE")
+  })
+
+  test("defaultCurrentTimestamp() emits DEFAULT CURRENT_TIMESTAMP", () => {
+    const t = pgTable("t", { ts: timestamptz("ts").defaultCurrentTimestamp() })
+    const up = genUp([t])
+    expect(up[0]).toContain("DEFAULT CURRENT_TIMESTAMP")
+  })
 })
 
 describe("SQL Generation — Column features", () => {
