@@ -1,111 +1,95 @@
----
-description: Use Bun instead of Node.js, npm, pnpm, or vite.
-globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
-alwaysApply: false
----
+# CLAUDE.md
 
-Default to using Bun instead of Node.js.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-- Use `bun <file>` instead of `node <file>` or `ts-node <file>`
-- Use `bun test` instead of `jest` or `vitest`
-- Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
-- Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
-- Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
-- Use `bunx <package> <command>` instead of `npx <package> <command>`
-- Bun automatically loads .env, so don't use dotenv.
+## Project Overview
 
-## APIs
+A type-safe TypeScript SDK for TimescaleDB built on [Effect](https://effect.website/) v3.x. Provides a schema DSL, query builder, and effectful wrappers for all TimescaleDB features (hypertables, continuous aggregates, compression, hyperfunctions, migrations, etc.).
 
-- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
-- `Bun.redis` for Redis. Don't use `ioredis`.
-- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
-- `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
+**Runtime dependency on Bun** — the SDK uses `Bun.CryptoHasher`, `Bun.file`, `Bun.write`, `Bun.$` throughout, not just as a build tool.
+
+## Commands
+
+```bash
+bun install              # Install dependencies
+bun run build            # Build: Bun bundles JS + tsc emits .d.ts only
+bun run typecheck        # Type-check without emitting (tsc --noEmit)
+bun test                 # Run all tests
+bun test test/**/*.unit.test.ts                           # Unit tests only (no DB)
+bun test --preload ./test/setup/integration-preload.ts test/**/*.integration.test.ts  # Integration tests (Docker required)
+bun test test/unit/query.unit.test.ts                     # Run a single test file
+```
+
+## Architecture
+
+### Two-tier design
+
+1. **Pure schema DSL** (`src/schema/`) — No IO. Produces plain data objects (`TableDefinition`, `HypertableDefinition`). `ColumnBuilder` uses phantom type parameters (`TNotNull`, `THasDefault`) to track nullability/defaults at the type level, enabling `InferSelect<T>` and `InferInsert<T>`.
+
+2. **Effectful runtime modules** (`src/hypertable/`, `src/cagg/`, `src/compression/`, `src/retention/`, `src/jobs/`, `src/tiering/`, `src/migration/`) — Every function follows the same pattern: pull `TimescaleClient` from Effect context via `yield* TimescaleClient`, execute SQL, wrap errors in a domain-specific `Data.TaggedError`.
+
+### Effect integration pattern
+
+All domain functions return `Effect.Effect<A, DomainError, TimescaleClient>`. The standard pattern:
+
+```typescript
+export const someOperation = (args) =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    return yield* client.execute(`SQL...`, params)
+  }).pipe(Effect.mapError((e) => new DomainError({ message: "...", cause: e })))
+```
+
+**Services**: `TimescaleClient` (Context.Tag wrapping `@effect/sql-pg`) and `TimescaleConfigService` (Schema.Class reading `PG*` env vars).
+
+**Layers**: `TimescaleClient.layer(pgConfig)`, `TimescaleClient.layerFromConfig`, `TimescaleConfigService.layerFromEnv`.
+
+### Query builder internals
+
+- Immutable builders using `_clone()` on every method call.
+- Uses `$?` as an internal positional placeholder. `toSql()` renumbers all `$?` to `$1`, `$2`, etc. during final assembly.
+- `unnumberParams()` converts numbered params back to `$?` when embedding subqueries so the outer query can renumber into its own param sequence.
+- `.select({alias: ColumnDef | Expression})` narrows `TResult` via `SelectionResult<T>` for type-safe column selection.
+- `.execute` getter returns `Effect.Effect<ReadonlyArray<TResult>, QueryError, TimescaleClient>`.
+
+### Hyperfunction accessor pattern
+
+Classes like `CounterAggExpression` and `CandlestickAggExpression` extend `Expression<T>` and expose accessor methods that return new `Expression<T>` instances (e.g., `counterAgg(ts, val).rate()`). `rollup()` uses `Object.create` to preserve the prototype chain.
+
+### Migration system (`src/migration/`)
+
+The most complex module. Key flows:
+
+- **Generator.ts**: `diffSchema()` computes bidirectional diff between code definitions and a snapshot. `generateMigrationSql()` produces `up`/`down` SQL arrays.
+- **DefinitionsSnapshot.ts**: Converts code-side `SchemaDefinition[]` into `SchemaSnapshot` format (same format as live DB introspection) to enable diffing without a DB.
+- **Snapshot.ts**: `takeSnapshot` introspects a live DB via `information_schema`, `pg_catalog`, and `timescaledb_information.*` views.
+- **FileSystem.ts**: Migration files embed an HMAC (`sha256`) integrity hash. `verifyIntegrity` checks on load; `sealMigration()` reseals hand-edited files. Uses temp-file + rename for atomic writes.
+- **Runner.ts**: Uses PostgreSQL advisory lock (`pg_try_advisory_lock(123456789)`) with `Effect.ensuring` for guaranteed release.
+- **Orchestrator.ts**: Top-level API — `generate()` (async, not Effect), `loadAndRun`/`loadAndRollback`/`loadAndStatus` (Effects).
+
+### Error types
+
+12 tagged errors in `src/Error.ts` using `Data.TaggedError`: `ConnectionError`, `QueryError`, `TransactionError`, `SchemaError`, `ValidationError`, `MigrationError`, `HypertableError`, `CompressionError`, `ContinuousAggregateError`, `RetentionError`, `JobError`, `TieringError`.
+
+## Module exports
+
+The package has 11 export paths (root + one per module). Each maps to `./dist/<module>/index.js`. The root `src/index.ts` re-exports all modules as namespaces plus the core `TimescaleClient`, `TimescaleConfig`, and `Errors`.
 
 ## Testing
 
-Use `bun test` to run tests.
+- **Unit tests** (`test/unit/`) — ~35 files, no DB required. Test SQL generation, schema DSL, type inference, diffing logic.
+- **Integration tests** (`test/integration/`) — Spin up TimescaleDB via Docker (managed by `test/setup/docker.ts`). Test round-trip schema creation, migration execution, advisory locking.
+- **Test helpers** in `test/helpers/`: `assertions.ts` (SQL matchers), `effect-runner.ts` (`runTest`/`runTestWith`), `fixtures.ts` (test hypertable definitions), `db-utils.ts` (live DB introspection helpers).
+- **Test layers** in `test/setup/test-layers.ts`: `mockClient()` for unit tests, `liveClient()` for integration tests.
+- `bunfig.toml` preloads `./test/setup/global-setup.ts` for all test runs (sets `NODE_ENV=test`).
 
-```ts#index.test.ts
-import { test, expect } from "bun:test";
+## Build
 
-test("hello world", () => {
-  expect(1).toBe(1);
-});
-```
+Two-stage: `bun build` bundles JS with code splitting (`--splitting --target node`), then `tsc --project tsconfig.build.json` emits `.d.ts` declarations only (`emitDeclarationOnly: true`).
 
-## Frontend
+## Conventions
 
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
-
-Server:
-
-```ts#index.ts
-import index from "./index.html"
-
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
-```
-
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
-
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
-```
-
-With the following `frontend.tsx`:
-
-```tsx#frontend.tsx
-import React from "react";
-import { createRoot } from "react-dom/client";
-
-// import .css files directly and it works
-import './index.css';
-
-const root = createRoot(document.body);
-
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
-
-root.render(<Frontend />);
-```
-
-Then, run index.ts
-
-```sh
-bun --hot ./index.ts
-```
-
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+- Use Bun exclusively (not Node.js, npm, or other runtimes). Bun auto-loads `.env`.
+- Peer dependencies: `effect ^3.0.0`, `@effect/sql ^0.30.0`, `@effect/sql-pg ^0.30.0`.
+- `src/internal/` contains shared utilities (`quoteIdentifier`, `parseInterval`, `toSqlValue`) — not exported from the package root.
+- No linter or formatter configured; TypeScript strict mode is the only static analysis.
