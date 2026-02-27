@@ -46,10 +46,10 @@ export const startContainer = async (): Promise<DockerContainer> => {
   }
 
   // Step 2: Ensure image
-  const inspect = await $`${docker} image inspect timescale/timescaledb-ha:pg17`.nothrow().quiet()
+  const inspect = await $`${docker} image inspect timescale/timescaledb-ha:pg18`.nothrow().quiet()
   if (inspect.exitCode !== 0) {
-    console.log("Pulling timescale/timescaledb-ha:pg17...")
-    await $`${docker} pull timescale/timescaledb-ha:pg17`
+    console.log("Pulling timescale/timescaledb-ha:pg18...")
+    await $`${docker} pull timescale/timescaledb-ha:pg18`
   }
 
   // Step 3: Find random port
@@ -69,7 +69,7 @@ export const startContainer = async (): Promise<DockerContainer> => {
     -e POSTGRES_USER=${username} \
     -e TIMESCALEDB_TELEMETRY=off \
     -p ${port}:5432 \
-    timescale/timescaledb-ha:pg17`.text()
+    timescale/timescaledb-ha:pg18`.text()
 
   const id = result.trim()
 
@@ -95,7 +95,7 @@ export const startContainer = async (): Promise<DockerContainer> => {
   const maxExtAttempts = 10
   while (extAttempts < maxExtAttempts) {
     try {
-      await $`${docker} exec ${id} psql -U ${username} -d ${database} -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"`.quiet()
+      await $`${docker} exec ${id} psql -U ${username} -d ${database} -c "CREATE EXTENSION IF NOT EXISTS timescaledb; CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit; ALTER DATABASE ${database} SET search_path TO public, toolkit_experimental;"`.quiet()
       const extCheck = await $`${docker} exec ${id} psql -U ${username} -d ${database} -t -c "SELECT extname FROM pg_extension WHERE extname = 'timescaledb';"`.text()
       if (extCheck.includes("timescaledb")) break
       throw new Error("TimescaleDB extension not found in pg_extension")

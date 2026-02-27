@@ -11,7 +11,7 @@ describe("UddSketch", () => {
 
   test("construction with size and maxError", () => {
     const s = uddsketch("latency", 200, 0.001)
-    expect(s.sql).toBe(`uddsketch("latency", 200, 0.001)`)
+    expect(s.sql).toBe(`uddsketch(200, 0.001, "latency")`)
   })
 
   test("approxPercentile accessor", () => {
@@ -44,7 +44,7 @@ describe("TDigest", () => {
 
   test("construction with compression", () => {
     const t = tdigest("response_time", 100)
-    expect(t.sql).toBe(`tdigest("response_time", 100)`)
+    expect(t.sql).toBe(`tdigest(100, "response_time")`)
   })
 
   test("approxPercentile accessor", () => {

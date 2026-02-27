@@ -12,8 +12,9 @@ export class TDigestExpression extends Expression<unknown> {
     col: ColumnDef<number> | Expression<number> | string,
     compression?: number,
   ) {
-    const args: string[] = [colRef(col)]
+    const args: string[] = []
     if (compression !== undefined) args.push(String(compression))
+    args.push(colRef(col))
     super(`tdigest(${args.join(", ")})`)
   }
 
@@ -27,6 +28,18 @@ export class TDigestExpression extends Expression<unknown> {
 
   numVals(): Expression<number> {
     return new Expression<number>(`num_vals(${this.sql})`, this.params)
+  }
+
+  rollup(): TDigestExpression {
+    return TDigestExpression._fromSql(`rollup(${this.sql})`, this.params)
+  }
+
+  /** @internal */
+  static _fromSql(sql: string, params: ReadonlyArray<unknown>): TDigestExpression {
+    const expr = Object.create(TDigestExpression.prototype) as TDigestExpression
+    Object.defineProperty(expr, "sql", { value: sql, writable: false })
+    Object.defineProperty(expr, "params", { value: params, writable: false })
+    return expr
   }
 }
 

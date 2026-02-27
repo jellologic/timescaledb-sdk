@@ -13,9 +13,10 @@ export class UddSketchExpression extends Expression<unknown> {
     size?: number,
     maxError?: number,
   ) {
-    const args: string[] = [colRef(col)]
+    const args: string[] = []
     if (size !== undefined) args.push(String(size))
     if (maxError !== undefined) args.push(String(maxError))
+    args.push(colRef(col))
     super(`uddsketch(${args.join(", ")})`)
   }
 
@@ -33,6 +34,18 @@ export class UddSketchExpression extends Expression<unknown> {
 
   numVals(): Expression<number> {
     return new Expression<number>(`num_vals(${this.sql})`, this.params)
+  }
+
+  rollup(): UddSketchExpression {
+    return UddSketchExpression._fromSql(`rollup(${this.sql})`, this.params)
+  }
+
+  /** @internal */
+  static _fromSql(sql: string, params: ReadonlyArray<unknown>): UddSketchExpression {
+    const expr = Object.create(UddSketchExpression.prototype) as UddSketchExpression
+    Object.defineProperty(expr, "sql", { value: sql, writable: false })
+    Object.defineProperty(expr, "params", { value: params, writable: false })
+    return expr
   }
 }
 
