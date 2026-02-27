@@ -905,8 +905,11 @@ describe("SQL Generation — Expression-based Indexes", () => {
       index("idx_pattern", [expr("lower(name)", "text_pattern_ops")]),
     ])
     const up = genUp([t])
-    const idxSql = up.find((s) => s.includes("CREATE INDEX"))
-    expect(idxSql).toContain("(lower(name)) text_pattern_ops")
+    const idxSql = up.find((s) => s.includes("CREATE INDEX"))!
+    // Must have exactly: ((lower(name)) text_pattern_ops) — inner parens for expression, outer for column list
+    expect(idxSql).toContain("((lower(name)) text_pattern_ops)")
+    // Must NOT have triple parens — that would indicate double-wrapping
+    expect(idxSql).not.toContain("(((")
   })
 
   test("inline opclass does not produce double parentheses (issue #19)", () => {
@@ -1854,7 +1857,7 @@ describe("SQL Generation — Enum reordering detection (C4)", () => {
 // =============================================================================
 
 describe("SQL Generation — Hypercore (H1)", () => {
-  test("generates ALTER TABLE SET ACCESS METHOD hypercore", () => {
+  test("generates ALTER TABLE SET ACCESS METHOD hypercore with availability guard", () => {
     const events = hypertable("events", {
       time: timestamptz("time").notNull(),
       value: doublePrecision("value"),
@@ -1864,7 +1867,11 @@ describe("SQL Generation — Hypercore (H1)", () => {
     })
 
     const up = genUp([events])
-    expect(up.some((s) => s.includes("SET ACCESS METHOD hypercore"))).toBe(true)
+    const hcStmt = up.find((s) => s.includes("SET ACCESS METHOD hypercore"))!
+    expect(hcStmt).toBeDefined()
+    // Must be guarded — no bare ALTER TABLE SET ACCESS METHOD
+    expect(hcStmt).toContain("DO $$ BEGIN IF EXISTS")
+    expect(hcStmt).toContain("pg_am WHERE amname = 'hypercore'")
   })
 
   test("generates hypercore with segmentby and orderby settings", () => {
@@ -1882,9 +1889,13 @@ describe("SQL Generation — Hypercore (H1)", () => {
     })
 
     const up = genUp([events])
-    expect(up.some((s) => s.includes("SET ACCESS METHOD hypercore"))).toBe(true)
-    expect(up.some((s) => s.includes("compress_segmentby = 'device_id'"))).toBe(true)
-    expect(up.some((s) => s.includes("compress_orderby = 'time DESC'"))).toBe(true)
+    const hcStmt = up.find((s) => s.includes("SET ACCESS METHOD hypercore"))!
+    expect(hcStmt).toBeDefined()
+    // Guard must be present
+    expect(hcStmt).toContain("DO $$ BEGIN IF EXISTS")
+    // Settings must be inside the same guarded block, not separate statements
+    expect(hcStmt).toContain("compress_segmentby = 'device_id'")
+    expect(hcStmt).toContain("compress_orderby = 'time DESC'")
   })
 
   test("generates down migration to revert to heap", () => {
@@ -2953,7 +2964,10 @@ describe("Hypercore Diffing — existing hypertables", () => {
     expect(diff.hypercoreToEnable.length).toBe(1)
 
     const { up, down } = generateMigrationSql(diff, [ht])
-    expect(up.some((s) => s.includes("SET ACCESS METHOD hypercore"))).toBe(true)
+    const hcUp = up.find((s) => s.includes("SET ACCESS METHOD hypercore"))!
+    expect(hcUp).toBeDefined()
+    // Must be guarded — not a bare ALTER TABLE
+    expect(hcUp).toContain("DO $$ BEGIN IF EXISTS")
     expect(down.some((s) => s.includes("SET ACCESS METHOD heap"))).toBe(true)
   })
 
@@ -2978,7 +2992,10 @@ describe("Hypercore Diffing — existing hypertables", () => {
 
     const { up, down } = generateMigrationSql(diff, [ht])
     expect(up.some((s) => s.includes("SET ACCESS METHOD heap"))).toBe(true)
-    expect(down.some((s) => s.includes("SET ACCESS METHOD hypercore"))).toBe(true)
+    // Down migration re-enables hypercore — must be guarded
+    const hcDown = down.find((s) => s.includes("SET ACCESS METHOD hypercore"))!
+    expect(hcDown).toBeDefined()
+    expect(hcDown).toContain("DO $$ BEGIN IF EXISTS")
   })
 
   test("detects hypercore settings changes", () => {
