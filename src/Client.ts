@@ -79,3 +79,37 @@ export const layerFromConfig: Layer.Layer<TimescaleClient, ConnectionError, Time
   ).pipe(
     Layer.mapError((error) => new ConnectionError({ message: String(error), cause: error }))
   ) as any
+
+/**
+ * Execute a raw SQL query and return typed rows.
+ * Pulls `TimescaleClient` from Effect context automatically.
+ */
+export const rawQuery = <T = unknown>(
+  query: string,
+  params?: ReadonlyArray<unknown>
+): Effect.Effect<ReadonlyArray<T>, QueryError, TimescaleClient> =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    return yield* client.execute<T>(query, params)
+  }).pipe(
+    Effect.mapError((error) =>
+      error instanceof QueryError ? error : new QueryError({ message: String(error), cause: error })
+    )
+  )
+
+/**
+ * Execute a SQL mutation (INSERT, UPDATE, DELETE, DDL) without returning rows.
+ * Pulls `TimescaleClient` from Effect context automatically.
+ */
+export const executeSql = (
+  query: string,
+  params?: ReadonlyArray<unknown>
+): Effect.Effect<void, QueryError, TimescaleClient> =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    yield* client.execute(query, params)
+  }).pipe(
+    Effect.mapError((error) =>
+      error instanceof QueryError ? error : new QueryError({ message: String(error), cause: error })
+    )
+  )
