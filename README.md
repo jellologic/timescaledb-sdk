@@ -2,7 +2,7 @@
 
 **A complete, type-safe TypeScript SDK for TimescaleDB — built on Effect.**
 
-[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-v0.2.3-blue)](https://github.com/jellologic/timescaledb-sdk/packages)
+[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-v0.2.4-blue)](https://github.com/jellologic/timescaledb-sdk/packages)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6.svg)](https://www.typescriptlang.org/)
 
