@@ -179,8 +179,56 @@ function emitExpr(expr: PgExpr): string {
       return `${emitExpr(expr.expression)}::${expr.targetType}`
 
     case "ArrayLiteral":
-      return `ARRAY[${expr.elements.map(emitExpr).join(", ")}]`
+      return emitArrayLiteral(expr.elements)
+
+    case "SpreadElement":
+      return emitExpr(expr.expression)
   }
+}
+
+/**
+ * Emit an array literal, handling spread elements via array_cat().
+ *
+ * - No spreads: `ARRAY[1, 2, 3]`
+ * - Single spread only `[...a]`: `a` (identity)
+ * - Mixed: groups of non-spread elements become `ARRAY[...]` segments,
+ *   spread elements pass through as-is, all combined with `array_cat()`.
+ */
+function emitArrayLiteral(elements: PgExpr[]): string {
+  const hasSpread = elements.some(e => e.kind === "SpreadElement")
+  if (!hasSpread) {
+    return `ARRAY[${elements.map(emitExpr).join(", ")}]`
+  }
+
+  // Single spread with no other elements → identity
+  if (elements.length === 1 && elements[0]!.kind === "SpreadElement") {
+    return emitExpr(elements[0]!)
+  }
+
+  // Group consecutive non-spread elements into ARRAY[...] segments,
+  // leave spread elements as bare arrays, combine all with array_cat()
+  const segments: string[] = []
+  let currentGroup: PgExpr[] = []
+
+  const flushGroup = () => {
+    if (currentGroup.length > 0) {
+      segments.push(`ARRAY[${currentGroup.map(emitExpr).join(", ")}]`)
+      currentGroup = []
+    }
+  }
+
+  for (const elem of elements) {
+    if (elem.kind === "SpreadElement") {
+      flushGroup()
+      segments.push(emitExpr(elem))
+    } else {
+      currentGroup.push(elem)
+    }
+  }
+  flushGroup()
+
+  // Fold segments left with array_cat()
+  return segments.reduce((acc, seg) => `array_cat(${acc}, ${seg})`)
 }
 
 function emitLiteral(

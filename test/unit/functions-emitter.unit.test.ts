@@ -410,6 +410,52 @@ describe("Emitter", () => {
     expect(sql).toContain("ARRAY[]")
   })
 
+  // ─── SpreadElement in array literals (Issue #10) ───────────────
+  test("emits [...a, ...b] as array_cat(a, b)", () => {
+    const sql = emit(
+      "(a, b) => { return [...a, ...b]; }",
+      [{ name: "a", sqlType: "integer[]" }, { name: "b", sqlType: "integer[]" }],
+      "integer[]"
+    )
+    expect(sql).toContain("array_cat(a, b)")
+  })
+
+  test("emits [x, ...a] as array_cat(ARRAY[x], a)", () => {
+    const sql = emit(
+      "(x, a) => { return [x, ...a]; }",
+      [{ name: "x", sqlType: "integer" }, { name: "a", sqlType: "integer[]" }],
+      "integer[]"
+    )
+    expect(sql).toContain("array_cat(ARRAY[x], a)")
+  })
+
+  test("emits [...a, x] as array_cat(a, ARRAY[x])", () => {
+    const sql = emit(
+      "(a, x) => { return [...a, x]; }",
+      [{ name: "a", sqlType: "integer[]" }, { name: "x", sqlType: "integer" }],
+      "integer[]"
+    )
+    expect(sql).toContain("array_cat(a, ARRAY[x])")
+  })
+
+  test("emits [...a] as a (identity spread)", () => {
+    const sql = emit(
+      "(a) => { return [...a]; }",
+      [{ name: "a", sqlType: "integer[]" }],
+      "integer[]"
+    )
+    expect(sql).toContain("RETURN a;")
+  })
+
+  test("emits [x, ...a, y] as nested array_cat", () => {
+    const sql = emit(
+      "(x, a, y) => { return [x, ...a, y]; }",
+      [{ name: "x", sqlType: "integer" }, { name: "a", sqlType: "integer[]" }, { name: "y", sqlType: "integer" }],
+      "integer[]"
+    )
+    expect(sql).toContain("array_cat(array_cat(ARRAY[x], a), ARRAY[y])")
+  })
+
   // ─── Task 20: FOR range loop robustness ─────────────────────────
   test("emits inclusive range (<=)", () => {
     const sql = emit(

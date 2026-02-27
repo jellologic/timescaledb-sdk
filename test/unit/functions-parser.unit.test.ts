@@ -376,6 +376,52 @@ describe("Parser", () => {
     }
   })
 
+  // ─── SpreadElement in array literals (Issue #10) ───────────────
+  test("parses [...a, ...b] as ArrayLiteral with SpreadElement nodes", () => {
+    const source = "(a, b) => { return [...a, ...b]; }"
+    const ast = parseFunction(source)
+    const ret = ast.statements[0]!
+    expect(ret.kind).toBe("Return")
+    if (ret.kind === "Return" && ret.expression) {
+      expect(ret.expression.kind).toBe("ArrayLiteral")
+      if (ret.expression.kind === "ArrayLiteral") {
+        expect(ret.expression.elements.length).toBe(2)
+        expect(ret.expression.elements[0]!.kind).toBe("SpreadElement")
+        expect(ret.expression.elements[1]!.kind).toBe("SpreadElement")
+      }
+    }
+  })
+
+  test("parses [x, ...a] as ArrayLiteral with mixed elements and spread", () => {
+    const source = "(x, a) => { return [x, ...a]; }"
+    const ast = parseFunction(source)
+    const ret = ast.statements[0]!
+    if (ret.kind === "Return" && ret.expression) {
+      expect(ret.expression.kind).toBe("ArrayLiteral")
+      if (ret.expression.kind === "ArrayLiteral") {
+        expect(ret.expression.elements.length).toBe(2)
+        expect(ret.expression.elements[0]!.kind).toBe("Identifier")
+        expect(ret.expression.elements[1]!.kind).toBe("SpreadElement")
+      }
+    }
+  })
+
+  test("parses [...a] as ArrayLiteral with single spread", () => {
+    const source = "(a) => { return [...a]; }"
+    const ast = parseFunction(source)
+    const ret = ast.statements[0]!
+    if (ret.kind === "Return" && ret.expression) {
+      expect(ret.expression.kind).toBe("ArrayLiteral")
+      if (ret.expression.kind === "ArrayLiteral") {
+        expect(ret.expression.elements.length).toBe(1)
+        expect(ret.expression.elements[0]!.kind).toBe("SpreadElement")
+        if (ret.expression.elements[0]!.kind === "SpreadElement") {
+          expect(ret.expression.elements[0]!.expression.kind).toBe("Identifier")
+        }
+      }
+    }
+  })
+
   // ─── Task 20: FOR range loop robustness ─────────────────────────
   test("parses for (i <= n) as inclusive range", () => {
     const source = "(n) => { for (let i = 0; i <= n; i++) { } }"
