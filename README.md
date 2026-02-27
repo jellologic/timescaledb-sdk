@@ -26,7 +26,7 @@
 | **Migrations** | Schema diff, SQL generation, run, rollback, and status tracking | `@jellologic/timescaledb-sdk/migration` |
 | **Views** | Views, materialized views, refresh, alter, and migration tracking | `@jellologic/timescaledb-sdk/view` |
 | **Functions** | PL/pgSQL functions, procedures, triggers with TypeScript-to-PL/pgSQL transpiler | `@jellologic/timescaledb-sdk/functions` |
-| **Job Queue** | Persistent job queue with workers, scheduling, retries, workflows, LISTEN/NOTIFY | `@jellologic/timescaledb-sdk/queue` |
+| **Job Queue** | Persistent queue with workers, cron scheduling, retries, saga/parallel/pipeline workflows, LISTEN/NOTIFY, worker registry | `@jellologic/timescaledb-sdk/queue` |
 | **Bulk Operations** | `bulkInsert`, `bulkUpsert` with automatic batching under PG's 65K param limit | `@jellologic/timescaledb-sdk/bulk` |
 | **Raw SQL Helpers** | `rawQuery<T>()`, `executeSql()` — ad-hoc SQL without boilerplate | `@jellologic/timescaledb-sdk` |
 
@@ -370,45 +370,91 @@ const program = Effect.gen(function* () {
 
 ## Job Queue
 
-Persistent PostgreSQL-backed job queue with workers, scheduling, retries, and workflows:
+Persistent PostgreSQL-backed job queue with workers, scheduling, retries, workflows, and LISTEN/NOTIFY support:
 
 ```typescript
 import {
-  enqueue, enqueueBulk, dequeue, completeJob, failJob,
-  addRepeatableJob, schedulerTick,
-  registerWorker, runSequential, runParallel,
+  // Core job lifecycle
+  enqueue, enqueueBulk, dequeue, completeJob, failJob, retryJob, cancelJob,
+  getJob, getJobsByStatus, queueStats, obliterate, promoteDelayed,
+  // Worker
+  QueueWorker, workerLayer,
+  // Orchestrator — workflow primitives
+  runSequential, runParallel, runPipeline, runSaga, getWorkflow, cancelWorkflow,
+  // Scheduler — cron-based recurring jobs
+  addRepeatableJob, removeRepeatableJob, listRepeatableJobs, schedulerTick,
+  // Events — real-time LISTEN/NOTIFY
+  QueueEventBus, eventBusLayer, emitEvent, listenForEvents,
+  // Registry — worker tracking and health
+  registerWorker, deregisterWorker, heartbeat, getActiveWorkers, cleanDeadWorkers,
+  // Maintenance
+  pruneCompleted, pruneFailed, recoverStalled, runMaintenance,
+  // Setup
+  ensureQueueTables,
 } from "@jellologic/timescaledb-sdk/queue"
 import { Effect } from "effect"
 
 const program = Effect.gen(function* () {
-  // Enqueue a job
-  const job = yield* enqueue("emails", {
-    name: "send-welcome",
-    data: { userId: 123, template: "welcome" },
-    options: { priority: 1, attempts: 3, backoff: { type: "exponential", delay: 1000 } },
-  })
+  // Enqueue a job with priority and retry options
+  const job = yield* enqueue("emails", "send-welcome", {
+    to: "user@example.com",
+    subject: "Welcome!",
+  }, { priority: 1, attempts: 3, backoff: { type: "exponential", delay: 1000 } })
+
+  // Bulk enqueue multiple jobs
+  yield* enqueueBulk("notifications", [
+    { name: "push", data: { userId: "u1", message: "Hello" } },
+    { name: "push", data: { userId: "u2", message: "Hi" } },
+  ])
 
   // Dequeue and process
-  const next = yield* dequeue("emails")
-  if (next) {
-    // ... process job
-    yield* completeJob(next.id, { sentAt: new Date() })
+  const jobs = yield* dequeue("emails", 10, "my-worker")
+  for (const j of jobs) {
+    yield* completeJob(j.id, { sentAt: new Date() })
   }
 
-  // Schedule recurring jobs
-  yield* addRepeatableJob("emails", {
-    name: "daily-digest",
-    data: { type: "digest" },
-    cron: "0 9 * * *", // Every day at 9 AM
+  // Schedule recurring jobs via cron
+  yield* addRepeatableJob("emails", "daily-digest", { type: "digest" }, {
+    cron: "0 9 * * *",
   })
 
-  // Run a workflow (sequential steps)
+  // Workflows — sequential, parallel, saga, pipeline
   yield* runSequential("onboarding", [
     { queue: "emails", name: "welcome", data: {} },
     { queue: "emails", name: "setup-guide", data: {} },
   ])
+
+  yield* runParallel("reports", [
+    { queue: "reports", name: "sales", data: {} },
+    { queue: "reports", name: "usage", data: {} },
+  ])
+
+  // Saga with compensation on failure
+  yield* runSaga("order", [
+    { queue: "orders", name: "charge", data: {}, compensation: { queue: "orders", name: "refund", data: {} } },
+    { queue: "orders", name: "ship", data: {} },
+  ])
+
+  // Worker registry — heartbeat and dead worker cleanup
+  yield* registerWorker("worker-1", "emails", "host-1", process.pid, 4)
+  yield* heartbeat("worker-1", 2)
+  yield* cleanDeadWorkers(60000) // timeout in ms
+
+  // Maintenance — prune old jobs, recover stalled
+  yield* pruneCompleted("emails", "7 days")
+  yield* recoverStalled("emails", 300000)
 })
 ```
+
+| Sub-module | Key exports |
+|---|---|
+| **Core** | `enqueue`, `enqueueBulk`, `dequeue`, `completeJob`, `failJob`, `retryJob`, `cancelJob`, `queueStats` |
+| **Orchestrator** | `runSequential`, `runParallel`, `runPipeline`, `runSaga`, `getWorkflow`, `cancelWorkflow` |
+| **Scheduler** | `addRepeatableJob`, `removeRepeatableJob`, `listRepeatableJobs`, `schedulerTick` |
+| **Worker** | `QueueWorker` (Effect service tag), `workerLayer` |
+| **Events** | `QueueEventBus`, `eventBusLayer`, `emitEvent`, `listenForEvents` |
+| **Registry** | `registerWorker`, `deregisterWorker`, `heartbeat`, `getActiveWorkers`, `cleanDeadWorkers` |
+| **Maintenance** | `pruneCompleted`, `pruneFailed`, `recoverStalled`, `runMaintenance` |
 
 ---
 
