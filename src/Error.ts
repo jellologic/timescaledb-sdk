@@ -69,3 +69,8 @@ export class FunctionError extends Data.TaggedError("FunctionError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
+
+export class QueueError extends Data.TaggedError("QueueError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}

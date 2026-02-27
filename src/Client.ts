@@ -1,6 +1,6 @@
 import * as PgClient from "@effect/sql-pg/PgClient"
 import { SqlClient } from "@effect/sql"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Stream } from "effect"
 import { ConnectionError, QueryError, TransactionError } from "./Error.js"
 import { TimescaleConfigService } from "./Config.js"
 
@@ -8,6 +8,8 @@ export interface TimescaleClientShape {
   readonly sql: SqlClient.SqlClient
   readonly execute: <A = unknown>(query: string, params?: ReadonlyArray<unknown>) => Effect.Effect<ReadonlyArray<A>, QueryError>
   readonly withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | TransactionError, R>
+  readonly listen?: (channel: string) => Stream.Stream<string, QueryError>
+  readonly notify?: (channel: string, payload: string) => Effect.Effect<void, QueryError>
 }
 
 export class TimescaleClient extends Context.Tag("TimescaleClient")<
@@ -35,11 +37,23 @@ const makeFromSqlClient = (sql: SqlClient.SqlClient): TimescaleClientShape => ({
     ),
 })
 
+const makeFromPgClient = (pgClient: PgClient.PgClient): TimescaleClientShape => ({
+  ...makeFromSqlClient(pgClient),
+  listen: (channel: string) =>
+    pgClient.listen(channel).pipe(
+      Stream.mapError((error) => new QueryError({ message: String(error), cause: error }))
+    ),
+  notify: (channel: string, payload: string) =>
+    pgClient.notify(channel, payload).pipe(
+      Effect.mapError((error) => new QueryError({ message: String(error), cause: error }))
+    ),
+})
+
 export const layer = (config: PgClient.PgClientConfig): Layer.Layer<TimescaleClient, ConnectionError> =>
   PgClient.layer(config).pipe(
     Layer.map((ctx) => {
-      const sql = Context.get(ctx, SqlClient.SqlClient)
-      return Context.make(TimescaleClient, makeFromSqlClient(sql))
+      const pgClient = Context.get(ctx, PgClient.PgClient)
+      return Context.make(TimescaleClient, makeFromPgClient(pgClient))
     }),
     Layer.mapError((error) => new ConnectionError({ message: String(error), cause: error }))
   )
@@ -60,7 +74,7 @@ export const layerFromConfig: Layer.Layer<TimescaleClient, ConnectionError, Time
       }
       // We need to use PgClient.make + SqlClient to wrap properly
       const pgClient = yield* PgClient.make(pgConfig)
-      return makeFromSqlClient(pgClient)
+      return makeFromPgClient(pgClient)
     })
   ).pipe(
     Layer.mapError((error) => new ConnectionError({ message: String(error), cause: error }))
