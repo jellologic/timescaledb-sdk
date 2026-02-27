@@ -17,13 +17,14 @@ describe("Function migration - DefinitionsSnapshot", () => {
     const snapshot = definitionsToSnapshot([fn.definition])
     expect(snapshot.functions).toBeDefined()
     expect(snapshot.functions!.length).toBe(1)
-    expect(snapshot.functions![0].name).toBe("add_numbers")
-    expect(snapshot.functions![0].schema).toBe("public")
-    expect(snapshot.functions![0].returnType).toBe("INTEGER")
-    expect(snapshot.functions![0].language).toBe("plpgsql")
-    expect(snapshot.functions![0].volatility).toBe("VOLATILE")
-    expect(snapshot.functions![0].bodyHash).toBeDefined()
-    expect(snapshot.functions![0].bodyHash.length).toBeGreaterThan(0)
+    const fn0 = snapshot.functions![0]!
+    expect(fn0.name).toBe("add_numbers")
+    expect(fn0.schema).toBe("public")
+    expect(fn0.returnType).toBe("INTEGER")
+    expect(fn0.language).toBe("plpgsql")
+    expect(fn0.volatility).toBe("VOLATILE")
+    expect(fn0.bodyHash).toBeDefined()
+    expect(fn0.bodyHash.length).toBeGreaterThan(0)
   })
 
   test("includes param types in snapshot", () => {
@@ -35,7 +36,7 @@ describe("Function migration - DefinitionsSnapshot", () => {
     })
 
     const snapshot = definitionsToSnapshot([fn.definition])
-    expect(snapshot.functions![0].params).toEqual([
+    expect(snapshot.functions![0]!.params).toEqual([
       { name: "first", type: "TEXT" },
       { name: "last", type: "TEXT" },
     ])
@@ -61,7 +62,7 @@ describe("Function migration - diffSchema", () => {
 
     const diff = diffSchema([fn.definition], emptySnapshot)
     expect(diff.functionsToCreate.length).toBe(1)
-    expect(diff.functionsToCreate[0].name).toBe("add_numbers")
+    expect(diff.functionsToCreate[0]!.name).toBe("add_numbers")
   })
 
   test("detects function to drop", () => {

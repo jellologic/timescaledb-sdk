@@ -59,6 +59,9 @@ const emptyDiff: SchemaDiff = {
   retentionPoliciesToAlter: [],
   caggRefreshPoliciesToAlter: [],
   caggMigrations: [],
+  functionsToCreate: [],
+  functionsToDrop: [],
+  functionsToReplace: [],
   warnings: [],
 }
 
