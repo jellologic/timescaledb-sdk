@@ -1,5 +1,6 @@
 import { Expression } from "./Expression.js"
 import type { ColumnDef } from "../schema/types.js"
+import { unnumberParams } from "./_internal.js"
 
 export type WhereCondition = Expression<boolean>
 
@@ -90,16 +91,6 @@ export const or = (...conditions: ReadonlyArray<WhereCondition>): WhereCondition
 export const not = (condition: WhereCondition): WhereCondition =>
   new Expression<boolean>(`NOT (${condition.sql})`, condition.params)
 
-/** Convert numbered params ($1, $2, ...) back to $? placeholders for re-numbering by outer query */
-const unnumberParams = (sql: string, paramCount: number): string => {
-  let result = sql
-  // Replace in reverse order to avoid $1 matching inside $10, $11, etc.
-  for (let i = paramCount; i >= 1; i--) {
-    result = result.replace(new RegExp(`\\$${i}(?!\\d)`, "g"), "$?")
-  }
-  return result
-}
-
 /** EXISTS (subquery) — subquery must have a toSql(): { sql: string; params: unknown[] } method */
 export const exists = (subquery: { toSql(): { sql: string; params: readonly unknown[] } }): WhereCondition => {
   const stmt = subquery.toSql()
@@ -126,4 +117,58 @@ export const notInSubquery = (col: ColumnDef<any> | Expression<any> | string, su
   const stmt = subquery.toSql()
   const sql = unnumberParams(stmt.sql, stmt.params.length)
   return new Expression<boolean>(`${colRef(col)} NOT IN (${sql})`, [...colParams(col), ...stmt.params])
+}
+
+// --- Batch 2: Where clause completions ---
+
+export const notBetween = <T>(col: ColumnDef<T> | Expression<T> | string, from: T, to: T): WhereCondition => {
+  const params = [...colParams(col), from, to]
+  return new Expression<boolean>(`${colRef(col)} NOT BETWEEN $? AND $?`, params)
+}
+
+export const notLike = (col: ColumnDef<string> | Expression<string> | string, pattern: string): WhereCondition => {
+  const params = [...colParams(col), pattern]
+  return new Expression<boolean>(`${colRef(col)} NOT LIKE $?`, params)
+}
+
+export const notIlike = (col: ColumnDef<string> | Expression<string> | string, pattern: string): WhereCondition => {
+  const params = [...colParams(col), pattern]
+  return new Expression<boolean>(`${colRef(col)} NOT ILIKE $?`, params)
+}
+
+export const isDistinctFrom = <T>(col: ColumnDef<T> | Expression<T> | string, val: T): WhereCondition => {
+  const params = [...colParams(col), val]
+  return new Expression<boolean>(`${colRef(col)} IS DISTINCT FROM $?`, params)
+}
+
+export const isNotDistinctFrom = <T>(col: ColumnDef<T> | Expression<T> | string, val: T): WhereCondition => {
+  const params = [...colParams(col), val]
+  return new Expression<boolean>(`${colRef(col)} IS NOT DISTINCT FROM $?`, params)
+}
+
+export const anyOf = <T>(col: ColumnDef<T> | Expression<T> | string, values: ReadonlyArray<T>): WhereCondition => {
+  const placeholders = values.map(() => "$?").join(", ")
+  const params = [...colParams(col), ...values]
+  return new Expression<boolean>(`${colRef(col)} = ANY(ARRAY[${placeholders}])`, params)
+}
+
+export const allOf = <T>(col: ColumnDef<T> | Expression<T> | string, values: ReadonlyArray<T>): WhereCondition => {
+  const placeholders = values.map(() => "$?").join(", ")
+  const params = [...colParams(col), ...values]
+  return new Expression<boolean>(`${colRef(col)} = ALL(ARRAY[${placeholders}])`, params)
+}
+
+export const similarTo = (col: ColumnDef<string> | Expression<string> | string, pattern: string): WhereCondition => {
+  const params = [...colParams(col), pattern]
+  return new Expression<boolean>(`${colRef(col)} SIMILAR TO $?`, params)
+}
+
+export const regexpMatch = (col: ColumnDef<string> | Expression<string> | string, pattern: string): WhereCondition => {
+  const params = [...colParams(col), pattern]
+  return new Expression<boolean>(`${colRef(col)} ~ $?`, params)
+}
+
+export const regexpIMatch = (col: ColumnDef<string> | Expression<string> | string, pattern: string): WhereCondition => {
+  const params = [...colParams(col), pattern]
+  return new Expression<boolean>(`${colRef(col)} ~* $?`, params)
 }
