@@ -43,7 +43,7 @@ export interface SchemaDiff {
   readonly rlsToDisable: ReadonlyArray<string>
   readonly rlsPoliciesToCreate: ReadonlyArray<{ table: string; policy: RlsPolicyDef }>
   readonly rlsPoliciesToDrop: ReadonlyArray<{ table: string; policyName: string }>
-  readonly rlsPoliciesToAlter: ReadonlyArray<{ table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string> }>
+  readonly rlsPoliciesToAlter: ReadonlyArray<{ table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string> }>
   readonly compressionPoliciesToAdd: ReadonlyArray<{ table: string; after: string }>
   readonly compressionPoliciesToRemove: ReadonlyArray<string>
   readonly retentionPoliciesToAdd: ReadonlyArray<{ table: string; dropAfter: string }>
@@ -415,18 +415,21 @@ export const diffSchema = (
         rlsPoliciesToCreate.push({ table: def.name, policy })
       } else {
         // Check for alterations
-        const alteration: { table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string> } = { table: def.name, policyName: policy.name }
+        const alteration: { table: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string> } = { table: def.name, policyName: policy.name }
         let hasChanges = false
         if (policy.using && policy.using !== existing.using) {
           alteration.using = policy.using
+          alteration.oldUsing = existing.using
           hasChanges = true
         }
         if (policy.check && policy.check !== existing.withCheck) {
           alteration.check = policy.check
+          alteration.oldCheck = existing.withCheck
           hasChanges = true
         }
         if (policy.roles && JSON.stringify([...policy.roles]) !== JSON.stringify([...existing.roles])) {
           alteration.roles = policy.roles
+          alteration.oldRoles = existing.roles
           hasChanges = true
         }
         if (hasChanges) rlsPoliciesToAlter.push(alteration)
@@ -458,7 +461,14 @@ export const diffSchema = (
   const tieringToRemove: string[] = []
   const compressionPoliciesToAlter: Array<{ table: string; after: string }> = []
   const retentionPoliciesToAlter: Array<{ table: string; dropAfter: string }> = []
+
+  // CAGG migrations — populate when migrate flag is set and CAGG exists in snapshot
   const caggMigrations: string[] = []
+  for (const cagg of caggDefs) {
+    if (cagg.migrate && snapshotCaggNames.has(cagg.viewName)) {
+      caggMigrations.push(cagg.viewName)
+    }
+  }
 
   for (const htDef of htDefs) {
     if (hypertablesToCreate.includes(htDef.name)) continue // new hypertables handled in creation
@@ -1030,6 +1040,26 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (timescaledb.enable_chunk_skipping = true);`)
     }
 
+    // Direct compress settings (v2.18+)
+    if (config.directCompress) {
+      const dcParts: string[] = []
+      if (config.directCompress.insertEnabled !== undefined) {
+        dcParts.push(`timescaledb.enable_direct_compress_insert = ${config.directCompress.insertEnabled}`)
+      }
+      if (config.directCompress.copyEnabled !== undefined) {
+        dcParts.push(`timescaledb.enable_direct_compress_copy = ${config.directCompress.copyEnabled}`)
+      }
+      if (config.directCompress.insertClientSorted !== undefined) {
+        dcParts.push(`timescaledb.enable_direct_compress_insert_client_sorted = ${config.directCompress.insertClientSorted}`)
+      }
+      if (config.directCompress.copyClientSorted !== undefined) {
+        dcParts.push(`timescaledb.enable_direct_compress_copy_client_sorted = ${config.directCompress.copyClientSorted}`)
+      }
+      if (dcParts.length > 0) {
+        up.push(`ALTER TABLE ${quoteIdentifier(tableName)} SET (${dcParts.join(", ")});`)
+      }
+    }
+
     // Hypercore (H1) — set access method to columnar store
     if (config.hypercore?.enabled) {
       let hypercoreSql = `ALTER TABLE ${quoteIdentifier(tableName)} SET ACCESS METHOD hypercore`
@@ -1292,6 +1322,26 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     if (alt.check) sql += ` WITH CHECK (${alt.check})`
     sql += ";"
     up.push(sql)
+
+    // Down migration: restore old values
+    let downSql = `ALTER POLICY ${quoteIdentifier(alt.policyName)} ON ${quoteIdentifier(alt.table)}`
+    let hasDown = false
+    if (alt.oldRoles && alt.oldRoles.length > 0) {
+      downSql += ` TO ${alt.oldRoles.join(", ")}`
+      hasDown = true
+    }
+    if (alt.oldUsing) {
+      downSql += ` USING (${alt.oldUsing})`
+      hasDown = true
+    }
+    if (alt.oldCheck) {
+      downSql += ` WITH CHECK (${alt.oldCheck})`
+      hasDown = true
+    }
+    if (hasDown) {
+      downSql += ";"
+      down.push(downSql)
+    }
   }
 
   // Compression policy changes on existing hypertables

@@ -89,3 +89,41 @@ export const or = (...conditions: ReadonlyArray<WhereCondition>): WhereCondition
 
 export const not = (condition: WhereCondition): WhereCondition =>
   new Expression<boolean>(`NOT (${condition.sql})`, condition.params)
+
+/** Convert numbered params ($1, $2, ...) back to $? placeholders for re-numbering by outer query */
+const unnumberParams = (sql: string, paramCount: number): string => {
+  let result = sql
+  // Replace in reverse order to avoid $1 matching inside $10, $11, etc.
+  for (let i = paramCount; i >= 1; i--) {
+    result = result.replace(new RegExp(`\\$${i}(?!\\d)`, "g"), "$?")
+  }
+  return result
+}
+
+/** EXISTS (subquery) — subquery must have a toSql(): { sql: string; params: unknown[] } method */
+export const exists = (subquery: { toSql(): { sql: string; params: readonly unknown[] } }): WhereCondition => {
+  const stmt = subquery.toSql()
+  const sql = unnumberParams(stmt.sql, stmt.params.length)
+  return new Expression<boolean>(`EXISTS (${sql})`, stmt.params)
+}
+
+/** NOT EXISTS (subquery) */
+export const notExists = (subquery: { toSql(): { sql: string; params: readonly unknown[] } }): WhereCondition => {
+  const stmt = subquery.toSql()
+  const sql = unnumberParams(stmt.sql, stmt.params.length)
+  return new Expression<boolean>(`NOT EXISTS (${sql})`, stmt.params)
+}
+
+/** column IN (subquery) */
+export const inSubquery = (col: ColumnDef<any> | Expression<any> | string, subquery: { toSql(): { sql: string; params: readonly unknown[] } }): WhereCondition => {
+  const stmt = subquery.toSql()
+  const sql = unnumberParams(stmt.sql, stmt.params.length)
+  return new Expression<boolean>(`${colRef(col)} IN (${sql})`, [...colParams(col), ...stmt.params])
+}
+
+/** column NOT IN (subquery) */
+export const notInSubquery = (col: ColumnDef<any> | Expression<any> | string, subquery: { toSql(): { sql: string; params: readonly unknown[] } }): WhereCondition => {
+  const stmt = subquery.toSql()
+  const sql = unnumberParams(stmt.sql, stmt.params.length)
+  return new Expression<boolean>(`${colRef(col)} NOT IN (${sql})`, [...colParams(col), ...stmt.params])
+}

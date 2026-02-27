@@ -60,6 +60,30 @@ export const decompressChunk = (
     Effect.mapError((e) => new CompressionError({ message: `Failed to decompress chunk: ${e}`, cause: e }))
   )
 
+export const convertToColumnstore = (
+  chunk: string,
+  opts?: { ifNotColumnstore?: boolean }
+): Effect.Effect<void, CompressionError, TimescaleClient> =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    const extra = opts?.ifNotColumnstore ? ", if_not_columnstore => true" : ""
+    yield* client.execute(`SELECT convert_to_columnstore('${chunk}'${extra})`)
+  }).pipe(
+    Effect.mapError((e) => new CompressionError({ message: `Failed to convert to columnstore: ${e}`, cause: e }))
+  )
+
+export const convertToRowstore = (
+  chunk: string,
+  opts?: { ifNotRowstore?: boolean }
+): Effect.Effect<void, CompressionError, TimescaleClient> =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    const extra = opts?.ifNotRowstore ? ", if_not_rowstore => true" : ""
+    yield* client.execute(`SELECT convert_to_rowstore('${chunk}'${extra})`)
+  }).pipe(
+    Effect.mapError((e) => new CompressionError({ message: `Failed to convert to rowstore: ${e}`, cause: e }))
+  )
+
 export const compressionInfo = (
   table: TableDefinition | string
 ): Effect.Effect<ReadonlyArray<Record<string, unknown>>, CompressionError, TimescaleClient> =>

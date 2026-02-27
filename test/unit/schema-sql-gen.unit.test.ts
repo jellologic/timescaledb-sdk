@@ -2926,3 +2926,264 @@ describe("Job name identification (5D)", () => {
     expect(diff.jobsToDelete.length).toBe(0)
   })
 })
+
+// =============================================================================
+// Batch 16: RLS ALTER POLICY — WITH CHECK and roles coverage
+// =============================================================================
+
+describe("SQL Generation — RLS ALTER POLICY completeness (Batch 16)", () => {
+  test("detects and generates ALTER POLICY for WITH CHECK change", () => {
+    const t = pgTable("documents", {
+      id: serial("id"),
+      owner_id: integer("owner_id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [rlsPolicy("insert_policy", { check: "owner_id = current_user_id()", command: "INSERT" })],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "documents", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "owner_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [{
+        tableName: "documents",
+        policyName: "insert_policy",
+        command: "INSERT",
+        roles: [],
+        using: null,
+        withCheck: "owner_id = 999",
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.rlsPoliciesToAlter.length).toBe(1)
+    expect(diff.rlsPoliciesToAlter[0]!.check).toBe("owner_id = current_user_id()")
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("ALTER POLICY") && s.includes("WITH CHECK") && s.includes("current_user_id()"))).toBe(true)
+  })
+
+  test("detects and generates ALTER POLICY for roles change", () => {
+    const t = pgTable("secrets", {
+      id: serial("id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [rlsPolicy("admin_only", { using: "is_admin()", command: "ALL", roles: ["admin", "superadmin"] })],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "secrets", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [{
+        tableName: "secrets",
+        policyName: "admin_only",
+        command: "ALL",
+        roles: ["admin"],
+        using: "is_admin()",
+        withCheck: null,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.rlsPoliciesToAlter.length).toBe(1)
+    expect(diff.rlsPoliciesToAlter[0]!.roles).toEqual(["admin", "superadmin"])
+    // using didn't change, so it should not be in the alteration
+    expect(diff.rlsPoliciesToAlter[0]!.using).toBeUndefined()
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("ALTER POLICY") && s.includes("TO admin, superadmin"))).toBe(true)
+  })
+
+  test("detects combined USING + WITH CHECK + roles change", () => {
+    const t = pgTable("orders", {
+      id: serial("id"),
+      team_id: integer("team_id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [rlsPolicy("team_policy", {
+        using: "team_id = get_team()",
+        check: "team_id = get_team()",
+        command: "ALL",
+        roles: ["team_member"],
+      })],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "orders", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "team_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [{
+        tableName: "orders",
+        policyName: "team_policy",
+        command: "ALL",
+        roles: ["employee"],
+        using: "team_id = old_check()",
+        withCheck: "team_id = old_check()",
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.rlsPoliciesToAlter.length).toBe(1)
+    const alt = diff.rlsPoliciesToAlter[0]!
+    expect(alt.using).toBe("team_id = get_team()")
+    expect(alt.check).toBe("team_id = get_team()")
+    expect(alt.roles).toEqual(["team_member"])
+
+    const { up } = generateMigrationSql(diff, [t])
+    const alterSql = up.find((s) => s.includes("ALTER POLICY"))!
+    expect(alterSql).toContain("TO team_member")
+    expect(alterSql).toContain("USING (team_id = get_team())")
+    expect(alterSql).toContain("WITH CHECK (team_id = get_team())")
+  })
+})
+
+// =============================================================================
+// Batch 16: Trigger diff SQL generation verification
+// =============================================================================
+
+describe("SQL Generation — Trigger diff SQL verification (Batch 16)", () => {
+  test("triggersToCreate from diff produces CREATE TRIGGER SQL", () => {
+    const t = pgTable("events", {
+      id: serial("id"),
+      created_at: timestamptz("created_at"),
+    }, (tb) => [
+      trigger("notify_insert", {
+        timing: "AFTER",
+        events: ["INSERT"],
+        forEach: "ROW",
+        functionName: "notify_event",
+      }),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "created_at", dataType: "timestamptz", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.triggersToCreate.length).toBe(1)
+
+    const { up, down } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("CREATE TRIGGER") && s.includes("notify_insert") && s.includes("AFTER INSERT"))).toBe(true)
+    expect(up.some((s) => s.includes("EXECUTE FUNCTION notify_event()"))).toBe(true)
+    expect(down.some((s) => s.includes("DROP TRIGGER IF EXISTS") && s.includes("notify_insert"))).toBe(true)
+  })
+
+  test("triggersToDrop from diff produces DROP TRIGGER SQL", () => {
+    const t = pgTable("events", {
+      id: serial("id"),
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "events", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [{
+        name: "old_trigger",
+        timing: "BEFORE",
+        events: ["DELETE"],
+        forEach: "ROW",
+        functionName: "prevent_delete",
+      }] }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.triggersToDrop.length).toBe(1)
+    expect(diff.triggersToDrop[0]!.triggerName).toBe("old_trigger")
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("DROP TRIGGER IF EXISTS") && s.includes("old_trigger"))).toBe(true)
+  })
+
+  test("multi-trigger diff: add one, remove one on same table", () => {
+    const t = pgTable("audit_log", {
+      id: serial("id"),
+      action: text("action"),
+    }, (tb) => [
+      trigger("new_audit_trigger", {
+        timing: "AFTER",
+        events: ["INSERT", "UPDATE"],
+        forEach: "ROW",
+        functionName: "log_audit",
+      }),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "audit_log", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "action", dataType: "text", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [{
+        name: "old_audit_trigger",
+        timing: "BEFORE",
+        events: ["INSERT"],
+        forEach: "STATEMENT",
+        functionName: "old_log",
+      }] }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.triggersToCreate.length).toBe(1)
+    expect(diff.triggersToDrop.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("DROP TRIGGER IF EXISTS") && s.includes("old_audit_trigger"))).toBe(true)
+    expect(up.some((s) => s.includes("CREATE TRIGGER") && s.includes("new_audit_trigger") && s.includes("INSERT OR UPDATE"))).toBe(true)
+  })
+
+  test("trigger with WHEN condition and UPDATE OF columns", () => {
+    const t = pgTable("prices", {
+      id: serial("id"),
+      price: doublePrecision("price"),
+    }, (tb) => [
+      trigger("price_change", {
+        timing: "AFTER",
+        events: ["UPDATE"],
+        forEach: "ROW",
+        functionName: "notify_price_change",
+        when: "OLD.price != NEW.price",
+        columns: ["price"],
+      }),
+    ])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [{ name: "prices", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "price", dataType: "double precision", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot)
+    expect(diff.triggersToCreate.length).toBe(1)
+
+    const { up } = generateMigrationSql(diff, [t])
+    const triggerSql = up.find((s) => s.includes("CREATE TRIGGER") && s.includes("price_change"))!
+    expect(triggerSql).toContain('UPDATE OF "price"')
+    expect(triggerSql).toContain("WHEN (OLD.price != NEW.price)")
+    expect(triggerSql).toContain("EXECUTE FUNCTION notify_price_change()")
+  })
+})

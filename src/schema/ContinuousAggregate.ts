@@ -18,6 +18,8 @@ export const continuousAggregateView = (
     refreshPolicies?: ReadonlyArray<CaggRefreshPolicy>
     /** Use sourceView instead of sourceHypertable for hierarchical CAGGs */
     sourceView?: string
+    /** Trigger cagg_migrate() for old-format CAGGs (pre-finalize) */
+    migrate?: boolean
   },
   options?: { schema?: string }
 ): CaggDefinition => ({
@@ -38,6 +40,7 @@ export const continuousAggregateView = (
   retentionPolicy: config.retentionPolicy,
   refreshPolicy: config.refreshPolicy,
   refreshPolicies: config.refreshPolicies,
+  migrate: config.migrate,
 })
 
 export const aggColumn = {

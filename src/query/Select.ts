@@ -163,12 +163,20 @@ export class SelectBuilder<T = Record<string, unknown>> {
 
     // JOINs
     for (const j of this._joins) {
-      const tableRef = j.alias ? `"${j.table}" AS "${j.alias}"` : `"${j.table}"`
-      if (j.type === "CROSS") {
-        sql += ` CROSS JOIN ${tableRef}`
-      } else if (j.on) {
-        const onSql = resolvePlaceholders(j.on.sql, j.on.params)
-        sql += ` ${j.type} JOIN ${tableRef} ON ${onSql}`
+      if (j.lateral && j.subquerySql) {
+        // LATERAL join with subquery
+        const subSql = resolvePlaceholders(j.subquerySql, j.subqueryParams ?? [])
+        const aliasClause = j.alias ? ` AS "${j.alias}"` : ""
+        const onSql = j.on ? resolvePlaceholders(j.on.sql, j.on.params) : "TRUE"
+        sql += ` ${j.type} JOIN LATERAL (${subSql})${aliasClause} ON ${onSql}`
+      } else {
+        const tableRef = j.alias ? `"${j.table}" AS "${j.alias}"` : `"${j.table}"`
+        if (j.type === "CROSS") {
+          sql += ` CROSS JOIN ${tableRef}`
+        } else if (j.on) {
+          const onSql = resolvePlaceholders(j.on.sql, j.on.params)
+          sql += ` ${j.type} JOIN ${tableRef} ON ${onSql}`
+        }
       }
     }
 

@@ -28,6 +28,19 @@ export const timeBucket = (
   return new Expression<Date>(`time_bucket(${args})`, params)
 }
 
+export const timeBucketRange = (
+  interval: string,
+  col: ColumnDef<Date> | Expression<Date> | string,
+  opts?: { timezone?: string }
+): Expression<unknown> => {
+  const ref = colRef(col)
+  const params = colParams(col)
+  const extraArgs: string[] = []
+  if (opts?.timezone) extraArgs.push(`timezone => '${opts.timezone}'`)
+  const args = [`'${interval}'`, ref, ...extraArgs].join(", ")
+  return new Expression<unknown>(`time_bucket_range(${args})`, params)
+}
+
 export const timeBucketGapfill = (
   interval: string,
   col: ColumnDef<Date> | Expression<Date> | string,

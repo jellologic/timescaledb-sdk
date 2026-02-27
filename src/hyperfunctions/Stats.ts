@@ -39,6 +39,18 @@ export class StatsAggExpression extends Expression<unknown> {
   sum(): Expression<number> {
     return new Expression<number>(`sum(${this.sql})`, this.params)
   }
+
+  rolling(): StatsAggExpression {
+    return StatsAggExpression._fromSql(`rolling(${this.sql})`, this.params)
+  }
+
+  /** @internal */
+  static _fromSql(sql: string, params: ReadonlyArray<unknown>): StatsAggExpression {
+    const expr = Object.create(StatsAggExpression.prototype) as StatsAggExpression
+    Object.defineProperty(expr, "sql", { value: sql, writable: false })
+    Object.defineProperty(expr, "params", { value: params, writable: false })
+    return expr
+  }
 }
 
 export class StatsAgg2DExpression extends Expression<unknown> {
@@ -113,6 +125,18 @@ export class StatsAgg2DExpression extends Expression<unknown> {
       x: new Expression<number>(`sum_x(${this.sql})`, this.params),
       y: new Expression<number>(`sum_y(${this.sql})`, this.params),
     }
+  }
+
+  rolling(): StatsAgg2DExpression {
+    return StatsAgg2DExpression._fromSql(`rolling(${this.sql})`, this.params)
+  }
+
+  /** @internal */
+  static _fromSql(sql: string, params: ReadonlyArray<unknown>): StatsAgg2DExpression {
+    const expr = Object.create(StatsAgg2DExpression.prototype) as StatsAgg2DExpression
+    Object.defineProperty(expr, "sql", { value: sql, writable: false })
+    Object.defineProperty(expr, "params", { value: params, writable: false })
+    return expr
   }
 }
 

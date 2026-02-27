@@ -192,3 +192,74 @@ describe("Rollup", () => {
     expect(d.sql).toBe('delta(rollup(gauge_agg("time", "value")))')
   })
 })
+
+// =============================================================================
+// Batch 18: rolling(), time_bucket_range(), HLL union
+// =============================================================================
+
+import { timeBucketRange } from "../../src/hyperfunctions/TimeBucket.js"
+import { statsAgg2D } from "../../src/hyperfunctions/Stats.js"
+import { hyperloglog } from "../../src/hyperfunctions/Approximate.js"
+
+describe("counter_agg rolling()", () => {
+  test("rolling wraps counter_agg", () => {
+    const r = counterAgg("time", "value").rolling()
+    expect(r.sql).toBe('rolling(counter_agg("time", "value"))')
+  })
+
+  test("rolling preserves delta accessor", () => {
+    const d = counterAgg("time", "value").rolling().delta()
+    expect(d.sql).toBe('delta(rolling(counter_agg("time", "value")))')
+  })
+
+  test("rolling preserves rate accessor", () => {
+    const r = counterAgg("time", "value").rolling().rate()
+    expect(r.sql).toBe('rate(rolling(counter_agg("time", "value")))')
+  })
+})
+
+describe("stats_agg rolling()", () => {
+  test("rolling wraps 1D stats_agg", () => {
+    const r = statsAgg("value").rolling()
+    expect(r.sql).toBe('rolling(stats_agg("value"))')
+  })
+
+  test("rolling 1D preserves average accessor", () => {
+    const avg = statsAgg("value").rolling().average()
+    expect(avg.sql).toBe('average(rolling(stats_agg("value")))')
+  })
+
+  test("rolling wraps 2D stats_agg", () => {
+    const r = statsAgg2D("y_val", "x_val").rolling()
+    expect(r.sql).toBe('rolling(stats_agg("y_val", "x_val"))')
+  })
+
+  test("rolling 2D preserves slope accessor", () => {
+    const s = statsAgg2D("y_val", "x_val").rolling().slope()
+    expect(s.sql).toBe('slope(rolling(stats_agg("y_val", "x_val")))')
+  })
+})
+
+describe("time_bucket_range()", () => {
+  test("basic time_bucket_range", () => {
+    const expr = timeBucketRange("1 hour", "time")
+    expect(expr.sql).toBe(`time_bucket_range('1 hour', "time")`)
+  })
+
+  test("time_bucket_range with timezone", () => {
+    const expr = timeBucketRange("1 day", "created_at", { timezone: "US/Eastern" })
+    expect(expr.sql).toBe(`time_bucket_range('1 day', "created_at", timezone => 'US/Eastern')`)
+  })
+})
+
+describe("HyperLogLog union()", () => {
+  test("union wraps with rollup", () => {
+    const u = hyperloglog("user_id", 1024).union()
+    expect(u.sql).toBe('rollup(hyperloglog(1024, "user_id"))')
+  })
+
+  test("union preserves distinctCount accessor", () => {
+    const dc = hyperloglog("user_id").union().distinctCount()
+    expect(dc.sql).toBe('distinct_count(rollup(hyperloglog("user_id")))')
+  })
+})

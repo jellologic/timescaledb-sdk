@@ -53,6 +53,22 @@ export const refreshContinuousAggregate = (
     Effect.mapError((e) => new ContinuousAggregateError({ message: `Failed to refresh continuous aggregate: ${e}`, cause: e }))
   )
 
+export const continuousAggregateStats = (
+  viewName?: string
+): Effect.Effect<ReadonlyArray<Record<string, unknown>>, ContinuousAggregateError, TimescaleClient> =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    if (viewName) {
+      return yield* client.execute<Record<string, unknown>>(
+        `SELECT * FROM timescaledb_information.continuous_aggregates_stats WHERE view_name = $1`,
+        [viewName]
+      )
+    }
+    return yield* client.execute<Record<string, unknown>>(`SELECT * FROM timescaledb_information.continuous_aggregates_stats`)
+  }).pipe(
+    Effect.mapError((e) => new ContinuousAggregateError({ message: `Failed to get continuous aggregate stats: ${e}`, cause: e }))
+  )
+
 export const continuousAggregateInfo = (
   viewName?: string
 ): Effect.Effect<ReadonlyArray<Record<string, unknown>>, ContinuousAggregateError, TimescaleClient> =>

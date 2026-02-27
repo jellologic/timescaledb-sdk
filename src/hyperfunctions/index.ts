@@ -1,4 +1,4 @@
-export { timeBucket, timeBucketGapfill } from "./TimeBucket.js"
+export { timeBucket, timeBucketGapfill, timeBucketRange } from "./TimeBucket.js"
 export { locf, interpolate } from "./Gapfill.js"
 export { first, last } from "./FirstLast.js"
 export { percentileAgg, approxPercentile, approxPercentileRank } from "./Percentile.js"

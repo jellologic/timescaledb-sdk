@@ -76,6 +76,10 @@ export class CounterAggExpression extends Expression<unknown> {
     return new Expression<number>(`corr(${this.sql})`, this.params)
   }
 
+  rolling(): CounterAggExpression {
+    return CounterAggExpression._fromSql(`rolling(${this.sql})`, this.params)
+  }
+
   withBounds(start: string, end: string): CounterAggExpression {
     return CounterAggExpression._fromSql(
       `with_bounds(${this.sql}, tstzrange('${start}'::timestamptz, '${end}'::timestamptz))`,

@@ -177,6 +177,8 @@ export interface HypertableConfig {
   readonly useModernColumnstoreSyntax?: boolean
   /** For integer-based time columns, set the function that returns "now" */
   readonly integerNowFunc?: string
+  /** Direct compress settings for INSERT/COPY optimization (v2.18+) */
+  readonly directCompress?: import("../compression/types.js").DirectCompressSettings
 }
 
 export interface HypertableDefinition<
@@ -232,6 +234,8 @@ export interface CaggDefinition {
   readonly createGroupIndexes?: boolean
   /** Use WAL-based invalidation (v2.22+) */
   readonly invalidateUsing?: "wal"
+  /** Trigger cagg_migrate() for old-format CAGGs (pre-finalize) */
+  readonly migrate?: boolean
 }
 
 export type TriggerTiming = "BEFORE" | "AFTER" | "INSTEAD OF"

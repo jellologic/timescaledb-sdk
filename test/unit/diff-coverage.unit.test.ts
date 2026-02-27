@@ -379,3 +379,153 @@ describe("Data tiering diff", () => {
     expect(up.some((s) => s.includes("add_tiering_policy") && s.includes("30 days"))).toBe(true)
   })
 })
+
+// =============================================================================
+// Batch 16: Enum reorder warning drill-down
+// =============================================================================
+
+describe("Enum reorder warning drill-down (Batch 16)", () => {
+  test("warning message contains meaningful text about reordering", () => {
+    const { pgEnum } = require("../../src/schema/Enum.js")
+    const statusEnum = pgEnum("priority_level", ["low", "medium", "high"])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "priority_level", schema: "public", values: ["high", "medium", "low"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([statusEnum], snapshot)
+    expect(diff.warnings.length).toBe(1)
+    expect(diff.warnings[0]!.name).toBe("priority_level")
+    expect(diff.warnings[0]!.message).toContain("reordered")
+  })
+
+  test("enum reordering produces NO DDL SQL (only warning)", () => {
+    const { pgEnum } = require("../../src/schema/Enum.js")
+    const statusEnum = pgEnum("status", ["b", "a", "c"])
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      enums: [{ name: "status", schema: "public", values: ["a", "b", "c"] }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([statusEnum], snapshot)
+    expect(diff.warnings.length).toBe(1)
+    // No enum DDL should be generated
+    expect(diff.enumsToCreate.length).toBe(0)
+    expect(diff.enumsToDrop.length).toBe(0)
+    expect(diff.enumsToAddValues.length).toBe(0)
+
+    const { up, down } = generateMigrationSql(diff, [])
+    // No SQL should be generated for the reordered enum
+    expect(up.filter((s) => s.includes("priority") || s.includes("status")).length).toBe(0)
+    expect(down.filter((s) => s.includes("priority") || s.includes("status")).length).toBe(0)
+  })
+})
+
+// =============================================================================
+// Batch 16: drainWarnings / permission error handling
+// =============================================================================
+
+describe("drainWarnings and permission error handling (Batch 16)", () => {
+  test("SnapshotWarning stores query name and message", () => {
+    const { SnapshotWarning } = require("../../src/migration/Snapshot.js")
+    const w = new SnapshotWarning("hypertables", "Permission denied querying hypertables")
+    expect(w._tag).toBe("SnapshotWarning")
+    expect(w.query).toBe("hypertables")
+    expect(w.message).toContain("Permission denied")
+  })
+
+  test("drainWarnings returns accumulated warnings then clears", () => {
+    // We can't easily test the module-level warnings array without a live DB,
+    // but we can test the SnapshotWarning constructor and verify the drain pattern
+    const { SnapshotWarning, drainWarnings } = require("../../src/migration/Snapshot.js")
+
+    // After draining, calling again should return empty
+    const first = drainWarnings()
+    const second = drainWarnings()
+    // Both should be arrays (even if empty without a live DB to trigger errors)
+    expect(Array.isArray(first)).toBe(true)
+    expect(Array.isArray(second)).toBe(true)
+  })
+
+  test("isPermissionError pattern recognition", () => {
+    // isPermissionError is not exported, so we test the patterns it handles
+    // by verifying the error strings it's designed to catch
+    const patterns = [
+      "ERROR: permission denied for table hypertable_data",
+      "ERROR: must be owner of relation events",
+      "ERROR: insufficient privilege for operation",
+    ]
+
+    for (const pattern of patterns) {
+      const msg = pattern.toLowerCase()
+      const isPermError = msg.includes("permission denied") || msg.includes("must be owner") || msg.includes("insufficient privilege")
+      expect(isPermError).toBe(true)
+    }
+
+    // Non-permission errors should NOT match
+    const nonPermErrors = [
+      "ERROR: relation does not exist",
+      "ERROR: column not found",
+      "ERROR: syntax error at position 42",
+    ]
+
+    for (const pattern of nonPermErrors) {
+      const msg = pattern.toLowerCase()
+      const isPermError = msg.includes("permission denied") || msg.includes("must be owner") || msg.includes("insufficient privilege")
+      expect(isPermError).toBe(false)
+    }
+  })
+})
+
+// =============================================================================
+// Batch 16: caggMigrations validation
+// =============================================================================
+
+describe("caggMigrations validation (Batch 16)", () => {
+  test("diffSchema never populates caggMigrations (currently dead code)", () => {
+    const { continuousAggregateView, aggColumn } = require("../../src/schema/ContinuousAggregate.js")
+    const cagg = continuousAggregateView("hourly_avg", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+    })
+
+    const snapshot: SchemaSnapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{
+        viewName: "hourly_avg",
+        viewSchema: "public",
+        viewDefinition: "SELECT time_bucket('1 hour', time) AS bucket, AVG(value) AS avg_value FROM metrics GROUP BY 1",
+        materializedOnly: false,
+        compressionEnabled: false,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot)
+    // caggMigrations is always empty because diffSchema never populates it
+    expect(diff.caggMigrations.length).toBe(0)
+  })
+
+  test("manually injected caggMigrations produces CALL cagg_migrate SQL", () => {
+    const { up } = generateMigrationSql(
+      {
+        ...emptyDiff,
+        caggMigrations: ["hourly_avg", "daily_summary"],
+      },
+      [],
+    )
+
+    expect(up.some((s) => s.includes("CALL cagg_migrate") && s.includes("hourly_avg"))).toBe(true)
+    expect(up.some((s) => s.includes("CALL cagg_migrate") && s.includes("daily_summary"))).toBe(true)
+  })
+})

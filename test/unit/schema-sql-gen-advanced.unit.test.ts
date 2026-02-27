@@ -290,3 +290,289 @@ describe("Migration Robustness", () => {
     expect(typeof loadAndRun).toBe("function")
   })
 })
+
+// =============================================================================
+// Batch 19: Columnstore conversion + Direct compress settings
+// =============================================================================
+
+describe("Columnstore Conversion Functions", () => {
+  test("convertToColumnstore is an Effect function", async () => {
+    const { convertToColumnstore } = await import("../../src/compression/Compression.js")
+    expect(typeof convertToColumnstore).toBe("function")
+  })
+
+  test("convertToRowstore is an Effect function", async () => {
+    const { convertToRowstore } = await import("../../src/compression/Compression.js")
+    expect(typeof convertToRowstore).toBe("function")
+  })
+})
+
+describe("DirectCompressSettings type and migration SQL", () => {
+  test("direct compress settings generate ALTER TABLE SET SQL", () => {
+    const { hypertable } = require("../../src/schema/Hypertable.js")
+    const { timestamptz, doublePrecision } = require("../../src/schema/Column.js")
+
+    const ht = hypertable("sensor_data", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      compression: { segmentby: ["device_id"], after: "7 days" },
+      directCompress: {
+        insertEnabled: true,
+        copyEnabled: true,
+      },
+    })
+
+    const diff = diffSchema([ht], { tables: [], hypertables: [], continuousAggregates: [], takenAt: new Date() })
+    const { up } = generateMigrationSql(diff, [ht])
+
+    expect(up.some((s) => s.includes("enable_direct_compress_insert = true"))).toBe(true)
+    expect(up.some((s) => s.includes("enable_direct_compress_copy = true"))).toBe(true)
+  })
+
+  test("direct compress with all four settings", () => {
+    const { hypertable } = require("../../src/schema/Hypertable.js")
+    const { timestamptz, doublePrecision } = require("../../src/schema/Column.js")
+
+    const ht = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      compression: { segmentby: ["sensor_id"], after: "7 days" },
+      directCompress: {
+        insertEnabled: true,
+        copyEnabled: false,
+        insertClientSorted: true,
+        copyClientSorted: false,
+      },
+    })
+
+    const diff = diffSchema([ht], { tables: [], hypertables: [], continuousAggregates: [], takenAt: new Date() })
+    const { up } = generateMigrationSql(diff, [ht])
+
+    const dcSql = up.find((s) => s.includes("enable_direct_compress"))!
+    expect(dcSql).toContain("enable_direct_compress_insert = true")
+    expect(dcSql).toContain("enable_direct_compress_copy = false")
+    expect(dcSql).toContain("enable_direct_compress_insert_client_sorted = true")
+    expect(dcSql).toContain("enable_direct_compress_copy_client_sorted = false")
+  })
+
+  test("no direct compress settings produces no ALTER TABLE", () => {
+    const { hypertable } = require("../../src/schema/Hypertable.js")
+    const { timestamptz, doublePrecision } = require("../../src/schema/Column.js")
+
+    const ht = hypertable("no_dc", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+    })
+
+    const diff = diffSchema([ht], { tables: [], hypertables: [], continuousAggregates: [], takenAt: new Date() })
+    const { up } = generateMigrationSql(diff, [ht])
+
+    expect(up.filter((s) => s.includes("enable_direct_compress")).length).toBe(0)
+  })
+
+  test("DirectCompressSettings type is exported", async () => {
+    const types = await import("../../src/compression/types.js")
+    // Type exists at compile time; runtime check that module loads
+    expect(types).toBeDefined()
+  })
+})
+
+// =============================================================================
+// Batch 21: cagg_migrate activation + RLS down-migration fix
+// =============================================================================
+
+describe("cagg_migrate activation via migrate flag (Batch 21)", () => {
+  test("migrate flag populates caggMigrations when CAGG exists in snapshot", () => {
+    const { continuousAggregateView, aggColumn } = require("../../src/schema/ContinuousAggregate.js")
+    const cagg = continuousAggregateView("hourly_avg", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+      migrate: true,
+    })
+
+    const snapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{
+        viewName: "hourly_avg",
+        viewSchema: "public",
+        viewDefinition: "SELECT ...",
+        materializedOnly: false,
+        compressionEnabled: false,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot as any)
+    expect(diff.caggMigrations.length).toBe(1)
+    expect(diff.caggMigrations[0]).toBe("hourly_avg")
+
+    const { up } = generateMigrationSql(diff, [])
+    expect(up.some((s) => s.includes("CALL cagg_migrate") && s.includes("hourly_avg"))).toBe(true)
+  })
+
+  test("migrate flag ignored when CAGG is new (not in snapshot)", () => {
+    const { continuousAggregateView, aggColumn } = require("../../src/schema/ContinuousAggregate.js")
+    const cagg = continuousAggregateView("new_view", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+      migrate: true,
+    })
+
+    const snapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot as any)
+    expect(diff.caggMigrations.length).toBe(0)
+  })
+
+  test("no migrate flag means no caggMigration even when CAGG exists", () => {
+    const { continuousAggregateView, aggColumn } = require("../../src/schema/ContinuousAggregate.js")
+    const cagg = continuousAggregateView("existing_view", "metrics", {
+      timeBucket: { interval: "1 hour", column: "time" },
+      columns: [aggColumn.avg("value", "avg_value")],
+      groupBy: [],
+    })
+
+    const snapshot = {
+      tables: [],
+      hypertables: [],
+      continuousAggregates: [{
+        viewName: "existing_view",
+        viewSchema: "public",
+        viewDefinition: "SELECT ...",
+        materializedOnly: false,
+        compressionEnabled: false,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([cagg], snapshot as any)
+    expect(diff.caggMigrations.length).toBe(0)
+  })
+})
+
+describe("RLS ALTER POLICY down migration (Batch 21)", () => {
+  test("ALTER POLICY generates reverse down migration", () => {
+    const { pgTable } = require("../../src/schema/Table.js")
+    const { serial, integer } = require("../../src/schema/Column.js")
+    const { rlsPolicy } = require("../../src/schema/Rls.js")
+
+    const t = pgTable("docs", {
+      id: serial("id"),
+      org_id: integer("org_id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [rlsPolicy("org_policy", { using: "org_id = new_org()", command: "SELECT" })],
+    })
+
+    const snapshot = {
+      tables: [{ name: "docs", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "org_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [{
+        tableName: "docs",
+        policyName: "org_policy",
+        command: "SELECT",
+        roles: [],
+        using: "org_id = old_org()",
+        withCheck: null,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot as any)
+    expect(diff.rlsPoliciesToAlter.length).toBe(1)
+
+    const { up, down } = generateMigrationSql(diff, [t])
+    expect(up.some((s) => s.includes("ALTER POLICY") && s.includes("new_org()"))).toBe(true)
+    expect(down.some((s) => s.includes("ALTER POLICY") && s.includes("old_org()"))).toBe(true)
+  })
+
+  test("ALTER POLICY down migration restores old roles", () => {
+    const { pgTable } = require("../../src/schema/Table.js")
+    const { serial } = require("../../src/schema/Column.js")
+    const { rlsPolicy } = require("../../src/schema/Rls.js")
+
+    const t = pgTable("secrets", {
+      id: serial("id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [rlsPolicy("access_policy", { using: "true", command: "ALL", roles: ["new_role"] })],
+    })
+
+    const snapshot = {
+      tables: [{ name: "secrets", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [{
+        tableName: "secrets",
+        policyName: "access_policy",
+        command: "ALL",
+        roles: ["old_role"],
+        using: "true",
+        withCheck: null,
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot as any)
+    expect(diff.rlsPoliciesToAlter.length).toBe(1)
+
+    const { down } = generateMigrationSql(diff, [t])
+    expect(down.some((s) => s.includes("ALTER POLICY") && s.includes("TO old_role"))).toBe(true)
+  })
+
+  test("ALTER POLICY down migration restores old WITH CHECK", () => {
+    const { pgTable } = require("../../src/schema/Table.js")
+    const { serial, integer } = require("../../src/schema/Column.js")
+    const { rlsPolicy } = require("../../src/schema/Rls.js")
+
+    const t = pgTable("orders", {
+      id: serial("id"),
+      team_id: integer("team_id"),
+    }, undefined, {
+      enableRls: true,
+      rlsPolicies: [rlsPolicy("insert_check", { check: "team_id = new_team()", command: "INSERT" })],
+    })
+
+    const snapshot = {
+      tables: [{ name: "orders", schema: "public", columns: [
+        { name: "id", dataType: "serial", isNullable: false, defaultValue: null },
+        { name: "team_id", dataType: "integer", isNullable: true, defaultValue: null },
+      ], indexes: [], constraints: [], triggers: [] }],
+      hypertables: [],
+      continuousAggregates: [],
+      rlsPolicies: [{
+        tableName: "orders",
+        policyName: "insert_check",
+        command: "INSERT",
+        roles: [],
+        using: null,
+        withCheck: "team_id = old_team()",
+      }],
+      takenAt: new Date(),
+    }
+
+    const diff = diffSchema([t], snapshot as any)
+    const { down } = generateMigrationSql(diff, [t])
+    expect(down.some((s) => s.includes("ALTER POLICY") && s.includes("WITH CHECK") && s.includes("old_team()"))).toBe(true)
+  })
+})

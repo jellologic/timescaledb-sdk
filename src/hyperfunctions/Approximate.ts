@@ -19,6 +19,18 @@ export class HyperLogLogExpression extends Expression<unknown> {
   distinctCount(): Expression<number> {
     return new Expression<number>(`distinct_count(${this.sql})`, this.params)
   }
+
+  union(): HyperLogLogExpression {
+    return HyperLogLogExpression._fromSql(`rollup(${this.sql})`, this.params)
+  }
+
+  /** @internal */
+  static _fromSql(sql: string, params: ReadonlyArray<unknown>): HyperLogLogExpression {
+    const expr = Object.create(HyperLogLogExpression.prototype) as HyperLogLogExpression
+    Object.defineProperty(expr, "sql", { value: sql, writable: false })
+    Object.defineProperty(expr, "params", { value: params, writable: false })
+    return expr
+  }
 }
 
 export const hyperloglog = (col: ColumnDef<any> | Expression<any> | string, buckets?: number): HyperLogLogExpression =>

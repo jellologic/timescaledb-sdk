@@ -170,3 +170,116 @@ describe("Set Operations", () => {
     expect(stmt.sql).toContain('"t3"')
   })
 })
+
+// =============================================================================
+// Batch 17: Subqueries in WHERE (EXISTS, IN)
+// =============================================================================
+
+import { exists, notExists, inSubquery, notInSubquery, eq } from "../../src/query/Where.js"
+import { lateralJoin, lateralLeftJoin } from "../../src/query/Join.js"
+
+describe("Subqueries in WHERE", () => {
+  test("EXISTS (subquery)", () => {
+    const sub = select("orders").columns("id").where(eq("user_id", 1))
+    const q = select("users").where(exists(sub))
+    const stmt = q.toSql()
+
+    expect(stmt.sql).toContain("EXISTS (SELECT")
+    expect(stmt.sql).toContain('"orders"')
+    expect(stmt.params).toEqual([1])
+  })
+
+  test("NOT EXISTS (subquery)", () => {
+    const sub = select("logins").columns("id").where(eq("user_id", 5))
+    const q = select("users").where(notExists(sub))
+    const stmt = q.toSql()
+
+    expect(stmt.sql).toContain("NOT EXISTS (SELECT")
+    expect(stmt.sql).toContain('"logins"')
+    expect(stmt.params).toEqual([5])
+  })
+
+  test("column IN (subquery)", () => {
+    const sub = select("active_users").columns("id")
+    const q = select("orders").where(inSubquery("user_id", sub))
+    const stmt = q.toSql()
+
+    expect(stmt.sql).toContain('"user_id" IN (SELECT')
+    expect(stmt.sql).toContain('"active_users"')
+  })
+
+  test("column NOT IN (subquery)", () => {
+    const sub = select("blocked_users").columns("id")
+    const q = select("messages").where(notInSubquery("sender_id", sub))
+    const stmt = q.toSql()
+
+    expect(stmt.sql).toContain('"sender_id" NOT IN (SELECT')
+    expect(stmt.sql).toContain('"blocked_users"')
+  })
+
+  test("EXISTS with parameters renumbered correctly", () => {
+    const sub = select("orders").columns("id").where(eq("status", "active"))
+    const q = select("users").where(eq("role", "admin"), exists(sub))
+    const stmt = q.toSql()
+
+    // Both outer and inner query params should be present
+    expect(stmt.params).toEqual(["admin", "active"])
+    // Parameters should be renumbered: $1 for outer, $2 for inner
+    expect(stmt.sql).toContain("$1")
+    expect(stmt.sql).toContain("$2")
+  })
+})
+
+// =============================================================================
+// Batch 17: LATERAL JOIN
+// =============================================================================
+
+describe("LATERAL JOIN", () => {
+  test("INNER JOIN LATERAL with subquery", () => {
+    const sub = select("events").columns("event_type").where(eq("active", true)).limit(5)
+    const q = select("users").join(lateralJoin(sub, eq("1", 1), "e"))
+    const stmt = q.toSql()
+
+    expect(stmt.sql).toContain("INNER JOIN LATERAL (SELECT")
+    expect(stmt.sql).toContain('"events"')
+    expect(stmt.sql).toContain('AS "e"')
+    expect(stmt.sql).toContain("ON")
+  })
+
+  test("LEFT JOIN LATERAL with ON TRUE", () => {
+    const sub = select("metrics").columns("value").limit(1)
+    const q = select("devices").join(lateralLeftJoin(sub, "m"))
+    const stmt = q.toSql()
+
+    expect(stmt.sql).toContain("LEFT JOIN LATERAL (SELECT")
+    expect(stmt.sql).toContain('"metrics"')
+    expect(stmt.sql).toContain('AS "m"')
+    expect(stmt.sql).toContain("ON TRUE")
+  })
+
+  test("LATERAL join with parameters from both outer and inner queries", () => {
+    const sub = select("readings").columns("value").where(eq("sensor_id", 42))
+    const q = select("sensors")
+      .where(eq("active", true))
+      .join(lateralLeftJoin(sub, "r"))
+    const stmt = q.toSql()
+
+    // JOINs render before WHERE, so subquery params come first
+    expect(stmt.params).toEqual([42, true])
+    expect(stmt.sql).toContain("$1") // sensor_id = 42 (from LATERAL subquery)
+    expect(stmt.sql).toContain("$2") // active = true (from WHERE)
+  })
+
+  test("LATERAL join in full SELECT with columns and ORDER BY", () => {
+    const sub = select("time_series").columns("value", "time").limit(10)
+    const q = select("devices")
+      .columns("name")
+      .join(lateralLeftJoin(sub, "ts"))
+      .orderBy({ sql: '"time" DESC', params: [] })
+    const stmt = q.toSql()
+
+    expect(stmt.sql).toContain('SELECT "name" FROM "devices"')
+    expect(stmt.sql).toContain("LEFT JOIN LATERAL")
+    expect(stmt.sql).toContain("ORDER BY")
+  })
+})

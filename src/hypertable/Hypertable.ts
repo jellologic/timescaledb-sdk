@@ -49,6 +49,40 @@ export const setChunkTimeInterval = (
     Effect.mapError((e) => new HypertableError({ message: `Failed to set chunk interval: ${e}`, cause: e }))
   )
 
+export const chunkInfo = (
+  table?: TableDefinition | string
+): Effect.Effect<ReadonlyArray<Record<string, unknown>>, HypertableError, TimescaleClient> =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    if (table) {
+      const tableName = typeof table === "string" ? table : table.name
+      return yield* client.execute<Record<string, unknown>>(
+        `SELECT * FROM timescaledb_information.chunks WHERE hypertable_name = $1`,
+        [tableName]
+      )
+    }
+    return yield* client.execute<Record<string, unknown>>(`SELECT * FROM timescaledb_information.chunks`)
+  }).pipe(
+    Effect.mapError((e) => new HypertableError({ message: `Failed to get chunk info: ${e}`, cause: e }))
+  )
+
+export const dimensionInfo = (
+  table?: TableDefinition | string
+): Effect.Effect<ReadonlyArray<Record<string, unknown>>, HypertableError, TimescaleClient> =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+    if (table) {
+      const tableName = typeof table === "string" ? table : table.name
+      return yield* client.execute<Record<string, unknown>>(
+        `SELECT * FROM timescaledb_information.dimensions WHERE hypertable_name = $1`,
+        [tableName]
+      )
+    }
+    return yield* client.execute<Record<string, unknown>>(`SELECT * FROM timescaledb_information.dimensions`)
+  }).pipe(
+    Effect.mapError((e) => new HypertableError({ message: `Failed to get dimension info: ${e}`, cause: e }))
+  )
+
 export const hypertableInfo = (
   table?: TableDefinition | string
 ): Effect.Effect<ReadonlyArray<Record<string, unknown>>, HypertableError, TimescaleClient> =>

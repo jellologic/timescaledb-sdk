@@ -14,3 +14,10 @@ export interface CompressionStats {
   readonly uncompressedChunks: number
   readonly compressionRatio: number | null
 }
+
+export interface DirectCompressSettings {
+  readonly insertEnabled?: boolean
+  readonly copyEnabled?: boolean
+  readonly insertClientSorted?: boolean
+  readonly copyClientSorted?: boolean
+}
