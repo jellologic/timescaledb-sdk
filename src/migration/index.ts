@@ -1,5 +1,6 @@
 export { ensureMigrationsTable, getAppliedMigrations, recordMigration, removeMigrationRecord, computeChecksum } from "./Tracker.js"
-export { migrate, rollback, status } from "./Runner.js"
+export { migrate, rollback, status, resolvedConfigToRunnerOptions } from "./Runner.js"
+export type { MigrationRunnerOptions } from "./Runner.js"
 export { takeSnapshot, drainWarnings, SnapshotWarning } from "./Snapshot.js"
 export { diffSchema, generateMigrationSql, HypertableConstraintError } from "./Generator.js"
 export { definitionsToSnapshot, definitionsToPersistedSnapshot } from "./DefinitionsSnapshot.js"

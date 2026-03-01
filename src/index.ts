@@ -15,5 +15,11 @@ export * as Bulk from "./bulk/index.js"
 export { TimescaleClient, type TimescaleClientShape, layer as clientLayer, layerFromConfig, rawQuery, executeSql } from "./Client.js"
 export { TimescaleConfig, TimescaleConfigService, layer as configLayer, layerFromEnv } from "./Config.js"
 export * as Errors from "./Error.js"
-export { defineConfig, configToLayer, configToDirectLayer, loadConfig } from "./config/index.js"
-export type { SDKConfig, ResolvedConfig, ConnectionConfig, PoolConfig, DirectConfig, FeaturesConfig, MigrationsConfig } from "./config/index.js"
+export { defineConfig, configToLayer, configToDirectLayer, loadConfig, buildSessionInitSql } from "./config/index.js"
+export type {
+  SDKConfig, ResolvedConfig, ConnectionConfig, PoolConfig, DirectConfig, FeaturesConfig,
+  MigrationsConfig, ResolvedMigrationsConfig,
+  SessionConfig, TimescaleDBSessionConfig,
+  SchemaDefaultsConfig, HypertableDefaultsConfig,
+  QueueConfig, ResolvedQueueConfig,
+} from "./config/index.js"

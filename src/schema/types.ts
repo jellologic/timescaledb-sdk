@@ -42,6 +42,10 @@ export type SQLType =
   | "daterange"
   | "numrange"
 
+export type AllowedPKSqlType = "integer" | "bigint" | "serial" | "bigserial" | "uuid"
+
+export const DEFAULT_ALLOWED_PK_TYPES: ReadonlyArray<string> = ["integer", "bigint", "serial", "bigserial", "uuid"]
+
 export type ForeignKeyAction = "CASCADE" | "RESTRICT" | "SET NULL" | "SET DEFAULT" | "NO ACTION"
 
 export interface ColumnDef<T = unknown, TNotNull extends boolean = boolean, THasDefault extends boolean = boolean> {

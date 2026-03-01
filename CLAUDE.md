@@ -50,12 +50,20 @@ export const someOperation = (args) =>
 
 Central config file (`timescale.config.ts`) loaded by `defineConfig()`. Supports two connection modes:
 
-- **Pool** (`configToLayer`) — Pooled connections for normal CRUD operations (default `maxConnections: 10`). Pool settings: `maxConnections`, `minConnections`, `idleTimeout`, `connectionTTL`.
+- **Pool** (`configToLayer`) — Pooled connections for normal CRUD operations (default `maxConnections: 10`). Pool settings: `maxConnections`, `minConnections`, `idleTimeout` (`Duration.DurationInput`), `connectionTTL` (`Duration.DurationInput`).
 - **Direct** (`configToDirectLayer`) — Single non-pooled connection (`maxConnections: 1`) for migrations/DDL/advisory locks. Supports SSL override via `direct: { ssl: true }`.
 
-Both layer factories fall back to `PG*` environment variables when `connection` is null.
+Both layer factories fall back to `PG*` environment variables when `connection` is null. Both apply session init SQL via `Layer.tap` when `session` config is present.
 
-**Config file**: `defineConfig({ connection, schema, features, migrations })` → `ResolvedConfig`. The `loadConfig()` function dynamically imports `timescale.config.ts` from CWD (or a custom path).
+**Config file**: `defineConfig({ connection, schema, features, migrations, session, defaults, queue })` → `ResolvedConfig`. The `loadConfig()` function dynamically imports `timescale.config.ts` from CWD (or a custom path).
+
+**Config sections**:
+- `session` — Connection-level `SET` statements (`searchPath`, `statementTimeout`, `lockTimeout`, `idleInTransactionTimeout`, `workMem`, `timezone`, `applicationName`) plus TimescaleDB-specific GUCs (`timescaledb.enable_chunk_skipping`, etc.). `buildSessionInitSql()` generates the SQL. `applicationName` is passed directly to `PgClientConfig`.
+- `migrations` — Expanded from just `dir` to include `advisoryLockId` (default `123456789`), `trackingTable` (default `"_timescaledb_sdk_migrations"`), `transactional` (default `true`), `lockTimeout`, `statementTimeout`. Resolved into `ResolvedMigrationsConfig` with no optionals.
+- `defaults` — Pure transform applied during `defineConfig()`. `defaults.schema` replaces `"public"` on all definitions; `defaults.hypertable` merges `chunkInterval`, `createDefaultIndexes`, `compression` into each `HypertableDefinition` (per-table values win).
+- `queue` — `enabled` (backward-compat alias for `features.queue`), `defaultMaxAttempts` (default `1`), `defaultPriority` (default `0`), `defaultTimeout`. Resolved into `ResolvedQueueConfig`.
+
+**Type safety**: `defineConfig.ts` uses `_tag`-based discriminated union type guards (`isTableOrHypertable`, `isHypertable`, `hasSchemaProperty`) — zero `as any` casts.
 
 **Migration convenience functions**: `runWithConfig`, `rollbackWithConfig`, `statusWithConfig` in `src/migration/Orchestrator.ts` — automatically provide a direct layer so the caller doesn't need to wire it up manually.
 
@@ -79,8 +87,9 @@ The most complex module. Key flows:
 - **DefinitionsSnapshot.ts**: Converts code-side `SchemaDefinition[]` into `SchemaSnapshot` format (same format as live DB introspection) to enable diffing without a DB.
 - **Snapshot.ts**: `takeSnapshot` introspects a live DB via `information_schema`, `pg_catalog`, and `timescaledb_information.*` views.
 - **FileSystem.ts**: Migration files embed an HMAC (`sha256`) integrity hash. `verifyIntegrity` checks on load; `sealMigration()` reseals hand-edited files. Uses temp-file + rename for atomic writes.
-- **Runner.ts**: Uses PostgreSQL advisory lock (`pg_try_advisory_lock(123456789)`) with `Effect.ensuring` for guaranteed release.
-- **Orchestrator.ts**: Top-level API — `generate()` (async, not Effect), `loadAndRun`/`loadAndRollback`/`loadAndStatus` (Effects requiring `TimescaleClient`), `runWithConfig`/`rollbackWithConfig`/`statusWithConfig` (self-contained Effects that provide their own direct connection layer from config).
+- **Runner.ts**: Uses PostgreSQL advisory lock (`pg_try_advisory_lock`) with `Effect.ensuring` for guaranteed release. Lock ID, tracking table, and per-migration `SET LOCAL` timeouts are configurable via `MigrationRunnerOptions` (threaded from `ResolvedConfig.migrations`).
+- **Tracker.ts**: All functions (`ensureMigrationsTable`, `getAppliedMigrations`, `recordMigration`, `removeMigrationRecord`) accept an optional `table` parameter (defaults to `"_timescaledb_sdk_migrations"`).
+- **Orchestrator.ts**: Top-level API — `generate()` (async, not Effect), `loadAndRun`/`loadAndRollback`/`loadAndStatus` (Effects requiring `TimescaleClient`), `runWithConfig`/`rollbackWithConfig`/`statusWithConfig` (self-contained Effects that provide their own direct connection layer from config). Threads `ResolvedConfig.migrations` into Runner/Tracker via `resolvedConfigToRunnerOptions()`.
 
 ### Queue system (`src/queue/`)
 
@@ -106,7 +115,7 @@ Generic `bulkInsert` and `bulkUpsert` with automatic batching to stay under Post
 
 ## Module exports
 
-The package has 17 export paths (root + one per module). Each maps to `./dist/<module>/index.js`. The root `src/index.ts` re-exports all modules as namespaces plus the core `TimescaleClient`, `TimescaleConfig`, `rawQuery`, `executeSql`, `Errors`, and the config system (`defineConfig`, `configToLayer`, `configToDirectLayer`, `loadConfig`).
+The package has 17 export paths (root + one per module). Each maps to `./dist/<module>/index.js`. The root `src/index.ts` re-exports all modules as namespaces plus the core `TimescaleClient`, `TimescaleConfig`, `rawQuery`, `executeSql`, `Errors`, and the config system (`defineConfig`, `configToLayer`, `configToDirectLayer`, `loadConfig`, `buildSessionInitSql`, and all config types: `SDKConfig`, `ResolvedConfig`, `SessionConfig`, `TimescaleDBSessionConfig`, `SchemaDefaultsConfig`, `HypertableDefaultsConfig`, `QueueConfig`, `ResolvedQueueConfig`, `ResolvedMigrationsConfig`, etc.).
 
 ## Testing
 
