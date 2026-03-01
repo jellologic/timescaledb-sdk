@@ -1554,6 +1554,140 @@ const topoSort = (names: ReadonlyArray<string>, deps: ReadonlyArray<ViewDependen
   return result
 }
 
+/** Check if a CAGG column expression or clause references a given SQL column name */
+const caggReferencesColumn = (cagg: CaggDefinition, columnName: string): boolean => {
+  // Check time bucket column
+  if (cagg.timeBucket.column === columnName) return true
+  // Check GROUP BY columns
+  if (cagg.groupBy.includes(columnName)) return true
+  // Check aggregate expressions (e.g. "SUM(total_sale_price)", "first(value, time)")
+  const colPattern = new RegExp(`\\b${columnName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`)
+  for (const col of cagg.columns) {
+    if (colPattern.test(col.expression)) return true
+  }
+  // Check WHERE clause
+  if (cagg.where && colPattern.test(cagg.where)) return true
+  // Check JOIN ON clause
+  if (cagg.join?.on && colPattern.test(cagg.join.on)) return true
+  return false
+}
+
+/**
+ * Find all CAGGs affected by a column type change, walking the full dependency chain.
+ * Returns CAGGs in topological order (leaf-first for dropping, reverse for recreating).
+ */
+const findAffectedCaggs = (
+  tableName: string,
+  tableSchema: string,
+  columnName: string,
+  allCaggs: ReadonlyArray<CaggDefinition>,
+  excludeNames: Set<string>,
+): CaggDefinition[] => {
+  // Find CAGGs directly sourcing the affected hypertable
+  const directlyAffected = allCaggs.filter((c) =>
+    !excludeNames.has(c.viewName) &&
+    c.sourceHypertable === tableName &&
+    !c.sourceView &&
+    (c.schema === tableSchema || (c.schema === "public" && tableSchema === "public")) &&
+    caggReferencesColumn(c, columnName)
+  )
+
+  // Walk dependency chain: find CAGGs that source an affected CAGG
+  const affected = new Set<string>(directlyAffected.map((c) => c.viewName))
+  const result = [...directlyAffected]
+  let frontier = directlyAffected.map((c) => c.viewName)
+
+  while (frontier.length > 0) {
+    const nextFrontier: string[] = []
+    for (const parentView of frontier) {
+      for (const cagg of allCaggs) {
+        if (!affected.has(cagg.viewName) && !excludeNames.has(cagg.viewName) && cagg.sourceView === parentView) {
+          affected.add(cagg.viewName)
+          result.push(cagg)
+          nextFrontier.push(cagg.viewName)
+        }
+      }
+    }
+    frontier = nextFrontier
+  }
+
+  return result
+}
+
+/** Generate the SQL statements to create a single CAGG (CREATE + policies) */
+const generateCaggCreateSql = (cagg: CaggDefinition): string[] => {
+  const stmts: string[] = []
+  const tb = cagg.timeBucket
+  let timeBucketExpr = `time_bucket('${tb.interval}', ${quoteIdentifier(tb.column)}`
+  if (tb.timezone) timeBucketExpr += `, '${tb.timezone}'`
+  timeBucketExpr += ")"
+
+  const selectParts: string[] = [`${timeBucketExpr} AS "bucket"`]
+  for (const gb of cagg.groupBy) selectParts.push(quoteIdentifier(gb))
+  for (const col of cagg.columns) selectParts.push(`${col.expression} AS ${quoteIdentifier(col.alias)}`)
+
+  let fromClause = quoteIdentifier(cagg.sourceView ?? cagg.sourceHypertable)
+  if (cagg.join) fromClause += ` ${cagg.join.type} JOIN ${quoteIdentifier(cagg.join.table)} ON ${cagg.join.on}`
+
+  const groupByParts = ["\"bucket\"", ...cagg.groupBy.map(quoteIdentifier)]
+  const withOpts = ["timescaledb.continuous"]
+  if (cagg.finalize === false) withOpts.push("timescaledb.finalize = false")
+  if (cagg.createGroupIndexes === false) withOpts.push("timescaledb.create_group_indexes = false")
+  if (cagg.invalidateUsing === "wal") withOpts.push("timescaledb.invalidate_using = 'wal'")
+
+  const caggQn = qualifiedName(cagg.viewName, cagg.schema)
+  let sql = `CREATE MATERIALIZED VIEW ${caggQn} WITH (${withOpts.join(", ")}) AS\nSELECT ${selectParts.join(",\n  ")}\nFROM ${fromClause}`
+  if (cagg.where) sql += `\nWHERE ${cagg.where}`
+  sql += `\nGROUP BY ${groupByParts.join(", ")}`
+  if (cagg.withNoData) sql += `\nWITH NO DATA`
+  sql += ";"
+  stmts.push(sql)
+
+  if (cagg.materializedOnly !== undefined) {
+    stmts.push(`ALTER MATERIALIZED VIEW ${caggQn} SET (timescaledb.materialized_only = ${cagg.materializedOnly});`)
+  }
+  if (cagg.compress) {
+    stmts.push(`ALTER MATERIALIZED VIEW ${caggQn} SET (timescaledb.compress = true);`)
+  }
+
+  const caggLit = qualifiedNameLiteral(cagg.viewName, cagg.schema)
+  const policies = cagg.refreshPolicies ?? (cagg.refreshPolicy ? [cagg.refreshPolicy] : [])
+  for (const policy of policies) {
+    stmts.push(
+      `SELECT add_continuous_aggregate_policy(${quoteString(caggLit)},\n` +
+      `  start_offset => INTERVAL '${policy.startOffset}',\n` +
+      `  end_offset => INTERVAL '${policy.endOffset}',\n` +
+      `  schedule_interval => INTERVAL '${policy.scheduleInterval}');`
+    )
+  }
+  if (cagg.retentionPolicy) {
+    stmts.push(`SELECT add_retention_policy(${quoteString(caggLit)}, INTERVAL '${cagg.retentionPolicy.dropAfter}');`)
+  }
+  return stmts
+}
+
+/** Generate the SQL statements to drop a CAGG (remove policies + DROP VIEW) */
+const generateCaggDropSql = (cagg: CaggDefinition): string[] => {
+  const stmts: string[] = []
+  const caggLit = qualifiedNameLiteral(cagg.viewName, cagg.schema)
+  const caggQn = qualifiedName(cagg.viewName, cagg.schema)
+
+  // Remove policies first
+  const policies = cagg.refreshPolicies ?? (cagg.refreshPolicy ? [cagg.refreshPolicy] : [])
+  if (policies.length > 0) {
+    stmts.push(`SELECT remove_continuous_aggregate_policy(${quoteString(caggLit)}, if_not_exists => true);`)
+  }
+  if (cagg.retentionPolicy) {
+    stmts.push(`SELECT remove_retention_policy(${quoteString(caggLit)}, if_not_exists => true);`)
+  }
+  if (cagg.compress) {
+    stmts.push(`ALTER MATERIALIZED VIEW ${caggQn} SET (timescaledb.compress = false);`)
+  }
+
+  stmts.push(`DROP MATERIALIZED VIEW IF EXISTS ${caggQn};`)
+  return stmts
+}
+
 export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArray<SchemaDefinition>, snapshot?: SchemaSnapshot): { up: string[]; down: string[] } => {
   // Validate hypertable constraints before generating SQL
   validateHypertableConstraints(definitions)
@@ -1922,10 +2056,51 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     down.push(`-- Cannot auto-generate re-addition of column ${quoteIdentifier(col.column)} on ${tqn}`)
   }
 
+  // CAGG-aware ALTER COLUMN TYPE: if a CAGG references the altered column,
+  // we must drop it first, alter the column, then recreate it (#28)
+  const allCaggDefs = definitions.filter((d): d is CaggDefinition => d._tag === "CaggDefinition")
+  const caggsAlreadyHandled = new Set([
+    ...diff.caggsToCreate.map((c) => c.viewName),
+    ...diff.caggsToDrop.map((c) => c.name),
+  ])
+  const caggsRecreatedForAlter = new Set<string>()
+
   for (const col of diff.columnsToAlter) {
     const tqn = qualifiedName(col.table, col.schema)
-    up.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.newType};`)
-    down.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.oldType};`)
+
+    // Find CAGGs affected by this column type change (full dependency chain)
+    const affected = findAffectedCaggs(col.table, col.schema, col.column, allCaggDefs, caggsAlreadyHandled)
+
+    if (affected.length > 0) {
+      // Drop in reverse order (leaf CAGGs first) so dependencies are satisfied
+      const dropOrder = [...affected].reverse()
+      for (const cagg of dropOrder) {
+        up.push(...generateCaggDropSql(cagg))
+        caggsRecreatedForAlter.add(cagg.viewName)
+      }
+
+      // ALTER the column
+      up.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.newType};`)
+
+      // Recreate in original order (root CAGGs first)
+      for (const cagg of affected) {
+        up.push(...generateCaggCreateSql(cagg))
+      }
+
+      // Down migration: reverse the whole thing
+      const downDropOrder = [...affected].reverse()
+      for (const cagg of downDropOrder) {
+        down.push(...generateCaggDropSql(cagg))
+      }
+      down.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.oldType};`)
+      for (const cagg of affected) {
+        down.push(...generateCaggCreateSql(cagg))
+      }
+    } else {
+      // No CAGG dependency — simple ALTER
+      up.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.newType};`)
+      down.push(`ALTER TABLE ${tqn} ALTER COLUMN ${quoteIdentifier(col.column)} TYPE ${col.oldType};`)
+    }
   }
 
   // Column NOT NULL changes
@@ -2545,8 +2720,9 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     down.push(`-- Cannot auto-generate recreation of removed reorder policy on '${lit}'`)
   }
 
-  // CAGG refresh policy changes
+  // CAGG refresh policy changes (skip CAGGs already recreated for ALTER COLUMN #28)
   for (const p of diff.caggRefreshPoliciesToAdd) {
+    if (caggsRecreatedForAlter.has(p.viewName)) continue
     const lit = qualifiedNameLiteral(p.viewName, p.schema)
     up.push(
       `SELECT add_continuous_aggregate_policy(${quoteString(lit)},\n` +
@@ -2558,32 +2734,37 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
   }
 
   for (const ref of diff.caggRefreshPoliciesToRemove) {
+    if (caggsRecreatedForAlter.has(ref.name)) continue
     const lit = qualifiedNameLiteral(ref.name, ref.schema)
     up.push(`SELECT remove_continuous_aggregate_policy(${quoteString(lit)});`)
     down.push(`-- Cannot auto-generate recreation of removed refresh policy on '${lit}'`)
   }
 
-  // CAGG retention policy changes
+  // CAGG retention policy changes (skip CAGGs already recreated for ALTER COLUMN #28)
   for (const p of diff.caggRetentionPoliciesToAdd) {
+    if (caggsRecreatedForAlter.has(p.viewName)) continue
     const lit = qualifiedNameLiteral(p.viewName, p.schema)
     up.push(`SELECT add_retention_policy(${quoteString(lit)}, INTERVAL '${p.dropAfter}');`)
     down.push(`SELECT remove_retention_policy(${quoteString(lit)});`)
   }
 
   for (const ref of diff.caggRetentionPoliciesToRemove) {
+    if (caggsRecreatedForAlter.has(ref.name)) continue
     const lit = qualifiedNameLiteral(ref.name, ref.schema)
     up.push(`SELECT remove_retention_policy(${quoteString(lit)});`)
     down.push(`-- Cannot auto-generate recreation of removed retention policy on '${lit}'`)
   }
 
-  // CAGG compression enable/disable
+  // CAGG compression enable/disable (skip CAGGs already recreated for ALTER COLUMN #28)
   for (const ref of diff.caggCompressionToEnable) {
+    if (caggsRecreatedForAlter.has(ref.name)) continue
     const qn = qualifiedName(ref.name, ref.schema)
     up.push(`ALTER MATERIALIZED VIEW ${qn} SET (timescaledb.compress = true);`)
     down.push(`ALTER MATERIALIZED VIEW ${qn} SET (timescaledb.compress = false);`)
   }
 
   for (const ref of diff.caggCompressionToDisable) {
+    if (caggsRecreatedForAlter.has(ref.name)) continue
     const qn = qualifiedName(ref.name, ref.schema)
     up.push(`ALTER MATERIALIZED VIEW ${qn} SET (timescaledb.compress = false);`)
     down.push(`ALTER MATERIALIZED VIEW ${qn} SET (timescaledb.compress = true);`)
@@ -2653,8 +2834,9 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     up.push(`SELECT add_retention_policy('${lit}', INTERVAL '${p.dropAfter}');`)
   }
 
-  // CAGG refresh policy alteration (remove + re-add with if_not_exists)
+  // CAGG refresh policy alteration (remove + re-add with if_not_exists; skip recreated #28)
   for (const p of diff.caggRefreshPoliciesToAlter) {
+    if (caggsRecreatedForAlter.has(p.viewName)) continue
     const lit = qualifiedNameLiteral(p.viewName, p.schema)
     up.push(`SELECT remove_continuous_aggregate_policy(${quoteString(lit)});`)
     up.push(
