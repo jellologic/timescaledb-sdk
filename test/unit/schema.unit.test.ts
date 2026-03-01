@@ -13,7 +13,8 @@ import {
 } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
-import { expr, index, uniqueIndex, brinIndex, hashIndex, ginIndex, gistIndex, spgistIndex } from "../../src/schema/IndexHelpers.js"
+import { pgMaterializedView } from "../../src/schema/MaterializedView.js"
+import { expr, desc, index, uniqueIndex, brinIndex, hashIndex, ginIndex, gistIndex, spgistIndex } from "../../src/schema/IndexHelpers.js"
 import { check, unique, foreignKey, primaryKey, exclude, deferrable } from "../../src/schema/Constraint.js"
 import { pgEnum, enumColumn } from "../../src/schema/Enum.js"
 import { trigger } from "../../src/schema/Trigger.js"
@@ -1089,5 +1090,337 @@ describe("primaryKey() type restrictions", () => {
     const status = pgEnum("status", ["active", "inactive"])
     // @ts-expect-error — enum column cannot be a primary key
     enumColumn(status, "status").primaryKey()
+  })
+})
+
+// ============================================
+// Column method conflict prevention
+// ============================================
+describe("Column method conflict prevention", () => {
+  test("cannot call .default() after .generatedAlwaysAs()", () => {
+    // @ts-expect-error — cannot call .default() after .generatedAlwaysAs()
+    integer("x").generatedAlwaysAs("x * 2").default(1)
+  })
+
+  test("cannot call .generatedAlwaysAs() after .default()", () => {
+    // @ts-expect-error — cannot call .generatedAlwaysAs() after .default()
+    integer("x").default(1).generatedAlwaysAs("x * 2")
+  })
+
+  test("cannot call .default() twice", () => {
+    // @ts-expect-error — cannot call .default() twice
+    integer("x").default(1).default(2)
+  })
+
+  test("cannot call .defaultSql() after .default()", () => {
+    // @ts-expect-error — cannot call .defaultSql() after .default()
+    integer("x").default(1).defaultSql("1 + 1")
+  })
+
+  test("serial already has a default", () => {
+    // @ts-expect-error — serial already has THasDefault = true
+    serial("id").default(5)
+  })
+
+  test("serial cannot add identity", () => {
+    // @ts-expect-error — serial already has THasDefault = true
+    serial("id").generatedAlwaysAsIdentity()
+  })
+
+  test("bigserial already has a default", () => {
+    // @ts-expect-error — bigserial already has THasDefault = true
+    bigserial("id").default(BigInt(5))
+  })
+
+  test("smallserial already has a default", () => {
+    // @ts-expect-error — smallserial already has THasDefault = true
+    smallserial("id").default(5)
+  })
+
+  test("single .default() still works", () => {
+    const col = integer("x").default(1).build()
+    expect(col.defaultValue).toBe(1)
+  })
+
+  test("single .generatedAlwaysAs() still works", () => {
+    const col = integer("x").generatedAlwaysAs("x * 2").build()
+    expect(col.generated).toEqual({ expression: "x * 2", type: "stored" })
+  })
+
+  test("single .generatedAlwaysAsIdentity() still works", () => {
+    const col = integer("id").generatedAlwaysAsIdentity().build()
+    expect(col.generated).toEqual({ type: "identity", mode: "always" })
+  })
+
+  test("single .generatedByDefaultAsIdentity() still works", () => {
+    const col = integer("id").generatedByDefaultAsIdentity().build()
+    expect(col.generated).toEqual({ type: "identity", mode: "byDefault" })
+  })
+
+  test(".defaultNow() still works", () => {
+    const col = timestamptz("created_at").defaultNow().build()
+    expect(col.defaultValue).toEqual({ __sqlExpr: true, value: "NOW()" })
+  })
+
+  test(".defaultRandomUuid() still works", () => {
+    const col = uuid("id").defaultRandomUuid().build()
+    expect(col.defaultValue).toEqual({ __sqlExpr: true, value: "gen_random_uuid()" })
+  })
+})
+
+// ============================================
+// Hypertable time column type enforcement
+// ============================================
+describe("Hypertable time column type enforcement", () => {
+  test("text is not a valid time column type", () => {
+    // @ts-expect-error — text is not a valid time column type
+    hypertable("bad", { time: text("time").notNull(), v: doublePrecision("v") }, { timeColumn: "time" })
+  })
+
+  test("time column must be notNull", () => {
+    // @ts-expect-error — time column must be notNull
+    hypertable("bad", { time: timestamptz("time"), v: doublePrecision("v") }, { timeColumn: "time" })
+  })
+
+  test("boolean is not a valid time column type", () => {
+    // @ts-expect-error — boolean is not a valid time column type
+    hypertable("bad", { time: boolean("time").notNull(), v: doublePrecision("v") }, { timeColumn: "time" })
+  })
+
+  test("timestamptz + notNull is valid", () => {
+    const ht = hypertable("ok", { time: timestamptz("time").notNull(), v: doublePrecision("v") }, { timeColumn: "time" })
+    expect(ht.hypertableConfig.timeColumn).toBe("time")
+  })
+
+  test("timestamp + notNull is valid", () => {
+    const ht = hypertable("ok", { time: timestamp("time").notNull(), v: doublePrecision("v") }, { timeColumn: "time" })
+    expect(ht.hypertableConfig.timeColumn).toBe("time")
+  })
+
+  test("integer time column is valid", () => {
+    const ht = hypertable("ok", { time: integer("time").notNull(), v: doublePrecision("v") }, { timeColumn: "time" })
+    expect(ht.hypertableConfig.timeColumn).toBe("time")
+  })
+
+  test("bigint time column is valid", () => {
+    const ht = hypertable("ok", { time: bigint_("time").notNull(), v: doublePrecision("v") }, { timeColumn: "time" })
+    expect(ht.hypertableConfig.timeColumn).toBe("time")
+  })
+
+  test("date time column is valid", () => {
+    const ht = hypertable("ok", { time: date("time").notNull(), v: doublePrecision("v") }, { timeColumn: "time" })
+    expect(ht.hypertableConfig.timeColumn).toBe("time")
+  })
+})
+
+// ============================================
+// Typed helpers for constraint/index column references
+// ============================================
+describe("Typed helpers in extra() callbacks", () => {
+  test("typed unique catches typos", () => {
+    pgTable("users", {
+      id: serial("id"),
+      email: text("email").notNull(),
+    }, (_cols, t) => [
+      t.unique("ux_email", ["email"]),  // OK
+      // @ts-expect-error — "emial" is not a column key
+      t.unique("ux_bad", ["emial"]),
+    ])
+  })
+
+  test("typed primaryKey catches typos", () => {
+    pgTable("users", {
+      id: serial("id"),
+      email: text("email").notNull(),
+    }, (_cols, t) => [
+      t.primaryKey("pk_id", ["id"]),  // OK
+      // @ts-expect-error — "ids" is not a column key
+      t.primaryKey("pk_bad", ["ids"]),
+    ])
+  })
+
+  test("standalone functions still work (backward compat)", () => {
+    const table = pgTable("users", {
+      id: serial("id"),
+      email: text("email").notNull(),
+    }, () => [
+      unique("ux_email", ["email"]),  // Still compiles — untyped path
+    ])
+    expect(table.constraints.length).toBe(1)
+  })
+
+  test("typed desc catches typos in index helpers", () => {
+    pgTable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: text("device_id").notNull(),
+    }, (_cols, t) => [
+      t.index("idx_time", [t.desc("time")]),  // OK
+      // @ts-expect-error — "tme" typo caught
+      t.index("idx_bad", [t.desc("tme")]),
+    ])
+  })
+
+  test("typed asc catches typos", () => {
+    pgTable("events", {
+      time: timestamptz("time").notNull(),
+      device_id: text("device_id").notNull(),
+    }, (_cols, t) => [
+      t.index("idx_device", [t.asc("device_id")]),  // OK
+      // @ts-expect-error — "devce_id" typo caught
+      t.index("idx_bad", [t.asc("devce_id")]),
+    ])
+  })
+
+  test("typed colWithOp catches typos", () => {
+    pgTable("events", {
+      tags: text("tags").notNull(),
+    }, (_cols, t) => [
+      t.index("idx_tags", [t.colWithOp("tags", "gin_trgm_ops")]),  // OK
+      // @ts-expect-error — "tag" typo caught
+      t.index("idx_bad", [t.colWithOp("tag", "gin_trgm_ops")]),
+    ])
+  })
+
+  test("typed expr does not validate (raw SQL)", () => {
+    const table = pgTable("events", {
+      name: text("name").notNull(),
+    }, (_cols, t) => [
+      t.index("idx_lower", [t.expr("lower(name)")]),  // OK — raw SQL, no validation
+    ])
+    expect(table.indexes.length).toBe(1)
+  })
+
+  test("typed helpers map JS keys to SQL column names", () => {
+    const table = pgTable("events", {
+      deviceId: integer("device_id").notNull(),
+      eventName: text("event_name").notNull(),
+    }, (_cols, t) => [
+      t.unique("ux_device_event", ["deviceId", "eventName"]),
+    ])
+    // The constraint should use SQL column names, not JS keys
+    expect(table.constraints[0]!.columns).toEqual(["device_id", "event_name"])
+  })
+
+  test("typed helpers work in hypertable extras", () => {
+    const ht = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      deviceId: integer("device_id").notNull(),
+      value: doublePrecision("value"),
+    }, { timeColumn: "time" }, (_cols, t) => [
+      t.unique("ux_device_time", ["deviceId", "time"]),
+      t.index("idx_time_desc", [t.desc("time")]),
+    ])
+    expect(ht.constraints[0]!.columns).toEqual(["device_id", "time"])
+    expect(ht.indexes.length).toBe(1)
+  })
+
+  test("typed foreignKey catches typos", () => {
+    pgTable("orders", {
+      id: serial("id"),
+      userId: integer("user_id").notNull(),
+    }, (_cols, t) => [
+      t.foreignKey("fk_user", ["userId"], { table: "users", columns: ["id"] }),  // OK
+      // @ts-expect-error — "usrId" is not a column key
+      t.foreignKey("fk_bad", ["usrId"], { table: "users", columns: ["id"] }),
+    ])
+  })
+
+  test("typed exclude catches typos", () => {
+    pgTable("bookings", {
+      roomId: integer("room_id").notNull(),
+      during: tstzrange("during").notNull(),
+    }, (_cols, t) => [
+      t.exclude("excl_booking", "gist", [
+        { column: "roomId", operator: "=" },
+        { column: "during", operator: "&&" },
+      ]),  // OK
+      // @ts-expect-error — "room" is not a column key
+      t.exclude("excl_bad", "gist", [{ column: "room", operator: "=" }]),
+    ])
+  })
+
+  test("typed helpers in materialized view", () => {
+    const mv = pgMaterializedView("mv", {
+      day: timestamptz("day"),
+      total: integer("total"),
+    }, "SELECT 1", (_cols, t) => [
+      t.index("idx_day", [t.desc("day")]),  // OK
+      // @ts-expect-error — "dy" is not a column key
+      t.index("idx_bad", [t.desc("dy")]),
+    ])
+    expect(mv.indexes.length).toBe(2)
+  })
+
+  test("materialized view backward compat: single-param callback", () => {
+    const mv = pgMaterializedView("mv", {
+      day: timestamptz("day"),
+    }, "SELECT 1", () => [
+      index("idx_day", ["day"]),
+    ])
+    expect(mv.indexes.length).toBe(1)
+  })
+})
+
+// ============================================
+// Enum Default Validation Tests
+// ============================================
+describe("Enum default value validation", () => {
+  const status = pgEnum("status", ["active", "inactive"] as const)
+
+  test("enum default accepts valid value", () => {
+    const col = enumColumn(status, "status").default("active").build()
+    expect(col.defaultValue).toBe("active")
+  })
+
+  test("enum default rejects invalid value", () => {
+    // @ts-expect-error — "invalid" is not a valid enum value
+    enumColumn(status, "status").default("invalid")
+  })
+
+  test("text default still accepts any string", () => {
+    const col = text("name").default("anything").build()
+    expect(col.defaultValue).toBe("anything")
+  })
+
+  test("integer default accepts number or string", () => {
+    const col1 = integer("count").default(0).build()
+    expect(col1.defaultValue).toBe(0)
+    const col2 = integer("count").default("0").build()
+    expect(col2.defaultValue).toBe("0")
+  })
+
+  test("boolean default accepts boolean or string", () => {
+    const col = boolean("active").default(true).build()
+    expect(col.defaultValue).toBe(true)
+  })
+})
+
+// ============================================
+// Double .notNull() Prevention Tests
+// ============================================
+describe("notNull double-call prevention", () => {
+  test("cannot call .notNull() twice", () => {
+    // @ts-expect-error — cannot call .notNull() twice
+    text("x").notNull().notNull()
+  })
+
+  test("serial already has notNull", () => {
+    // @ts-expect-error — serial already has notNull
+    serial("id").notNull()
+  })
+
+  test("primaryKey already implies notNull", () => {
+    // @ts-expect-error — primaryKey already implies notNull
+    integer("id").primaryKey().notNull()
+  })
+
+  test("generatedAlwaysAsIdentity already implies notNull", () => {
+    // @ts-expect-error — identity already implies notNull
+    integer("id").generatedAlwaysAsIdentity().notNull()
+  })
+
+  test("single .notNull() still works", () => {
+    const col = text("name").notNull().build()
+    expect(col.isNotNull).toBe(true)
   })
 })

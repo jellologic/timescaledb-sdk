@@ -1,6 +1,9 @@
 import type { AllowedPKSqlType, ColumnDef, ForeignKeyAction, SQLType } from "./types.ts"
 import { sql, type SqlExpression } from "../internal/sql.js"
 
+/** Narrow default value type: for string literal unions (enums), only accept T; for all others keep T | string */
+type DefaultValue<T> = [T] extends [string] ? (string extends T ? T | string : T) : T | string
+
 export class ColumnBuilder<T, TNotNull extends boolean = false, THasDefault extends boolean = false, TSqlType extends string = string> {
   readonly _type!: T
   readonly _notNull!: TNotNull
@@ -25,39 +28,39 @@ export class ColumnBuilder<T, TNotNull extends boolean = false, THasDefault exte
     this._sqlType = sqlType
   }
 
-  notNull(): ColumnBuilder<T, true, THasDefault, TSqlType> {
+  notNull(this: ColumnBuilder<T, false, THasDefault, TSqlType>): ColumnBuilder<T, true, THasDefault, TSqlType> {
     const col = this._clone()
     col._isNotNull = true
     return col as any
   }
 
-  default(value: T | string): ColumnBuilder<T, TNotNull, true, TSqlType> {
+  default(this: ColumnBuilder<T, TNotNull, false, TSqlType>, value: DefaultValue<T>): ColumnBuilder<T, TNotNull, true, TSqlType> {
     const col = this._clone()
     col._defaultValue = value
     return col as any
   }
 
   /** Set a raw SQL expression as the default (not quoted). Use for NOW(), gen_random_uuid(), etc. */
-  defaultSql(expression: string): ColumnBuilder<T, TNotNull, true, TSqlType> {
+  defaultSql(this: ColumnBuilder<T, TNotNull, false, TSqlType>, expression: string): ColumnBuilder<T, TNotNull, true, TSqlType> {
     const col = this._clone()
     col._defaultValue = sql(expression)
     return col as any
   }
 
   /** DEFAULT NOW() — common for created_at / updated_at columns */
-  defaultNow(): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("NOW()") }
+  defaultNow(this: ColumnBuilder<T, TNotNull, false, TSqlType>): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("NOW()") }
 
   /** DEFAULT gen_random_uuid() — common for UUID primary keys */
-  defaultRandomUuid(): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("gen_random_uuid()") }
+  defaultRandomUuid(this: ColumnBuilder<T, TNotNull, false, TSqlType>): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("gen_random_uuid()") }
 
   /** DEFAULT gen_random_uuidv7() — monotonic UUID for TimescaleDB 2.22+ partitioning */
-  defaultRandomUuidv7(): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("gen_random_uuidv7()") }
+  defaultRandomUuidv7(this: ColumnBuilder<T, TNotNull, false, TSqlType>): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("gen_random_uuidv7()") }
 
   /** DEFAULT CURRENT_DATE — for date-only columns */
-  defaultCurrentDate(): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("CURRENT_DATE") }
+  defaultCurrentDate(this: ColumnBuilder<T, TNotNull, false, TSqlType>): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("CURRENT_DATE") }
 
   /** DEFAULT CURRENT_TIMESTAMP — alias for NOW() preferred by some teams */
-  defaultCurrentTimestamp(): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("CURRENT_TIMESTAMP") }
+  defaultCurrentTimestamp(this: ColumnBuilder<T, TNotNull, false, TSqlType>): ColumnBuilder<T, TNotNull, true, TSqlType> { return this.defaultSql("CURRENT_TIMESTAMP") }
 
   primaryKey(this: ColumnBuilder<T, TNotNull, THasDefault, AllowedPKSqlType>): ColumnBuilder<T, true, THasDefault, TSqlType> {
     const col = (this as any)._clone()
@@ -84,20 +87,20 @@ export class ColumnBuilder<T, TNotNull extends boolean = false, THasDefault exte
     return col as any
   }
 
-  generatedAlwaysAs(expression: string): ColumnBuilder<T, TNotNull, true, TSqlType> {
+  generatedAlwaysAs(this: ColumnBuilder<T, TNotNull, false, TSqlType>, expression: string): ColumnBuilder<T, TNotNull, true, TSqlType> {
     const col = this._clone()
     col._generated = { expression, type: "stored" }
     return col as any
   }
 
-  generatedAlwaysAsIdentity(): ColumnBuilder<T, true, true, TSqlType> {
+  generatedAlwaysAsIdentity(this: ColumnBuilder<T, TNotNull, false, TSqlType>): ColumnBuilder<T, true, true, TSqlType> {
     const col = this._clone()
     col._generated = { type: "identity", mode: "always" }
     col._isNotNull = true
     return col as any
   }
 
-  generatedByDefaultAsIdentity(): ColumnBuilder<T, true, true, TSqlType> {
+  generatedByDefaultAsIdentity(this: ColumnBuilder<T, TNotNull, false, TSqlType>): ColumnBuilder<T, true, true, TSqlType> {
     const col = this._clone()
     col._generated = { type: "identity", mode: "byDefault" }
     col._isNotNull = true

@@ -1,9 +1,25 @@
 import type { ColumnBuilder } from "./Column.js"
-import type { ColumnDef, ConstraintDef, HypertableConfig, HypertableDefinition, IndexDef, RlsPolicyDef, TriggerDef } from "./types.js"
+import type { AllowedTimeSqlType, ColumnDef, ConstraintDef, HypertableConfig, HypertableDefinition, IndexDef, RlsPolicyDef, TriggerDef } from "./types.js"
+import { buildTypedHelpers, type TypedHelpers } from "./Table.js"
 
 type ColumnMap<T extends Record<string, ColumnBuilder<any, any, any>>> = {
   [K in keyof T]: ReturnType<T[K]["build"]>
 }
+
+/** Extract the TSqlType parameter from a ColumnBuilder */
+type BuilderSqlType<B> = B extends ColumnBuilder<any, any, any, infer S> ? S : never
+/** Extract the TNotNull parameter from a ColumnBuilder */
+type BuilderNotNull<B> = B extends ColumnBuilder<any, infer N, any, any> ? N : never
+
+/** Keys of TColumns where the column is NOT NULL and has a valid time SQL type */
+type ValidTimeColumnKeys<TColumns extends Record<string, ColumnBuilder<any, any, any>>> = {
+  [K in Extract<keyof TColumns, string>]:
+    BuilderNotNull<TColumns[K]> extends true
+      ? BuilderSqlType<TColumns[K]> extends AllowedTimeSqlType
+        ? K
+        : never
+      : never
+}[Extract<keyof TColumns, string>]
 
 export const hypertable = <
   TName extends string,
@@ -11,8 +27,8 @@ export const hypertable = <
 >(
   name: TName,
   columns: TColumns,
-  config: HypertableConfig & { timeColumn: Extract<keyof TColumns, string> },
-  extra?: (columns: ColumnMap<TColumns>) => Array<IndexDef | ConstraintDef | TriggerDef>,
+  config: HypertableConfig & { timeColumn: ValidTimeColumnKeys<TColumns> },
+  extra?: (columns: ColumnMap<TColumns>, t: TypedHelpers<TColumns>) => Array<IndexDef | ConstraintDef | TriggerDef>,
   options?: {
     schema?: string
     unlogged?: boolean
@@ -32,7 +48,9 @@ export const hypertable = <
     builtColumns[key] = builder.build()
   }
 
-  const extras = extra ? extra(builtColumns as ColumnMap<TColumns>) : []
+  const typedCols = builtColumns as ColumnMap<TColumns>
+  const helpers = buildTypedHelpers<TColumns>(typedCols)
+  const extras = extra ? extra(typedCols, helpers) : []
   const indexes = extras.filter((e): e is IndexDef => e._tag === "Index")
   const constraints = extras.filter((e): e is ConstraintDef => e._tag === "Constraint")
   const triggers = extras.filter((e): e is TriggerDef => e._tag === "Trigger")
@@ -40,7 +58,7 @@ export const hypertable = <
   return {
     _tag: "Hypertable",
     name,
-    columns: builtColumns as ColumnMap<TColumns>,
+    columns: typedCols,
     indexes,
     constraints,
     triggers,

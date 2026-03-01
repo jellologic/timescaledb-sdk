@@ -1,4 +1,5 @@
 import type { ColumnBuilder } from "./Column.js"
+import { buildTypedHelpers, type TypedHelpers } from "./Table.js"
 import type { ColumnDef, IndexDef, MaterializedViewDefinition } from "./types.js"
 
 type ColumnMap<T extends Record<string, ColumnBuilder<any>>> = {
@@ -12,7 +13,7 @@ export const pgMaterializedView = <
   name: TName,
   columns: TColumns,
   sql: string,
-  extra?: (columns: ColumnMap<TColumns>) => Array<IndexDef>,
+  extra?: (columns: ColumnMap<TColumns>, t: TypedHelpers<TColumns>) => Array<IndexDef>,
   options?: {
     schema?: string
     withNoData?: boolean
@@ -28,12 +29,14 @@ export const pgMaterializedView = <
     builtColumns[key] = builder.build()
   }
 
-  const indexes = extra ? extra(builtColumns as ColumnMap<TColumns>) : []
+  const typedCols = builtColumns as ColumnMap<TColumns>
+  const helpers = buildTypedHelpers<TColumns>(typedCols)
+  const indexes = extra ? extra(typedCols, helpers) : []
 
   return {
     _tag: "MaterializedView",
     name,
-    columns: builtColumns as ColumnMap<TColumns>,
+    columns: typedCols,
     schema: options?.schema ?? "public",
     sql,
     indexes,
