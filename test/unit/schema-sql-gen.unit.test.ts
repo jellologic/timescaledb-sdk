@@ -532,7 +532,7 @@ describe("SQL Generation — Hypertable", () => {
     expect(retSql).toContain("INTERVAL '365 days'")
   })
 
-  test("space partitioning SQL (add_dimension)", () => {
+  test("space partitioning SQL — hash uses by_hash()", () => {
     const metrics = hypertable("metrics", {
       time: timestamptz("time").notNull(),
       deviceId: integer("device_id").notNull(),
@@ -544,8 +544,51 @@ describe("SQL Generation — Hypertable", () => {
     const up = genUp([metrics])
     const dimSql = up.find((s) => s.includes("add_dimension"))
     expect(dimSql).toBeDefined()
-    expect(dimSql).toContain("'device_id'")
-    expect(dimSql).toContain("4")
+    expect(dimSql).toContain("by_hash('device_id', 4)")
+  })
+
+  test("space partitioning SQL — hash defaults to 4 partitions", () => {
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      deviceId: integer("device_id").notNull(),
+    }, {
+      timeColumn: "time",
+      partitioning: [{ column: "device_id", type: "hash" }],
+    })
+
+    const up = genUp([metrics])
+    const dimSql = up.find((s) => s.includes("add_dimension"))
+    expect(dimSql).toContain("by_hash('device_id', 4)")
+  })
+
+  test("space partitioning SQL — range uses by_range()", () => {
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      sensorId: integer("sensor_id").notNull(),
+    }, {
+      timeColumn: "time",
+      partitioning: [{ column: "sensor_id", type: "range" }],
+    })
+
+    const up = genUp([metrics])
+    const dimSql = up.find((s) => s.includes("add_dimension"))
+    expect(dimSql).toBeDefined()
+    expect(dimSql).toContain("by_range('sensor_id')")
+  })
+
+  test("space partitioning SQL — range with partitionInterval", () => {
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      updatedAt: timestamptz("updated_at").notNull(),
+    }, {
+      timeColumn: "time",
+      partitioning: [{ column: "updated_at", type: "range", partitionInterval: "7 days" }],
+    })
+
+    const up = genUp([metrics])
+    const dimSql = up.find((s) => s.includes("add_dimension"))
+    expect(dimSql).toBeDefined()
+    expect(dimSql).toContain("by_range('updated_at', INTERVAL '7 days')")
   })
 })
 

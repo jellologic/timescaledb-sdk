@@ -306,6 +306,11 @@ describe("ColumnBuilder methods", () => {
     expect(col.defaultValue).toBe("now()")
   })
 
+  test(".defaultRandomUuidv7() sets gen_random_uuidv7() default", () => {
+    const col = uuid("id").defaultRandomUuidv7().build()
+    expect(col.defaultValue).toEqual({ __sqlExpr: true, value: "gen_random_uuidv7()" })
+  })
+
   test(".primaryKey() sets isPrimaryKey + isNotNull", () => {
     const col = integer("id").primaryKey().build()
     expect(col.isPrimaryKey).toBe(true)

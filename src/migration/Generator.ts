@@ -1772,11 +1772,16 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     // Space partitioning dimensions
     if (config.partitioning) {
       for (const part of config.partitioning) {
-        const dimArgs = [`'${htLit}'`, `'${part.column}'`]
-        if (part.numberOfPartitions) {
-          dimArgs.push(String(part.numberOfPartitions))
+        let dimSpec: string
+        if (part.type === "hash") {
+          const partitions = part.numberOfPartitions ?? 4
+          dimSpec = `by_hash('${part.column}', ${partitions})`
+        } else {
+          dimSpec = part.partitionInterval
+            ? `by_range('${part.column}', INTERVAL '${part.partitionInterval}')`
+            : `by_range('${part.column}')`
         }
-        up.push(`SELECT add_dimension(${dimArgs.join(", ")});`)
+        up.push(`SELECT add_dimension('${htLit}', ${dimSpec});`)
       }
     }
 

@@ -2,18 +2,19 @@ import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { HypertableError } from "../Error.js"
 import type { TableDefinition } from "../schema/types.js"
+import type { ChunkInfo } from "./types.js"
 
 export const showChunks = (
   table: TableDefinition | string,
   opts?: { olderThan?: string; newerThan?: string }
-): Effect.Effect<ReadonlyArray<Record<string, unknown>>, HypertableError, TimescaleClient> =>
+): Effect.Effect<ReadonlyArray<ChunkInfo>, HypertableError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
     const tableName = typeof table === "string" ? table : table.name
     const args: string[] = [`'${tableName}'`]
     if (opts?.olderThan) args.push(`older_than => INTERVAL '${opts.olderThan}'`)
     if (opts?.newerThan) args.push(`newer_than => INTERVAL '${opts.newerThan}'`)
-    return yield* client.execute<Record<string, unknown>>(`SELECT * FROM show_chunks(${args.join(", ")})`)
+    return yield* client.execute<ChunkInfo>(`SELECT * FROM show_chunks(${args.join(", ")})`)
   }).pipe(
     Effect.mapError((e) => new HypertableError({ message: `Failed to show chunks: ${e}`, cause: e }))
   )

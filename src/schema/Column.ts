@@ -49,6 +49,9 @@ export class ColumnBuilder<T, TNotNull extends boolean = false, THasDefault exte
   /** DEFAULT gen_random_uuid() — common for UUID primary keys */
   defaultRandomUuid(): ColumnBuilder<T, TNotNull, true> { return this.defaultSql("gen_random_uuid()") }
 
+  /** DEFAULT gen_random_uuidv7() — monotonic UUID for TimescaleDB 2.22+ partitioning */
+  defaultRandomUuidv7(): ColumnBuilder<T, TNotNull, true> { return this.defaultSql("gen_random_uuidv7()") }
+
   /** DEFAULT CURRENT_DATE — for date-only columns */
   defaultCurrentDate(): ColumnBuilder<T, TNotNull, true> { return this.defaultSql("CURRENT_DATE") }
 

@@ -133,6 +133,8 @@ export interface PartitioningConfig {
   readonly column: string
   readonly type: "hash" | "range"
   readonly numberOfPartitions?: number
+  /** Partition interval for range dimensions (e.g. "7 days", "1000" for integers) */
+  readonly partitionInterval?: string
 }
 
 export interface ReorderPolicyConfig {
