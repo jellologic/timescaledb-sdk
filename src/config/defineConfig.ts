@@ -255,7 +255,14 @@ export const defineConfig = (config: SDKConfig): ResolvedConfig => {
 
   let definitions: SchemaDefinition[] = [...config.schema]
   if (queueEnabled) {
-    definitions.push(...queueDefinitions)
+    const existingKeys = new Set(
+      definitions.map((d) => `${d._tag}:${"name" in d ? (d as any).name : ""}`)
+    )
+    for (const qd of queueDefinitions) {
+      if (!existingKeys.has(`${qd._tag}:${(qd as any).name}`)) {
+        definitions.push(qd)
+      }
+    }
   }
 
   // Apply schema defaults

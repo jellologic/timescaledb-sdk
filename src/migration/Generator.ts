@@ -121,13 +121,34 @@ export interface SchemaDiff {
   readonly warnings: ReadonlyArray<{ name: string; message: string }>
 }
 
+const definitionKey = (d: SchemaDefinition): string => {
+  const rec = d as unknown as Record<string, unknown>
+  const name = rec.name ?? rec.viewName ?? rec.functionName ?? rec.table ?? rec.schemaName ?? rec.role ?? ""
+  const schema = rec.schema ?? rec.inSchema ?? ""
+  return `${d._tag}:${schema}:${name}`
+}
+
+const deduplicateDefinitions = (defs: ReadonlyArray<SchemaDefinition>): ReadonlyArray<SchemaDefinition> => {
+  const seen = new Set<string>()
+  const result: SchemaDefinition[] = []
+  for (const d of defs) {
+    const key = definitionKey(d)
+    if (!seen.has(key)) {
+      seen.add(key)
+      result.push(d)
+    }
+  }
+  return result
+}
+
 export const diffSchema = (
   definitions: ReadonlyArray<SchemaDefinition>,
   snapshot: SchemaSnapshot
 ): SchemaDiff => {
-  const tableDefs = definitions.filter((d): d is TableDefinition | HypertableDefinition => d._tag === "Table" || d._tag === "Hypertable")
-  const enumDefs = definitions.filter((d): d is EnumTypeDef => d._tag === "EnumType")
-  const caggDefs = definitions.filter((d): d is CaggDefinition => d._tag === "CaggDefinition")
+  const deduped = deduplicateDefinitions(definitions)
+  const tableDefs = deduped.filter((d): d is TableDefinition | HypertableDefinition => d._tag === "Table" || d._tag === "Hypertable")
+  const enumDefs = deduped.filter((d): d is EnumTypeDef => d._tag === "EnumType")
+  const caggDefs = deduped.filter((d): d is CaggDefinition => d._tag === "CaggDefinition")
 
   const tableKey = (name: string, schema: string) => `${schema}.${name}`
   const snapshotTableKeys = new Set(snapshot.tables.map((t) => tableKey(t.name, t.schema)))
@@ -420,7 +441,7 @@ export const diffSchema = (
   }
 
   // Job definitions (M3) — only create jobs for tables that don't exist yet in snapshot
-  const jobDefs = definitions.filter((d): d is JobDefinition => d._tag === "JobDefinition")
+  const jobDefs = deduped.filter((d): d is JobDefinition => d._tag === "JobDefinition")
   const snapshotJobs = snapshot.jobs ?? []
   const snapshotJobNames = new Map(snapshotJobs.map((j) => [j.config?.sdk_job_name as string ?? j.procName, j]))
 
@@ -701,8 +722,8 @@ export const diffSchema = (
   }
 
   // View diffing
-  const viewDefs = definitions.filter((d): d is ViewDefinition => d._tag === "View")
-  const matViewDefs = definitions.filter((d): d is MaterializedViewDefinition => d._tag === "MaterializedView")
+  const viewDefs = deduped.filter((d): d is ViewDefinition => d._tag === "View")
+  const matViewDefs = deduped.filter((d): d is MaterializedViewDefinition => d._tag === "MaterializedView")
 
   const viewKey = (name: string, schema: string) => `${schema}.${name}`
 
@@ -878,7 +899,7 @@ export const diffSchema = (
   }
 
   // Function diffing
-  const fnDefs = definitions.filter((d): d is FunctionDefinition => d._tag === "Function")
+  const fnDefs = deduped.filter((d): d is FunctionDefinition => d._tag === "Function")
   const snapshotFunctions = snapshot.functions ?? []
   const snapshotFnMap = new Map(snapshotFunctions.map((f) => [f.name, f]))
 
@@ -926,7 +947,7 @@ export const diffSchema = (
   }
 
   // Procedure diffing
-  const procDefs = definitions.filter((d): d is ProcedureDefinition => d._tag === "Procedure")
+  const procDefs = deduped.filter((d): d is ProcedureDefinition => d._tag === "Procedure")
   const snapshotProcedures = snapshot.procedures ?? []
   const snapshotProcMap = new Map(snapshotProcedures.map((p) => [p.name, p]))
 
@@ -968,7 +989,7 @@ export const diffSchema = (
   }
 
   // Trigger function diffing
-  const trigFnDefs = definitions.filter((d): d is TriggerFunctionDefinition => d._tag === "TriggerFunction")
+  const trigFnDefs = deduped.filter((d): d is TriggerFunctionDefinition => d._tag === "TriggerFunction")
   const snapshotTrigFunctions = snapshot.triggerFunctions ?? []
   const snapshotTrigFnMap = new Map(snapshotTrigFunctions.map((f) => [f.name, f]))
 
@@ -1002,7 +1023,7 @@ export const diffSchema = (
   }
 
   // --- Role diffing ---
-  const roleDefs = definitions.filter((d): d is RoleDef => d._tag === "Role")
+  const roleDefs = deduped.filter((d): d is RoleDef => d._tag === "Role")
   const snapshotRoles = snapshot.roles ?? []
   const snapshotRoleMap = new Map(snapshotRoles.map((r) => [r.name, r]))
 
@@ -1047,10 +1068,10 @@ export const diffSchema = (
   }
 
   // --- Grant diffing ---
-  const tableGrantDefs = definitions.filter((d): d is TableGrantDef => d._tag === "TableGrant")
-  const schemaGrantDefs = definitions.filter((d): d is SchemaGrantDef => d._tag === "SchemaGrant")
-  const roleMembershipDefs = definitions.filter((d): d is RoleMembershipDef => d._tag === "RoleMembership")
-  const defaultPrivilegeDefs = definitions.filter((d): d is DefaultPrivilegeDef => d._tag === "DefaultPrivilege")
+  const tableGrantDefs = deduped.filter((d): d is TableGrantDef => d._tag === "TableGrant")
+  const schemaGrantDefs = deduped.filter((d): d is SchemaGrantDef => d._tag === "SchemaGrant")
+  const roleMembershipDefs = deduped.filter((d): d is RoleMembershipDef => d._tag === "RoleMembership")
+  const defaultPrivilegeDefs = deduped.filter((d): d is DefaultPrivilegeDef => d._tag === "DefaultPrivilege")
 
   const snapshotTableGrants = snapshot.tableGrants ?? []
   const snapshotSchemaGrants = snapshot.schemaGrants ?? []

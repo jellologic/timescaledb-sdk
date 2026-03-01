@@ -108,4 +108,29 @@ describe("Migration Generator", () => {
     expect(hypertableSql).toContain("'time'")
     expect(hypertableSql).toContain("1 day")
   })
+
+  test("diffSchema deduplicates input definitions", () => {
+    const users = pgTable("users", {
+      id: integer("id").primaryKey(),
+      name: text("name").notNull(),
+    })
+
+    const diff = diffSchema([users, users], emptySnapshot)
+    expect(diff.tablesToCreate).toHaveLength(1)
+    expect(diff.tablesToCreate[0]).toEqual({ name: "users", schema: "public" })
+  })
+
+  test("diffSchema deduplicates mixed definition types", () => {
+    const users = pgTable("users", {
+      id: integer("id").primaryKey(),
+    })
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, { timeColumn: "time", chunkInterval: "1 day" })
+
+    const diff = diffSchema([users, metrics, users, metrics], emptySnapshot)
+    expect(diff.tablesToCreate).toHaveLength(2)
+    expect(diff.hypertablesToCreate).toHaveLength(1)
+  })
 })

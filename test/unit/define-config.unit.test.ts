@@ -1,6 +1,8 @@
 import { test, expect, describe } from "bun:test"
 import { defineConfig, configToLayer, configToDirectLayer, buildSessionInitSql } from "../../src/config/defineConfig.js"
 import { loadConfig } from "../../src/config/loader.js"
+import { diffSchema, generateMigrationSql } from "../../src/migration/Generator.js"
+import type { SchemaSnapshot } from "../../src/migration/types.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
 import { integer, text, uuid, timestamptz, doublePrecision, ColumnBuilder } from "../../src/schema/Column.js"
@@ -152,6 +154,40 @@ describe("defineConfig queue feature", () => {
     expect(names).toContain("_tsdb_sdk_job_workflows")
     expect(names).toContain("_tsdb_sdk_job_schedules")
     expect(names).toContain("_tsdb_sdk_job_workers")
+  })
+})
+
+// ============================================
+// defineConfig — queue deduplication (issue #26)
+// ============================================
+describe("defineConfig queue deduplication", () => {
+  test("no duplicate queue definitions when manually included in schema", () => {
+    const config = defineConfig({
+      schema: [...queueDefinitions],
+      features: { queue: true },
+    })
+    const names = config.definitions
+      .filter((d) => d._tag === "Table" || d._tag === "TriggerFunction")
+      .map((d) => (d as any).name)
+    const unique = new Set(names)
+    expect(names.length).toBe(unique.size)
+  })
+
+  test("definitions count matches queueDefinitions when user schema is identical", () => {
+    const config = defineConfig({
+      schema: [...queueDefinitions],
+      features: { queue: true },
+    })
+    // Should not double the definitions
+    expect(config.definitions.length).toBe(queueDefinitions.length)
+  })
+
+  test("user tables plus queue definitions are preserved without duplication", () => {
+    const config = defineConfig({
+      schema: [users, ...queueDefinitions],
+      features: { queue: true },
+    })
+    expect(config.definitions.length).toBe(1 + queueDefinitions.length)
   })
 })
 
@@ -1040,5 +1076,60 @@ describe("backward compatibility", () => {
     expect(config.queue.enabled).toBe(true)
     expect(config.migrations.advisoryLockId).toBe(123456789)
     expect(config.migrations.trackingTable).toBe("_timescaledb_sdk_migrations")
+  })
+})
+
+// ============================================
+// end-to-end: defineConfig → diffSchema → generateMigrationSql (issue #26)
+// ============================================
+describe("defineConfig → migration pipeline (issue #26)", () => {
+  const emptySnapshot: SchemaSnapshot = {
+    tables: [],
+    hypertables: [],
+    continuousAggregates: [],
+    takenAt: new Date(),
+  }
+
+  test("no duplicate SQL when user includes queueDefinitions and enables queue", () => {
+    const config = defineConfig({
+      schema: [users, ...queueDefinitions],
+      features: { queue: true },
+    })
+
+    const diff = diffSchema(config.definitions, emptySnapshot)
+    const { up, down } = generateMigrationSql(diff, config.definitions)
+
+    // Each queue table should appear exactly once in the up SQL
+    const queueTableNames = ["_tsdb_sdk_job_queue", "_tsdb_sdk_job_workflows", "_tsdb_sdk_job_schedules", "_tsdb_sdk_job_workers"]
+    for (const tableName of queueTableNames) {
+      const createCount = up.filter((s) => s.includes(`CREATE TABLE "${tableName}"`)).length
+      expect(createCount).toBe(1)
+    }
+
+    // The trigger function definition should appear exactly once (CREATE FUNCTION, not CREATE TRIGGER)
+    const createFnCount = up.filter((s) => s.startsWith("CREATE FUNCTION") && s.includes("_tsdb_sdk_job_notify")).length
+    expect(createFnCount).toBe(1)
+
+    // Down should also have no duplicate DROP TABLE statements
+    for (const tableName of queueTableNames) {
+      const dropCount = down.filter((s) => s.includes(`DROP TABLE`) && s.includes(`"${tableName}"`)).length
+      expect(dropCount).toBe(1)
+    }
+  })
+
+  test("no duplicate SQL when queue enabled without manual inclusion", () => {
+    const config = defineConfig({
+      schema: [users],
+      features: { queue: true },
+    })
+
+    const diff = diffSchema(config.definitions, emptySnapshot)
+    const { up } = generateMigrationSql(diff, config.definitions)
+
+    const queueTableNames = ["_tsdb_sdk_job_queue", "_tsdb_sdk_job_workflows", "_tsdb_sdk_job_schedules", "_tsdb_sdk_job_workers"]
+    for (const tableName of queueTableNames) {
+      const createCount = up.filter((s) => s.includes(`CREATE TABLE "${tableName}"`)).length
+      expect(createCount).toBe(1)
+    }
   })
 })
