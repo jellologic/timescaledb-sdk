@@ -42,6 +42,10 @@ export type SQLType =
   | "daterange"
   | "numrange"
 
+export type AllowedPKSqlType = "integer" | "bigint" | "serial" | "bigserial" | "uuid"
+
+export const DEFAULT_ALLOWED_PK_TYPES: ReadonlyArray<string> = ["integer", "bigint", "serial", "bigserial", "uuid"]
+
 export type ForeignKeyAction = "CASCADE" | "RESTRICT" | "SET NULL" | "SET DEFAULT" | "NO ACTION"
 
 export interface ColumnDef<T = unknown, TNotNull extends boolean = boolean, THasDefault extends boolean = boolean> {
@@ -133,6 +137,8 @@ export interface PartitioningConfig {
   readonly column: string
   readonly type: "hash" | "range"
   readonly numberOfPartitions?: number
+  /** Partition interval for range dimensions (e.g. "7 days", "1000" for integers) */
+  readonly partitionInterval?: string
 }
 
 export interface ReorderPolicyConfig {

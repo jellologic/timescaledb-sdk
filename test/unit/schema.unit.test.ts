@@ -306,6 +306,11 @@ describe("ColumnBuilder methods", () => {
     expect(col.defaultValue).toBe("now()")
   })
 
+  test(".defaultRandomUuidv7() sets gen_random_uuidv7() default", () => {
+    const col = uuid("id").defaultRandomUuidv7().build()
+    expect(col.defaultValue).toEqual({ __sqlExpr: true, value: "gen_random_uuidv7()" })
+  })
+
   test(".primaryKey() sets isPrimaryKey + isNotNull", () => {
     const col = integer("id").primaryKey().build()
     expect(col.isPrimaryKey).toBe(true)
@@ -1005,5 +1010,84 @@ describe("Trigger", () => {
       }),
     ])
     expect(metrics.triggers.length).toBe(1)
+  })
+})
+
+// ============================================
+// primaryKey() type restrictions
+// ============================================
+describe("primaryKey() type restrictions", () => {
+  // Positive: allowed types compile and work fine
+  test("integer is allowed as PK", () => {
+    const col = integer("id").primaryKey().build()
+    expect(col.isPrimaryKey).toBe(true)
+  })
+
+  test("bigint_ is allowed as PK", () => {
+    const col = bigint_("id").primaryKey().build()
+    expect(col.isPrimaryKey).toBe(true)
+  })
+
+  test("serial is allowed as PK", () => {
+    const col = serial("id").primaryKey().build()
+    expect(col.isPrimaryKey).toBe(true)
+  })
+
+  test("bigserial is allowed as PK", () => {
+    const col = bigserial("id").primaryKey().build()
+    expect(col.isPrimaryKey).toBe(true)
+  })
+
+  test("uuid is allowed as PK", () => {
+    const col = uuid("id").primaryKey().build()
+    expect(col.isPrimaryKey).toBe(true)
+  })
+
+  test("PK works after chaining .notNull().default()", () => {
+    const col = integer("id").notNull().default(0).primaryKey().build()
+    expect(col.isPrimaryKey).toBe(true)
+    expect(col.isNotNull).toBe(true)
+  })
+
+  // Negative: disallowed types cause compile-time errors
+  test("text cannot be PK", () => {
+    // @ts-expect-error — text cannot be a primary key
+    text("id").primaryKey()
+  })
+
+  test("boolean cannot be PK", () => {
+    // @ts-expect-error — boolean cannot be a primary key
+    boolean("id").primaryKey()
+  })
+
+  test("timestamptz cannot be PK", () => {
+    // @ts-expect-error — timestamptz cannot be a primary key
+    timestamptz("id").primaryKey()
+  })
+
+  test("jsonb cannot be PK", () => {
+    // @ts-expect-error — jsonb cannot be a primary key
+    jsonb("id").primaryKey()
+  })
+
+  test("varchar cannot be PK", () => {
+    // @ts-expect-error — varchar cannot be a primary key
+    varchar("id").primaryKey()
+  })
+
+  test("numeric cannot be PK", () => {
+    // @ts-expect-error — numeric cannot be a primary key
+    numeric("id").primaryKey()
+  })
+
+  test("text.notNull() still blocked as PK", () => {
+    // @ts-expect-error — text.notNull() is still blocked
+    text("id").notNull().primaryKey()
+  })
+
+  test("enum column cannot be PK", () => {
+    const status = pgEnum("status", ["active", "inactive"])
+    // @ts-expect-error — enum column cannot be a primary key
+    enumColumn(status, "status").primaryKey()
   })
 })

@@ -15,5 +15,5 @@ export const pgEnum = <TName extends string, TValues extends readonly [string, .
 export const enumColumn = <TValues extends readonly [string, ...string[]]>(
   enumDef: EnumTypeDef & { readonly values: TValues },
   columnName: string
-): ColumnBuilder<TValues[number]> =>
-  new ColumnBuilder<TValues[number]>(enumDef.name, columnName)
+): ColumnBuilder<TValues[number], false, false, string> =>
+  new ColumnBuilder<TValues[number], false, false, string>(enumDef.name, columnName)

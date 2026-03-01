@@ -2,7 +2,8 @@ import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { CompressionError } from "../Error.js"
 import type { TableDefinition } from "../schema/types.js"
-import type { CompressionSettings } from "./types.js"
+import { showChunks } from "../hypertable/Chunk.js"
+import type { CompressionSettings, CompressChunkOptions, DecompressChunkOptions } from "./types.js"
 
 export const enableCompression = (
   table: TableDefinition | string,
@@ -41,23 +42,49 @@ export const disableCompression = (
   )
 
 export const compressChunk = (
-  chunk: string
+  chunk: string,
+  opts?: CompressChunkOptions
 ): Effect.Effect<void, CompressionError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
-    yield* client.execute(`SELECT compress_chunk('${chunk}')`)
+    const extra = opts?.ifNotCompressed ? ", if_not_compressed => true" : ""
+    yield* client.execute(`SELECT compress_chunk('${chunk}'${extra})`)
   }).pipe(
     Effect.mapError((e) => new CompressionError({ message: `Failed to compress chunk: ${e}`, cause: e }))
   )
 
 export const decompressChunk = (
-  chunk: string
+  chunk: string,
+  opts?: DecompressChunkOptions
 ): Effect.Effect<void, CompressionError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
-    yield* client.execute(`SELECT decompress_chunk('${chunk}')`)
+    const extra = opts?.ifCompressed ? ", if_compressed => true" : ""
+    yield* client.execute(`SELECT decompress_chunk('${chunk}'${extra})`)
   }).pipe(
     Effect.mapError((e) => new CompressionError({ message: `Failed to decompress chunk: ${e}`, cause: e }))
+  )
+
+export const recompressChunks = (
+  table: TableDefinition | string,
+  opts?: { olderThan?: string; newerThan?: string }
+): Effect.Effect<ReadonlyArray<string>, CompressionError, TimescaleClient> =>
+  Effect.gen(function* () {
+    const chunks = yield* showChunks(table, opts).pipe(
+      Effect.mapError((e) => new CompressionError({ message: `Failed to list chunks for recompression: ${e}`, cause: e }))
+    )
+    const recompressed: string[] = []
+    for (const chunk of chunks) {
+      const chunkName = `${chunk.chunk_schema}.${chunk.chunk_name}`
+      yield* decompressChunk(chunkName, { ifCompressed: true })
+      yield* compressChunk(chunkName, { ifNotCompressed: true })
+      recompressed.push(chunkName)
+    }
+    return recompressed
+  }).pipe(
+    Effect.mapError((e) =>
+      e instanceof CompressionError ? e : new CompressionError({ message: `Failed to recompress chunks: ${e}`, cause: e })
+    )
   )
 
 export const convertToColumnstore = (

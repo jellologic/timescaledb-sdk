@@ -592,5 +592,73 @@ describe("Integration — NOT NULL Column Changes", () => {
   })
 })
 
+// ============================================
+// UUIDv7 & Dimension Type Tests
+// ============================================
+describe("Integration — UUIDv7 & Dimension Types", () => {
+  test("uuid column with defaultRandomUuidv7() (requires TimescaleDB 2.22+)", async () => {
+    const name = uniqueName("test_uuidv7")
+    const t = pgTable(name, {
+      id: uuid("id").defaultRandomUuidv7().primaryKey(),
+      label: text("label"),
+    })
+    // gen_random_uuidv7() requires TimescaleDB 2.22+ — skip gracefully if unavailable
+    const hasUuidv7 = await run(Effect.gen(function* () {
+      const client = yield* TimescaleClient
+      const rows = yield* client.execute<{ exists: boolean }>(
+        `SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'gen_random_uuidv7') as exists`
+      )
+      return rows[0]?.exists ?? false
+    }))
+    if (!hasUuidv7) {
+      console.log("  ⏭ Skipping: gen_random_uuidv7() not available (needs TimescaleDB 2.22+)")
+      return
+    }
+    await run(Effect.gen(function* () {
+      yield* createTableFromDef(t)
+      const cols = yield* columnInfo(name)
+      const idCol = cols.find((c) => c.column_name === "id")
+      expect(idCol?.column_default).toContain("gen_random_uuidv7")
+      yield* dropTableCascade(name)
+    }))
+  })
+
+  test("add_dimension with by_hash generates correct SQL", async () => {
+    const name = uniqueName("test_dim_hash")
+    const ht = hypertable(name, {
+      time: timestamptz("time").notNull(),
+      deviceId: integer("device_id").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      partitioning: [{ column: "device_id", type: "hash", numberOfPartitions: 4 }],
+    })
+    await run(Effect.gen(function* () {
+      yield* createTableFromDef(ht)
+      const info = yield* hypertableInfo(name)
+      expect(info?.num_dimensions).toBe(2)
+      yield* dropTableCascade(name)
+    }))
+  })
+
+  test("add_dimension with by_range and partition interval", async () => {
+    const name = uniqueName("test_dim_range")
+    const ht = hypertable(name, {
+      time: timestamptz("time").notNull(),
+      updatedAt: timestamptz("updated_at").notNull(),
+      value: doublePrecision("value"),
+    }, {
+      timeColumn: "time",
+      partitioning: [{ column: "updated_at", type: "range", partitionInterval: "7 days" }],
+    })
+    await run(Effect.gen(function* () {
+      yield* createTableFromDef(ht)
+      const info = yield* hypertableInfo(name)
+      expect(info?.num_dimensions).toBe(2)
+      yield* dropTableCascade(name)
+    }))
+  })
+})
+
 // We need TimescaleClient import for the integration tests
 import { TimescaleClient } from "../../src/Client.js"

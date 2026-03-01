@@ -3,7 +3,7 @@ import { TimescaleClient } from "../Client.js"
 import { MigrationError } from "../Error.js"
 import type { MigrationRecord } from "./types.js"
 
-const MIGRATIONS_TABLE = "_timescaledb_sdk_migrations"
+const DEFAULT_MIGRATIONS_TABLE = "_timescaledb_sdk_migrations"
 
 const createHash = (content: string): string => {
   const hasher = new Bun.CryptoHasher("sha256")
@@ -11,11 +11,13 @@ const createHash = (content: string): string => {
   return hasher.digest("hex")
 }
 
-export const ensureMigrationsTable: Effect.Effect<void, MigrationError, TimescaleClient> =
+export const ensureMigrationsTable = (
+  table: string = DEFAULT_MIGRATIONS_TABLE
+): Effect.Effect<void, MigrationError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
     yield* client.execute(`
-      CREATE TABLE IF NOT EXISTS "${MIGRATIONS_TABLE}" (
+      CREATE TABLE IF NOT EXISTS "${table}" (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         checksum TEXT NOT NULL,
@@ -27,7 +29,9 @@ export const ensureMigrationsTable: Effect.Effect<void, MigrationError, Timescal
     Effect.mapError((e) => new MigrationError({ message: `Failed to ensure migrations table: ${e}`, cause: e }))
   )
 
-export const getAppliedMigrations: Effect.Effect<ReadonlyArray<MigrationRecord>, MigrationError, TimescaleClient> =
+export const getAppliedMigrations = (
+  table: string = DEFAULT_MIGRATIONS_TABLE
+): Effect.Effect<ReadonlyArray<MigrationRecord>, MigrationError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
     const rows = yield* client.execute<{
@@ -36,7 +40,7 @@ export const getAppliedMigrations: Effect.Effect<ReadonlyArray<MigrationRecord>,
       checksum: string
       applied_at: Date
       execution_time_ms: number
-    }>(`SELECT * FROM "${MIGRATIONS_TABLE}" ORDER BY id ASC`)
+    }>(`SELECT * FROM "${table}" ORDER BY id ASC`)
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -51,12 +55,13 @@ export const getAppliedMigrations: Effect.Effect<ReadonlyArray<MigrationRecord>,
 export const recordMigration = (
   name: string,
   checksum: string,
-  executionTimeMs: number
+  executionTimeMs: number,
+  table: string = DEFAULT_MIGRATIONS_TABLE
 ): Effect.Effect<void, MigrationError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
     yield* client.execute(
-      `INSERT INTO "${MIGRATIONS_TABLE}" (name, checksum, execution_time_ms) VALUES ($1, $2, $3)`,
+      `INSERT INTO "${table}" (name, checksum, execution_time_ms) VALUES ($1, $2, $3)`,
       [name, checksum, executionTimeMs]
     )
   }).pipe(
@@ -64,12 +69,13 @@ export const recordMigration = (
   )
 
 export const removeMigrationRecord = (
-  name: string
+  name: string,
+  table: string = DEFAULT_MIGRATIONS_TABLE
 ): Effect.Effect<void, MigrationError, TimescaleClient> =>
   Effect.gen(function* () {
     const client = yield* TimescaleClient
     yield* client.execute(
-      `DELETE FROM "${MIGRATIONS_TABLE}" WHERE name = $1`,
+      `DELETE FROM "${table}" WHERE name = $1`,
       [name]
     )
   }).pipe(

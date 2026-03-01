@@ -21,3 +21,11 @@ export interface DirectCompressSettings {
   readonly insertClientSorted?: boolean
   readonly copyClientSorted?: boolean
 }
+
+export interface CompressChunkOptions {
+  readonly ifNotCompressed?: boolean
+}
+
+export interface DecompressChunkOptions {
+  readonly ifCompressed?: boolean
+}
