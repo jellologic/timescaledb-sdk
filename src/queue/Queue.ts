@@ -172,12 +172,15 @@ export const dequeue = (
         ORDER BY "priority" ASC, "created_at" ASC
         FOR UPDATE SKIP LOCKED
         LIMIT $2
+      ),
+      updated AS (
+        UPDATE "_tsdb_sdk_job_queue" j
+        SET "status" = 'active', "started_at" = NOW(), "updated_at" = NOW(),
+            "attempts" = "attempts" + 1, "worker_id" = $3
+        FROM candidates c WHERE j.id = c.id
+        RETURNING j.*
       )
-      UPDATE "_tsdb_sdk_job_queue" j
-      SET "status" = 'active', "started_at" = NOW(), "updated_at" = NOW(),
-          "attempts" = "attempts" + 1, "worker_id" = $3
-      FROM candidates c WHERE j.id = c.id
-      RETURNING j.*`,
+      SELECT * FROM updated ORDER BY "priority" ASC, "created_at" ASC`,
       [queue, limit, workerId]
     )
 
