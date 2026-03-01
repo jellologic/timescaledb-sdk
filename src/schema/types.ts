@@ -42,7 +42,14 @@ export type SQLType =
   | "daterange"
   | "numrange"
 
-export type AllowedPKSqlType = "integer" | "bigint" | "serial" | "bigserial" | "uuid"
+export interface PKTypesOverride {}
+
+export type DefaultAllowedPKTypes = "integer" | "bigint" | "serial" | "bigserial" | "uuid"
+
+export type AllowedPKSqlType =
+  [keyof PKTypesOverride] extends [never]
+    ? DefaultAllowedPKTypes
+    : PKTypesOverride[keyof PKTypesOverride] & string
 
 export const DEFAULT_ALLOWED_PK_TYPES: ReadonlyArray<string> = ["integer", "bigint", "serial", "bigserial", "uuid"]
 
