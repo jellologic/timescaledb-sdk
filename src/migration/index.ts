@@ -6,7 +6,7 @@ export { definitionsToSnapshot, definitionsToPersistedSnapshot } from "./Definit
 export { readJournal, readSnapshot, loadAllMigrations, writeMigrationFile, computeMigrationChecksum, generateMigrationName, computeIntegrityHash, verifyIntegrity, AI_WARNING_HEADER, sealMigration, atomicWriteAll } from "./FileSystem.js"
 export { generate, loadAndRun, loadAndRollback, loadAndStatus, migrationFileToEffect } from "./Orchestrator.js"
 export type { RunOptions, DryRunResult } from "./Orchestrator.js"
-export type { Migration, MigrationRecord, MigrationStatus, MigrationFile, LoadMigrationOptions, SchemaSnapshot, TableSnapshot, ColumnSnapshot, IndexSnapshot, HypertableSnapshot, CaggSnapshot, EnumSnapshot, ConstraintSnapshot, TriggerSnapshot, CompressionSettingSnapshot } from "./types.js"
+export type { Migration, MigrationRecord, MigrationStatus, MigrationFile, LoadMigrationOptions, SchemaSnapshot, TableSnapshot, ColumnSnapshot, IndexSnapshot, HypertableSnapshot, CaggSnapshot, EnumSnapshot, ConstraintSnapshot, TriggerSnapshot, CompressionSettingSnapshot, RoleSnapshot, TableGrantSnapshot, SchemaGrantSnapshot, RoleMembershipSnapshot, DefaultPrivilegeSnapshot, RlsPolicySnapshot } from "./types.js"
 export type { SchemaDiff, SchemaDefinition } from "./Generator.js"
 export type { PersistedSnapshot } from "./DefinitionsSnapshot.js"
 export type { MigrationJournal, JournalEntry } from "./FileSystem.js"

@@ -18,6 +18,7 @@ export const pgTable = <
     ifNotExists?: boolean
     renamedFrom?: string
     enableRls?: boolean
+    forceRls?: boolean
     rlsPolicies?: ReadonlyArray<RlsPolicyDef>
   }
 ): TableDefinition<TName, ColumnMap<TColumns>> => {
@@ -43,6 +44,7 @@ export const pgTable = <
     ifNotExists: options?.ifNotExists,
     renamedFrom: options?.renamedFrom,
     enableRls: options?.enableRls,
+    forceRls: options?.forceRls,
     rlsPolicies: options?.rlsPolicies,
   }
 }

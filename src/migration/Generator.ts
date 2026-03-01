@@ -1,11 +1,11 @@
-import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, IndexDef, EnumTypeDef, CaggDefinition, RlsPolicyDef, JobDefinition, ViewDefinition, MaterializedViewDefinition } from "../schema/types.js"
+import type { TableDefinition, HypertableDefinition, ColumnDef, ConstraintDef, IndexDef, EnumTypeDef, CaggDefinition, RlsPolicyDef, JobDefinition, ViewDefinition, MaterializedViewDefinition, RoleDef, TableGrantDef, SchemaGrantDef, RoleMembershipDef, DefaultPrivilegeDef } from "../schema/types.js"
 import type { FunctionDefinition, ProcedureDefinition, TriggerFunctionDefinition } from "../functions/types.js"
 import { transpile } from "../functions/transpiler/index.js"
 import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
-import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot, ViewDependency, IndexSnapshotColumn } from "./types.js"
+import type { SchemaSnapshot, RlsPolicySnapshot, HypertablePolicySnapshot, CaggPolicySnapshot, ViewDependency, IndexSnapshotColumn, RoleSnapshot, TableGrantSnapshot, SchemaGrantSnapshot, RoleMembershipSnapshot, DefaultPrivilegeSnapshot } from "./types.js"
 import { toSqlValue, quoteIdentifier, quoteString, qualifiedName, qualifiedNameLiteral } from "../internal/sql.js"
 
-export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition | ViewDefinition | MaterializedViewDefinition | FunctionDefinition | ProcedureDefinition | TriggerFunctionDefinition
+export type SchemaDefinition = TableDefinition | HypertableDefinition | EnumTypeDef | CaggDefinition | JobDefinition | ViewDefinition | MaterializedViewDefinition | FunctionDefinition | ProcedureDefinition | TriggerFunctionDefinition | RoleDef | TableGrantDef | SchemaGrantDef | RoleMembershipDef | DefaultPrivilegeDef
 
 export interface TableRef {
   readonly name: string
@@ -55,9 +55,11 @@ export interface SchemaDiff {
   readonly jobsToAlter: ReadonlyArray<{ procName: string; scheduleInterval?: string; config?: Record<string, unknown> | null }>
   readonly rlsToEnable: ReadonlyArray<TableRef>
   readonly rlsToDisable: ReadonlyArray<TableRef>
+  readonly rlsToForce: ReadonlyArray<TableRef>
+  readonly rlsToUnforce: ReadonlyArray<TableRef>
   readonly rlsPoliciesToCreate: ReadonlyArray<{ table: string; schema: string; policy: RlsPolicyDef }>
   readonly rlsPoliciesToDrop: ReadonlyArray<{ table: string; schema: string; policyName: string }>
-  readonly rlsPoliciesToAlter: ReadonlyArray<{ table: string; schema: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string> }>
+  readonly rlsPoliciesToAlter: ReadonlyArray<{ table: string; schema: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; permissive?: boolean; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string>; oldPermissive?: boolean }>
   readonly compressionPoliciesToAdd: ReadonlyArray<{ table: string; schema: string; after: string }>
   readonly compressionPoliciesToRemove: ReadonlyArray<TableRef>
   readonly retentionPoliciesToAdd: ReadonlyArray<{ table: string; schema: string; dropAfter: string }>
@@ -104,6 +106,18 @@ export interface SchemaDiff {
   readonly triggerFunctionsToCreate: ReadonlyArray<TriggerFunctionDefinition>
   readonly triggerFunctionsToDrop: ReadonlyArray<string>
   readonly triggerFunctionsToReplace: ReadonlyArray<TriggerFunctionDefinition>
+  readonly rolesToCreate: ReadonlyArray<RoleDef>
+  readonly rolesToDrop: ReadonlyArray<string>
+  readonly rolesToAlter: ReadonlyArray<{ name: string; changes: Partial<Omit<RoleDef, '_tag' | 'name'>> }>
+  readonly rolesToRename: ReadonlyArray<{ oldName: string; newName: string }>
+  readonly tableGrantsToAdd: ReadonlyArray<TableGrantDef>
+  readonly tableGrantsToRevoke: ReadonlyArray<{ table: string; schema: string; privileges: ReadonlyArray<string>; roles: ReadonlyArray<string> }>
+  readonly schemaGrantsToAdd: ReadonlyArray<SchemaGrantDef>
+  readonly schemaGrantsToRevoke: ReadonlyArray<{ schemaName: string; privileges: ReadonlyArray<string>; roles: ReadonlyArray<string> }>
+  readonly roleMembershipsToAdd: ReadonlyArray<RoleMembershipDef>
+  readonly roleMembershipsToRevoke: ReadonlyArray<{ role: string; members: ReadonlyArray<string> }>
+  readonly defaultPrivilegesToAdd: ReadonlyArray<DefaultPrivilegeDef>
+  readonly defaultPrivilegesToRevoke: ReadonlyArray<DefaultPrivilegeDef>
   readonly warnings: ReadonlyArray<{ name: string; message: string }>
 }
 
@@ -446,9 +460,11 @@ export const diffSchema = (
   // RLS policy diffing on existing tables
   const rlsToEnable: TableRef[] = []
   const rlsToDisable: TableRef[] = []
+  const rlsToForce: TableRef[] = []
+  const rlsToUnforce: TableRef[] = []
   const rlsPoliciesToCreate: Array<{ table: string; schema: string; policy: RlsPolicyDef }> = []
   const rlsPoliciesToDrop: Array<{ table: string; schema: string; policyName: string }> = []
-  const rlsPoliciesToAlter: Array<{ table: string; schema: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string> }> = []
+  const rlsPoliciesToAlter: Array<{ table: string; schema: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; permissive?: boolean; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string>; oldPermissive?: boolean }> = []
 
   const snapshotRlsPolicies = snapshot.rlsPolicies ?? []
   // RlsPolicySnapshot doesn't carry schema — index by table name alone
@@ -465,13 +481,27 @@ export const diffSchema = (
     const existingPolicyMap = new Map(existingPolicies.map((p) => [p.policyName, p]))
     const definedPolicies = def.rlsPolicies ?? []
 
+    // Use snapshot table's rlsEnabled/rlsForced for accurate detection
+    const snapshotName = [...oldKeyToNewName.entries()].find(([, newName]) => newName === def.name)?.[0]
+    const existingKey = snapshotName ?? tableKey(def.name, def.schema)
+    const existingTable = snapshotTableMap.get(existingKey)
+    const snapshotRlsEnabled = existingTable?.rlsEnabled ?? false
+    const snapshotRlsForced = existingTable?.rlsForced ?? false
+
     // Check if RLS needs to be enabled/disabled
-    const hasSnapshotPolicies = existingPolicies.length > 0
-    if (def.enableRls && !hasSnapshotPolicies && definedPolicies.length > 0) {
+    if (def.enableRls && !snapshotRlsEnabled) {
       rlsToEnable.push({ name: def.name, schema: def.schema })
     }
-    if (!def.enableRls && !definedPolicies.length && hasSnapshotPolicies) {
+    if (!def.enableRls && !definedPolicies.length && snapshotRlsEnabled) {
       rlsToDisable.push({ name: def.name, schema: def.schema })
+    }
+
+    // Check if FORCE RLS needs to be changed
+    if (def.forceRls && !snapshotRlsForced) {
+      rlsToForce.push({ name: def.name, schema: def.schema })
+    }
+    if (!def.forceRls && snapshotRlsForced) {
+      rlsToUnforce.push({ name: def.name, schema: def.schema })
     }
 
     for (const policy of definedPolicies) {
@@ -480,7 +510,7 @@ export const diffSchema = (
         rlsPoliciesToCreate.push({ table: def.name, schema: def.schema, policy })
       } else {
         // Check for alterations
-        const alteration: { table: string; schema: string; policyName: string; using?: string; check?: string; roles?: ReadonlyArray<string>; oldUsing?: string | null; oldCheck?: string | null; oldRoles?: ReadonlyArray<string> } = { table: def.name, schema: def.schema, policyName: policy.name }
+        const alteration: typeof rlsPoliciesToAlter[number] = { table: def.name, schema: def.schema, policyName: policy.name }
         let hasChanges = false
         if (policy.using && policy.using !== existing.using) {
           alteration.using = policy.using
@@ -495,6 +525,14 @@ export const diffSchema = (
         if (policy.roles && JSON.stringify([...policy.roles]) !== JSON.stringify([...existing.roles])) {
           alteration.roles = policy.roles
           alteration.oldRoles = existing.roles
+          hasChanges = true
+        }
+        // Permissive change detection — PG doesn't support ALTER POLICY ... AS, requires DROP + CREATE
+        const defPermissive = policy.permissive !== false
+        const existingPermissive = existing.permissive !== false
+        if (defPermissive !== existingPermissive) {
+          ;(alteration as any).permissive = policy.permissive
+          ;(alteration as any).oldPermissive = existing.permissive
           hasChanges = true
         }
         if (hasChanges) rlsPoliciesToAlter.push(alteration)
@@ -963,6 +1001,229 @@ export const diffSchema = (
     }
   }
 
+  // --- Role diffing ---
+  const roleDefs = definitions.filter((d): d is RoleDef => d._tag === "Role")
+  const snapshotRoles = snapshot.roles ?? []
+  const snapshotRoleMap = new Map(snapshotRoles.map((r) => [r.name, r]))
+
+  const rolesToCreate: RoleDef[] = []
+  const rolesToDrop: string[] = []
+  const rolesToAlter: Array<{ name: string; changes: Partial<Omit<RoleDef, '_tag' | 'name'>> }> = []
+  const rolesToRename: Array<{ oldName: string; newName: string }> = []
+
+  for (const roleDef of roleDefs) {
+    // Handle renames
+    if (roleDef.renamedFrom && snapshotRoleMap.has(roleDef.renamedFrom) && !snapshotRoleMap.has(roleDef.name)) {
+      rolesToRename.push({ oldName: roleDef.renamedFrom, newName: roleDef.name })
+      continue
+    }
+
+    const existing = snapshotRoleMap.get(roleDef.name)
+    if (!existing) {
+      rolesToCreate.push(roleDef)
+    } else {
+      // Detect attribute changes
+      const changes: { -readonly [K in keyof Omit<RoleDef, '_tag' | 'name'>]?: Omit<RoleDef, '_tag' | 'name'>[K] } = {}
+      let hasChanges = false
+      if (roleDef.login !== undefined && roleDef.login !== existing.login) { changes.login = roleDef.login; hasChanges = true }
+      if (roleDef.superuser !== undefined && roleDef.superuser !== existing.superuser) { changes.superuser = roleDef.superuser; hasChanges = true }
+      if (roleDef.createdb !== undefined && roleDef.createdb !== existing.createdb) { changes.createdb = roleDef.createdb; hasChanges = true }
+      if (roleDef.createrole !== undefined && roleDef.createrole !== existing.createrole) { changes.createrole = roleDef.createrole; hasChanges = true }
+      if (roleDef.inherit !== undefined && roleDef.inherit !== existing.inherit) { changes.inherit = roleDef.inherit; hasChanges = true }
+      if (roleDef.replication !== undefined && roleDef.replication !== existing.replication) { changes.replication = roleDef.replication; hasChanges = true }
+      if (roleDef.bypassrls !== undefined && roleDef.bypassrls !== existing.bypassrls) { changes.bypassrls = roleDef.bypassrls; hasChanges = true }
+      if (roleDef.connectionLimit !== undefined && roleDef.connectionLimit !== existing.connectionLimit) { changes.connectionLimit = roleDef.connectionLimit; hasChanges = true }
+      if (hasChanges) rolesToAlter.push({ name: roleDef.name, changes })
+    }
+  }
+
+  // Roles in snapshot but not in definitions → drop
+  const definedRoleNames = new Set(roleDefs.map((r) => r.name))
+  const renamedRoleOldNames = new Set(rolesToRename.map((r) => r.oldName))
+  for (const [name] of snapshotRoleMap) {
+    if (!definedRoleNames.has(name) && !renamedRoleOldNames.has(name)) {
+      rolesToDrop.push(name)
+    }
+  }
+
+  // --- Grant diffing ---
+  const tableGrantDefs = definitions.filter((d): d is TableGrantDef => d._tag === "TableGrant")
+  const schemaGrantDefs = definitions.filter((d): d is SchemaGrantDef => d._tag === "SchemaGrant")
+  const roleMembershipDefs = definitions.filter((d): d is RoleMembershipDef => d._tag === "RoleMembership")
+  const defaultPrivilegeDefs = definitions.filter((d): d is DefaultPrivilegeDef => d._tag === "DefaultPrivilege")
+
+  const snapshotTableGrants = snapshot.tableGrants ?? []
+  const snapshotSchemaGrants = snapshot.schemaGrants ?? []
+  const snapshotMemberships = snapshot.roleMemberships ?? []
+  const snapshotDefaultPrivs = snapshot.defaultPrivileges ?? []
+
+  // Table grants: compare defined vs snapshot
+  const tableGrantsToAdd: TableGrantDef[] = []
+  const tableGrantsToRevoke: Array<{ table: string; schema: string; privileges: ReadonlyArray<string>; roles: ReadonlyArray<string> }> = []
+
+  // Build a map of snapshot table grants: "schema.table.role" → privileges[]
+  const snapshotTGMap = new Map<string, Set<string>>()
+  for (const g of snapshotTableGrants) {
+    const key = `${g.tableSchema}.${g.tableName}.${g.grantee}`
+    if (!snapshotTGMap.has(key)) snapshotTGMap.set(key, new Set())
+    for (const p of g.privileges) snapshotTGMap.get(key)!.add(p)
+  }
+
+  // Build a map of defined table grants
+  const definedTGMap = new Map<string, { schema: string; table: string; role: string; privileges: Set<string>; withGrantOption?: boolean }>()
+  for (const g of tableGrantDefs) {
+    const schema = g.schema ?? "public"
+    for (const role of g.roles) {
+      const key = `${schema}.${g.table}.${role}`
+      if (!definedTGMap.has(key)) definedTGMap.set(key, { schema, table: g.table, role, privileges: new Set(), withGrantOption: g.withGrantOption })
+      for (const p of g.privileges) definedTGMap.get(key)!.privileges.add(p)
+    }
+  }
+
+  // Grants to add (in definitions but not in snapshot)
+  for (const [key, def] of definedTGMap) {
+    const existing = snapshotTGMap.get(key)
+    const newPrivs = existing ? [...def.privileges].filter((p) => !existing.has(p)) : [...def.privileges]
+    if (newPrivs.length > 0) {
+      tableGrantsToAdd.push({
+        _tag: "TableGrant",
+        table: def.table,
+        schema: def.schema,
+        privileges: newPrivs as any,
+        roles: [def.role],
+        withGrantOption: def.withGrantOption,
+      })
+    }
+  }
+
+  // Grants to revoke (in snapshot but not in definitions)
+  for (const [key, existing] of snapshotTGMap) {
+    const defined = definedTGMap.get(key)
+    const revokePrivs = defined ? [...existing].filter((p) => !defined.privileges.has(p)) : [...existing]
+    if (revokePrivs.length > 0) {
+      const parts = key.split(".")
+      tableGrantsToRevoke.push({
+        table: parts[1]!,
+        schema: parts[0]!,
+        privileges: revokePrivs,
+        roles: [parts[2]!],
+      })
+    }
+  }
+
+  // Schema grants
+  const schemaGrantsToAdd: SchemaGrantDef[] = []
+  const schemaGrantsToRevoke: Array<{ schemaName: string; privileges: ReadonlyArray<string>; roles: ReadonlyArray<string> }> = []
+
+  const snapshotSGMap = new Map<string, Set<string>>()
+  for (const g of snapshotSchemaGrants) {
+    const key = `${g.schemaName}.${g.grantee}`
+    if (!snapshotSGMap.has(key)) snapshotSGMap.set(key, new Set())
+    for (const p of g.privileges) snapshotSGMap.get(key)!.add(p)
+  }
+
+  const definedSGMap = new Map<string, { schemaName: string; role: string; privileges: Set<string>; withGrantOption?: boolean }>()
+  for (const g of schemaGrantDefs) {
+    for (const role of g.roles) {
+      const key = `${g.schemaName}.${role}`
+      if (!definedSGMap.has(key)) definedSGMap.set(key, { schemaName: g.schemaName, role, privileges: new Set(), withGrantOption: g.withGrantOption })
+      for (const p of g.privileges) definedSGMap.get(key)!.privileges.add(p)
+    }
+  }
+
+  for (const [key, def] of definedSGMap) {
+    const existing = snapshotSGMap.get(key)
+    const newPrivs = existing ? [...def.privileges].filter((p) => !existing.has(p)) : [...def.privileges]
+    if (newPrivs.length > 0) {
+      schemaGrantsToAdd.push({
+        _tag: "SchemaGrant",
+        schemaName: def.schemaName,
+        privileges: newPrivs as any,
+        roles: [def.role],
+        withGrantOption: def.withGrantOption,
+      })
+    }
+  }
+
+  for (const [key, existing] of snapshotSGMap) {
+    const defined = definedSGMap.get(key)
+    const revokePrivs = defined ? [...existing].filter((p) => !defined.privileges.has(p)) : [...existing]
+    if (revokePrivs.length > 0) {
+      const parts = key.split(".")
+      schemaGrantsToRevoke.push({
+        schemaName: parts[0]!,
+        privileges: revokePrivs,
+        roles: [parts[1]!],
+      })
+    }
+  }
+
+  // Role memberships
+  const roleMembershipsToAdd: RoleMembershipDef[] = []
+  const roleMembershipsToRevoke: Array<{ role: string; members: ReadonlyArray<string> }> = []
+
+  const snapshotMemberKeys = new Set(snapshotMemberships.map((m) => `${m.role}.${m.member}`))
+  const definedMemberKeys = new Set<string>()
+
+  for (const m of roleMembershipDefs) {
+    for (const member of m.members) {
+      const key = `${m.role}.${member}`
+      definedMemberKeys.add(key)
+      if (!snapshotMemberKeys.has(key)) {
+        roleMembershipsToAdd.push({ _tag: "RoleMembership", role: m.role, members: [member], withAdminOption: m.withAdminOption })
+      }
+    }
+  }
+
+  for (const m of snapshotMemberships) {
+    const key = `${m.role}.${m.member}`
+    if (!definedMemberKeys.has(key)) {
+      roleMembershipsToRevoke.push({ role: m.role, members: [m.member] })
+    }
+  }
+
+  // Default privileges
+  const defaultPrivilegesToAdd: DefaultPrivilegeDef[] = []
+  const defaultPrivilegesToRevoke: DefaultPrivilegeDef[] = []
+
+  const dpKey = (schema: string, forRole: string, grantee: string) => `${schema}.${forRole}.${grantee}`
+  const snapshotDPMap = new Map<string, Set<string>>()
+  for (const dp of snapshotDefaultPrivs) {
+    if (dp.objectType !== "TABLE") continue
+    const key = dpKey(dp.schema, dp.role, dp.grantee)
+    if (!snapshotDPMap.has(key)) snapshotDPMap.set(key, new Set())
+    for (const p of dp.privileges) snapshotDPMap.get(key)!.add(p)
+  }
+
+  for (const dp of defaultPrivilegeDefs) {
+    for (const role of dp.roles) {
+      const key = dpKey(dp.inSchema, dp.forRole ?? "", role)
+      const existing = snapshotDPMap.get(key)
+      const newPrivs = existing ? [...(dp.onTables ?? [])].filter((p) => !existing.has(p)) : [...(dp.onTables ?? [])]
+      if (newPrivs.length > 0) {
+        defaultPrivilegesToAdd.push({ _tag: "DefaultPrivilege", inSchema: dp.inSchema, forRole: dp.forRole, onTables: newPrivs as any, roles: [role] })
+      }
+    }
+  }
+
+  // Default privileges in snapshot but not defined → revoke
+  const definedDPKeys = new Map<string, Set<string>>()
+  for (const dp of defaultPrivilegeDefs) {
+    for (const role of dp.roles) {
+      const key = dpKey(dp.inSchema, dp.forRole ?? "", role)
+      if (!definedDPKeys.has(key)) definedDPKeys.set(key, new Set())
+      for (const p of (dp.onTables ?? [])) definedDPKeys.get(key)!.add(p)
+    }
+  }
+  for (const [key, existing] of snapshotDPMap) {
+    const defined = definedDPKeys.get(key)
+    const revokePrivs = defined ? [...existing].filter((p) => !defined.has(p)) : [...existing]
+    if (revokePrivs.length > 0) {
+      const parts = key.split(".")
+      defaultPrivilegesToRevoke.push({ _tag: "DefaultPrivilege", inSchema: parts[0]!, forRole: parts[1] || undefined, onTables: revokePrivs as any, roles: [parts[2]!] })
+    }
+  }
+
   return {
     tablesToCreate, tablesToDrop, tablesToRename,
     columnsToAdd, columnsToRemove, columnsToAlter, columnsToRename,
@@ -974,7 +1235,7 @@ export const diffSchema = (
     constraintsToAdd, constraintsToDrop,
     triggersToCreate, triggersToDrop,
     jobsToCreate, jobsToDelete, jobsToAlter,
-    rlsToEnable, rlsToDisable,
+    rlsToEnable, rlsToDisable, rlsToForce, rlsToUnforce,
     rlsPoliciesToCreate, rlsPoliciesToDrop, rlsPoliciesToAlter,
     compressionPoliciesToAdd, compressionPoliciesToRemove,
     retentionPoliciesToAdd, retentionPoliciesToRemove,
@@ -1006,6 +1267,11 @@ export const diffSchema = (
     triggerFunctionsToCreate,
     triggerFunctionsToDrop,
     triggerFunctionsToReplace,
+    rolesToCreate, rolesToDrop, rolesToAlter, rolesToRename,
+    tableGrantsToAdd, tableGrantsToRevoke,
+    schemaGrantsToAdd, schemaGrantsToRevoke,
+    roleMembershipsToAdd, roleMembershipsToRevoke,
+    defaultPrivilegesToAdd, defaultPrivilegesToRevoke,
     warnings: enumReorderWarnings,
   }
 }
@@ -1153,6 +1419,7 @@ const generateTriggerSql = (tableName: string, trg: import("../schema/types.js")
 
 const generateRlsPolicySql = (tableName: string, policy: RlsPolicyDef, schema?: string): string => {
   let sql = `CREATE POLICY ${quoteIdentifier(policy.name)} ON ${qualifiedName(tableName, schema)}`
+  if (policy.permissive === false) sql += ` AS RESTRICTIVE`
   if (policy.command) sql += ` FOR ${policy.command}`
   if (policy.roles && policy.roles.length > 0) {
     sql += ` TO ${policy.roles.join(", ")}`
@@ -1342,6 +1609,67 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     up.push(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(s)};`)
   }
 
+  // Role renames
+  for (const rename of diff.rolesToRename) {
+    up.push(`ALTER ROLE ${quoteIdentifier(rename.oldName)} RENAME TO ${quoteIdentifier(rename.newName)};`)
+    down.push(`ALTER ROLE ${quoteIdentifier(rename.newName)} RENAME TO ${quoteIdentifier(rename.oldName)};`)
+  }
+
+  // Role creation (before tables so grants can reference them)
+  for (const roleDef of diff.rolesToCreate) {
+    const attrs: string[] = []
+    if (roleDef.login) attrs.push("LOGIN")
+    if (roleDef.login === false) attrs.push("NOLOGIN")
+    if (roleDef.superuser) attrs.push("SUPERUSER")
+    if (roleDef.createdb) attrs.push("CREATEDB")
+    if (roleDef.createrole) attrs.push("CREATEROLE")
+    if (roleDef.inherit === false) attrs.push("NOINHERIT")
+    else if (roleDef.inherit) attrs.push("INHERIT")
+    if (roleDef.replication) attrs.push("REPLICATION")
+    if (roleDef.bypassrls) attrs.push("BYPASSRLS")
+    if (roleDef.connectionLimit !== undefined) attrs.push(`CONNECTION LIMIT ${roleDef.connectionLimit}`)
+    if (roleDef.validUntil) attrs.push(`VALID UNTIL '${roleDef.validUntil}'`)
+    const withClause = attrs.length > 0 ? ` WITH ${attrs.join(" ")}` : ""
+    up.push(`CREATE ROLE ${quoteIdentifier(roleDef.name)}${withClause};`)
+    down.push(`DROP ROLE IF EXISTS ${quoteIdentifier(roleDef.name)};`)
+
+    // Password as psql variable reference
+    if (roleDef.password) {
+      up.push(`ALTER ROLE ${quoteIdentifier(roleDef.name)} WITH PASSWORD :'${roleDef.name}_password';`)
+    }
+
+    // Role membership at creation
+    if (roleDef.inRoles && roleDef.inRoles.length > 0) {
+      for (const parentRole of roleDef.inRoles) {
+        up.push(`GRANT ${quoteIdentifier(parentRole)} TO ${quoteIdentifier(roleDef.name)};`)
+        down.push(`REVOKE ${quoteIdentifier(parentRole)} FROM ${quoteIdentifier(roleDef.name)};`)
+      }
+    }
+  }
+
+  // Role alterations
+  for (const { name, changes } of diff.rolesToAlter) {
+    const attrs: string[] = []
+    if (changes.login !== undefined) attrs.push(changes.login ? "LOGIN" : "NOLOGIN")
+    if (changes.superuser !== undefined) attrs.push(changes.superuser ? "SUPERUSER" : "NOSUPERUSER")
+    if (changes.createdb !== undefined) attrs.push(changes.createdb ? "CREATEDB" : "NOCREATEDB")
+    if (changes.createrole !== undefined) attrs.push(changes.createrole ? "CREATEROLE" : "NOCREATEROLE")
+    if (changes.inherit !== undefined) attrs.push(changes.inherit ? "INHERIT" : "NOINHERIT")
+    if (changes.replication !== undefined) attrs.push(changes.replication ? "REPLICATION" : "NOREPLICATION")
+    if (changes.bypassrls !== undefined) attrs.push(changes.bypassrls ? "BYPASSRLS" : "NOBYPASSRLS")
+    if (changes.connectionLimit !== undefined) attrs.push(`CONNECTION LIMIT ${changes.connectionLimit}`)
+    if (attrs.length > 0) {
+      up.push(`ALTER ROLE ${quoteIdentifier(name)} WITH ${attrs.join(" ")};`)
+      down.push(`-- Cannot auto-generate reversal of ALTER ROLE ${quoteIdentifier(name)}`)
+    }
+  }
+
+  // Role drops (in down migration, roles are recreated in the down of rolesToCreate)
+  for (const roleName of diff.rolesToDrop) {
+    up.push(`DROP ROLE IF EXISTS ${quoteIdentifier(roleName)};`)
+    down.push(`-- Cannot auto-generate recreation of dropped role ${quoteIdentifier(roleName)}`)
+  }
+
   // Table renames BEFORE creates (so new name is available for column ops)
   for (const rename of diff.tablesToRename) {
     const qnOld = qualifiedName(rename.oldName, rename.schema)
@@ -1399,6 +1727,10 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     if (def.enableRls) {
       up.push(`ALTER TABLE ${qn} ENABLE ROW LEVEL SECURITY;`)
       down.push(`ALTER TABLE ${qn} DISABLE ROW LEVEL SECURITY;`)
+    }
+    if (def.forceRls) {
+      up.push(`ALTER TABLE ${qn} FORCE ROW LEVEL SECURITY;`)
+      down.push(`ALTER TABLE ${qn} NO FORCE ROW LEVEL SECURITY;`)
     }
     if (def.rlsPolicies) {
       for (const policy of def.rlsPolicies) {
@@ -2074,6 +2406,19 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
     down.push(`ALTER TABLE ${tqn} ENABLE ROW LEVEL SECURITY;`)
   }
 
+  // RLS force/unforce on existing tables
+  for (const ref of diff.rlsToForce) {
+    const tqn = qualifiedName(ref.name, ref.schema)
+    up.push(`ALTER TABLE ${tqn} FORCE ROW LEVEL SECURITY;`)
+    down.push(`ALTER TABLE ${tqn} NO FORCE ROW LEVEL SECURITY;`)
+  }
+
+  for (const ref of diff.rlsToUnforce) {
+    const tqn = qualifiedName(ref.name, ref.schema)
+    up.push(`ALTER TABLE ${tqn} NO FORCE ROW LEVEL SECURITY;`)
+    down.push(`ALTER TABLE ${tqn} FORCE ROW LEVEL SECURITY;`)
+  }
+
   // RLS policy changes on existing tables
   for (const { table, schema, policyName } of diff.rlsPoliciesToDrop) {
     const tqn = qualifiedName(table, schema)
@@ -2089,6 +2434,22 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
 
   for (const alt of diff.rlsPoliciesToAlter) {
     const tqn = qualifiedName(alt.table, alt.schema)
+
+    // Permissive change requires DROP + CREATE (PostgreSQL doesn't support ALTER POLICY ... AS)
+    if (alt.permissive !== undefined) {
+      up.push(`DROP POLICY ${quoteIdentifier(alt.policyName)} ON ${tqn};`)
+      // Find the full policy def to recreate
+      const tableDef = tableDefs.find((d) => d.name === alt.table && d.schema === alt.schema)
+      const policyDef = tableDef?.rlsPolicies?.find((p) => p.name === alt.policyName)
+      if (policyDef) {
+        up.push(generateRlsPolicySql(alt.table, policyDef, alt.schema))
+      }
+      // Down: recreate with old permissive value
+      down.push(`DROP POLICY ${quoteIdentifier(alt.policyName)} ON ${tqn};`)
+      down.push(`-- Cannot auto-generate recreation of policy ${quoteIdentifier(alt.policyName)} with previous permissive setting`)
+      continue
+    }
+
     let sql = `ALTER POLICY ${quoteIdentifier(alt.policyName)} ON ${tqn}`
     if (alt.roles && alt.roles.length > 0) {
       sql += ` TO ${alt.roles.join(", ")}`
@@ -2305,6 +2666,82 @@ export const generateMigrationSql = (diff: SchemaDiff, definitions: ReadonlyArra
       up.push(`SELECT add_tiering_policy('${lit}', INTERVAL '${def.hypertableConfig.tiering.tierAfter}');`)
       down.push(`SELECT remove_tiering_policy('${lit}');`)
     }
+  }
+
+  // --- Grant SQL generation (after tables exist) ---
+
+  // Table grants
+  for (const g of diff.tableGrantsToAdd) {
+    const tqn = qualifiedName(g.table, g.schema)
+    const privs = g.privileges.join(", ")
+    const roleList = g.roles.map(quoteIdentifier).join(", ")
+    let sql = `GRANT ${privs} ON ${tqn} TO ${roleList}`
+    if (g.withGrantOption) sql += " WITH GRANT OPTION"
+    up.push(`${sql};`)
+    down.push(`REVOKE ${privs} ON ${tqn} FROM ${roleList};`)
+  }
+
+  for (const g of diff.tableGrantsToRevoke) {
+    const tqn = qualifiedName(g.table, g.schema)
+    const privs = g.privileges.join(", ")
+    const roleList = g.roles.map(quoteIdentifier).join(", ")
+    up.push(`REVOKE ${privs} ON ${tqn} FROM ${roleList};`)
+    down.push(`GRANT ${privs} ON ${tqn} TO ${roleList};`)
+  }
+
+  // Schema grants
+  for (const g of diff.schemaGrantsToAdd) {
+    const privs = g.privileges.join(", ")
+    const roleList = g.roles.map(quoteIdentifier).join(", ")
+    let sql = `GRANT ${privs} ON SCHEMA ${quoteIdentifier(g.schemaName)} TO ${roleList}`
+    if (g.withGrantOption) sql += " WITH GRANT OPTION"
+    up.push(`${sql};`)
+    down.push(`REVOKE ${privs} ON SCHEMA ${quoteIdentifier(g.schemaName)} FROM ${roleList};`)
+  }
+
+  for (const g of diff.schemaGrantsToRevoke) {
+    const privs = g.privileges.join(", ")
+    const roleList = g.roles.map(quoteIdentifier).join(", ")
+    up.push(`REVOKE ${privs} ON SCHEMA ${quoteIdentifier(g.schemaName)} FROM ${roleList};`)
+    down.push(`GRANT ${privs} ON SCHEMA ${quoteIdentifier(g.schemaName)} TO ${roleList};`)
+  }
+
+  // Role membership grants
+  for (const m of diff.roleMembershipsToAdd) {
+    for (const member of m.members) {
+      let sql = `GRANT ${quoteIdentifier(m.role)} TO ${quoteIdentifier(member)}`
+      if (m.withAdminOption) sql += " WITH ADMIN OPTION"
+      up.push(`${sql};`)
+      down.push(`REVOKE ${quoteIdentifier(m.role)} FROM ${quoteIdentifier(member)};`)
+    }
+  }
+
+  for (const m of diff.roleMembershipsToRevoke) {
+    for (const member of m.members) {
+      up.push(`REVOKE ${quoteIdentifier(m.role)} FROM ${quoteIdentifier(member)};`)
+      down.push(`GRANT ${quoteIdentifier(m.role)} TO ${quoteIdentifier(member)};`)
+    }
+  }
+
+  // Default privileges
+  for (const dp of diff.defaultPrivilegesToAdd) {
+    const privs = (dp.onTables ?? []).join(", ")
+    const roleList = dp.roles.map(quoteIdentifier).join(", ")
+    let sql = `ALTER DEFAULT PRIVILEGES`
+    if (dp.forRole) sql += ` FOR ROLE ${quoteIdentifier(dp.forRole)}`
+    sql += ` IN SCHEMA ${quoteIdentifier(dp.inSchema)} GRANT ${privs} ON TABLES TO ${roleList}`
+    up.push(`${sql};`)
+    down.push(`ALTER DEFAULT PRIVILEGES${dp.forRole ? ` FOR ROLE ${quoteIdentifier(dp.forRole)}` : ""} IN SCHEMA ${quoteIdentifier(dp.inSchema)} REVOKE ${privs} ON TABLES FROM ${roleList};`)
+  }
+
+  for (const dp of diff.defaultPrivilegesToRevoke) {
+    const privs = (dp.onTables ?? []).join(", ")
+    const roleList = dp.roles.map(quoteIdentifier).join(", ")
+    let sql = `ALTER DEFAULT PRIVILEGES`
+    if (dp.forRole) sql += ` FOR ROLE ${quoteIdentifier(dp.forRole)}`
+    sql += ` IN SCHEMA ${quoteIdentifier(dp.inSchema)} REVOKE ${privs} ON TABLES FROM ${roleList}`
+    up.push(`${sql};`)
+    down.push(`ALTER DEFAULT PRIVILEGES${dp.forRole ? ` FOR ROLE ${quoteIdentifier(dp.forRole)}` : ""} IN SCHEMA ${quoteIdentifier(dp.inSchema)} GRANT ${privs} ON TABLES TO ${roleList};`)
   }
 
   return { up, down }

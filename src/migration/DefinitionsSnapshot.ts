@@ -1,7 +1,7 @@
-import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, CaggDefinition, ConstraintDef, TriggerDef, JobDefinition, ViewDefinition, MaterializedViewDefinition } from "../schema/types.js"
+import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, CaggDefinition, ConstraintDef, TriggerDef, JobDefinition, ViewDefinition, MaterializedViewDefinition, RoleDef, TableGrantDef, SchemaGrantDef, RoleMembershipDef, DefaultPrivilegeDef } from "../schema/types.js"
 import type { FunctionDefinition, ProcedureDefinition, TriggerFunctionDefinition } from "../functions/types.js"
 import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
-import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot, ProcedureSnapshot, TriggerFunctionSnapshot, IndexSnapshotColumn } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot, ProcedureSnapshot, TriggerFunctionSnapshot, IndexSnapshotColumn, RoleSnapshot, TableGrantSnapshot, SchemaGrantSnapshot, RoleMembershipSnapshot, DefaultPrivilegeSnapshot } from "./types.js"
 import { isSqlExpression } from "../internal/sql.js"
 import type { SchemaDefinition } from "./Generator.js"
 
@@ -65,6 +65,8 @@ const tableDefToSnapshot = (def: TableDefinition | HypertableDefinition): TableS
   })),
   constraints: def.constraints.map(constraintDefToSnapshot),
   triggers: def.triggers.map(triggerDefToSnapshot),
+  rlsEnabled: def.enableRls || undefined,
+  rlsForced: def.forceRls || undefined,
 })
 
 const hypertableDefToSnapshot = (def: HypertableDefinition): HypertableSnapshot => ({
@@ -243,6 +245,21 @@ export const definitionsToSnapshot = (
   const htDefs = tableDefs.filter(
     (d): d is HypertableDefinition => d._tag === "Hypertable"
   )
+  const roleDefs = definitions.filter(
+    (d): d is RoleDef => d._tag === "Role"
+  )
+  const tableGrantDefs = definitions.filter(
+    (d): d is TableGrantDef => d._tag === "TableGrant"
+  )
+  const schemaGrantDefs = definitions.filter(
+    (d): d is SchemaGrantDef => d._tag === "SchemaGrant"
+  )
+  const roleMembershipDefs = definitions.filter(
+    (d): d is RoleMembershipDef => d._tag === "RoleMembership"
+  )
+  const defaultPrivilegeDefs = definitions.filter(
+    (d): d is DefaultPrivilegeDef => d._tag === "DefaultPrivilege"
+  )
 
   // Extract RLS policies from table definitions
   const rlsPolicies: RlsPolicySnapshot[] = []
@@ -252,6 +269,7 @@ export const definitionsToSnapshot = (
         rlsPolicies.push({
           tableName: def.name,
           policyName: p.name,
+          permissive: p.permissive === false ? false : undefined,
           command: p.command ?? "ALL",
           roles: p.roles ? [...p.roles] : [],
           using: p.using ?? null,
@@ -297,6 +315,69 @@ export const definitionsToSnapshot = (
       tierAfter: h.hypertableConfig.tiering?.tierAfter,
     }))
 
+  // Convert role/grant definitions to snapshots
+  const roles: RoleSnapshot[] = roleDefs.map((r) => ({
+    name: r.name,
+    login: r.login ?? false,
+    superuser: r.superuser ?? false,
+    createdb: r.createdb ?? false,
+    createrole: r.createrole ?? false,
+    inherit: r.inherit ?? true,
+    replication: r.replication ?? false,
+    bypassrls: r.bypassrls ?? false,
+    connectionLimit: r.connectionLimit ?? -1,
+    validUntil: r.validUntil ?? null,
+    memberOf: r.inRoles ? [...r.inRoles] : [],
+  }))
+
+  const tableGrantSnapshots: TableGrantSnapshot[] = []
+  for (const g of tableGrantDefs) {
+    for (const role of g.roles) {
+      tableGrantSnapshots.push({
+        tableName: g.table,
+        tableSchema: g.schema ?? "public",
+        grantee: role,
+        privileges: [...g.privileges],
+        isGrantable: g.withGrantOption ?? false,
+      })
+    }
+  }
+
+  const schemaGrantSnapshots: SchemaGrantSnapshot[] = []
+  for (const g of schemaGrantDefs) {
+    for (const role of g.roles) {
+      schemaGrantSnapshots.push({
+        schemaName: g.schemaName,
+        grantee: role,
+        privileges: [...g.privileges],
+      })
+    }
+  }
+
+  const roleMembershipSnapshots: RoleMembershipSnapshot[] = []
+  for (const m of roleMembershipDefs) {
+    for (const member of m.members) {
+      roleMembershipSnapshots.push({
+        role: m.role,
+        member,
+        adminOption: m.withAdminOption ?? false,
+      })
+    }
+  }
+
+  const defaultPrivilegeSnapshots: DefaultPrivilegeSnapshot[] = []
+  for (const dp of defaultPrivilegeDefs) {
+    for (const role of dp.roles) {
+      defaultPrivilegeSnapshots.push({
+        schema: dp.inSchema,
+        role: dp.forRole ?? "",
+        objectType: "TABLE",
+        grantee: role,
+        privileges: dp.onTables ? [...dp.onTables] : [],
+      })
+    }
+  }
+
   return {
     tables: tableDefs.map(tableDefToSnapshot),
     hypertables: htDefs.map(hypertableDefToSnapshot),
@@ -312,6 +393,11 @@ export const definitionsToSnapshot = (
     functions: functionDefs.map(functionDefToSnapshot),
     procedures: procedureDefs.map(procedureDefToSnapshot),
     triggerFunctions: triggerFunctionDefs.map(triggerFunctionDefToSnapshot),
+    roles,
+    tableGrants: tableGrantSnapshots,
+    schemaGrants: schemaGrantSnapshots,
+    roleMemberships: roleMembershipSnapshots,
+    defaultPrivileges: defaultPrivilegeSnapshots,
     takenAt: new Date(),
   }
 }

@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
 import { MigrationError } from "../Error.js"
-import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, IndexSnapshotColumn, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot } from "./types.js"
+import type { SchemaSnapshot, TableSnapshot, HypertableSnapshot, CaggSnapshot, ColumnSnapshot, IndexSnapshot, IndexSnapshotColumn, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, CompressionSettingSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot, RoleSnapshot, TableGrantSnapshot, SchemaGrantSnapshot, RoleMembershipSnapshot, DefaultPrivilegeSnapshot } from "./types.js"
 
 export class SnapshotWarning {
   readonly _tag = "SnapshotWarning"
@@ -79,11 +79,16 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
     const client = yield* TimescaleClient
 
     // Get tables
-    const tableRows = yield* client.execute<{ table_name: string; table_schema: string }>(
-      `SELECT table_name, table_schema FROM information_schema.tables
-       WHERE table_schema NOT IN ('pg_catalog', 'information_schema', '_timescaledb_catalog', '_timescaledb_internal', '_timescaledb_config', '_timescaledb_cache')
-       AND table_type = 'BASE TABLE'
-       ORDER BY table_schema, table_name`
+    const tableRows = yield* client.execute<{ table_name: string; table_schema: string; rls_enabled: boolean; rls_forced: boolean }>(
+      `SELECT t.table_name, t.table_schema,
+              COALESCE(c.relrowsecurity, false) AS rls_enabled,
+              COALESCE(c.relforcerowsecurity, false) AS rls_forced
+       FROM information_schema.tables t
+       LEFT JOIN pg_class c ON c.relname = t.table_name
+       LEFT JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = t.table_schema
+       WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema', '_timescaledb_catalog', '_timescaledb_internal', '_timescaledb_config', '_timescaledb_cache')
+       AND t.table_type = 'BASE TABLE'
+       ORDER BY t.table_schema, t.table_name`
     )
 
     const tables: TableSnapshot[] = []
@@ -224,6 +229,8 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
           events: t.events.split(", "),
           functionName: t.funcname,
         })),
+        rlsEnabled: t.rls_enabled || undefined,
+        rlsForced: t.rls_forced || undefined,
       })
     }
 
@@ -355,7 +362,7 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       values: e.values ?? [],
     }))
 
-    // RLS policies from pg_policies
+    // RLS policies from pg_policies + pg_policy for permissive flag
     const rlsPolicyRows = yield* client.execute<{
       schemaname: string
       tablename: string
@@ -364,15 +371,25 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       roles: string[]
       qual: string | null
       with_check: string | null
+      permissive: boolean
     }>(
-      `SELECT schemaname, tablename, policyname, cmd, roles, qual, with_check
-       FROM pg_policies
-       WHERE schemaname NOT IN ('pg_catalog', 'information_schema')`
+      `SELECT p.schemaname, p.tablename, p.policyname, p.cmd, p.roles, p.qual, p.with_check,
+              COALESCE(pol.polpermissive, true) AS permissive
+       FROM pg_policies p
+       LEFT JOIN pg_catalog.pg_policy pol
+         ON pol.polname = p.policyname
+         AND pol.polrelid = (
+           SELECT c.oid FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE c.relname = p.tablename AND n.nspname = p.schemaname
+         )
+       WHERE p.schemaname NOT IN ('pg_catalog', 'information_schema')`
     ).pipe(catchWithWarning("rls_policies", [] as any[]))
 
     const rlsPolicies: RlsPolicySnapshot[] = (rlsPolicyRows as any[]).map((r) => ({
       tableName: r.tablename,
       policyName: r.policyname,
+      permissive: r.permissive !== false ? undefined : false,
       command: r.cmd,
       roles: r.roles ?? [],
       using: r.qual,
@@ -679,6 +696,175 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       bodyHash: r.body_hash,
     }))
 
+    // --- Role & grant introspection ---
+
+    // Roles (exclude system roles)
+    const roleRows = yield* client.execute<{
+      rolname: string
+      rolcanlogin: boolean
+      rolsuper: boolean
+      rolcreatedb: boolean
+      rolcreaterole: boolean
+      rolinherit: boolean
+      rolreplication: boolean
+      rolbypassrls: boolean
+      rolconnlimit: number
+      rolvaliduntil: string | null
+      member_of: string[]
+    }>(
+      `SELECT r.rolname, r.rolcanlogin, r.rolsuper, r.rolcreatedb, r.rolcreaterole,
+              r.rolinherit, r.rolreplication, r.rolbypassrls, r.rolconnlimit,
+              r.rolvaliduntil::text,
+              COALESCE(array_agg(m.rolname) FILTER (WHERE m.rolname IS NOT NULL), '{}') AS member_of
+       FROM pg_roles r
+       LEFT JOIN pg_auth_members am ON r.oid = am.member
+       LEFT JOIN pg_roles m ON am.roleid = m.oid
+       WHERE r.rolname NOT LIKE 'pg_%'
+         AND r.rolname NOT IN ('postgres', 'rds_superuser', 'rdsadmin', 'tsdbadmin')
+       GROUP BY r.oid, r.rolname, r.rolcanlogin, r.rolsuper, r.rolcreatedb,
+                r.rolcreaterole, r.rolinherit, r.rolreplication, r.rolbypassrls,
+                r.rolconnlimit, r.rolvaliduntil`
+    ).pipe(catchWithWarning("roles", [] as any[]))
+
+    const roles: RoleSnapshot[] = (roleRows as any[]).map((r) => ({
+      name: r.rolname,
+      login: r.rolcanlogin,
+      superuser: r.rolsuper,
+      createdb: r.rolcreatedb,
+      createrole: r.rolcreaterole,
+      inherit: r.rolinherit,
+      replication: r.rolreplication,
+      bypassrls: r.rolbypassrls,
+      connectionLimit: r.rolconnlimit,
+      validUntil: r.rolvaliduntil,
+      memberOf: r.member_of ?? [],
+    }))
+
+    // Table grants
+    const tableGrantRows = yield* client.execute<{
+      table_name: string
+      table_schema: string
+      grantee: string
+      privilege_type: string
+      is_grantable: string
+    }>(
+      `SELECT table_name, table_schema, grantee, privilege_type, is_grantable
+       FROM information_schema.role_table_grants
+       WHERE table_schema NOT IN ('pg_catalog', 'information_schema', '_timescaledb_catalog', '_timescaledb_internal', '_timescaledb_config', '_timescaledb_cache')
+       AND grantee NOT IN ('postgres', 'PUBLIC')
+       AND grantee NOT LIKE 'pg_%'
+       ORDER BY table_schema, table_name, grantee`
+    ).pipe(catchWithWarning("table_grants", [] as any[]))
+
+    // Aggregate grants by table+grantee
+    const tableGrantMap = new Map<string, TableGrantSnapshot>()
+    for (const row of tableGrantRows as any[]) {
+      const key = `${row.table_schema}.${row.table_name}.${row.grantee}`
+      if (!tableGrantMap.has(key)) {
+        tableGrantMap.set(key, {
+          tableName: row.table_name,
+          tableSchema: row.table_schema,
+          grantee: row.grantee,
+          privileges: [],
+          isGrantable: row.is_grantable === "YES",
+        })
+      }
+      ;(tableGrantMap.get(key)!.privileges as string[]).push(row.privilege_type)
+    }
+    const tableGrants = [...tableGrantMap.values()]
+
+    // Schema grants via has_schema_privilege
+    const schemaGrantRows = yield* client.execute<{
+      schema_name: string
+      grantee: string
+      privilege: string
+    }>(
+      `SELECT n.nspname AS schema_name, r.rolname AS grantee,
+              unnest(ARRAY['USAGE', 'CREATE']) AS privilege
+       FROM pg_namespace n
+       CROSS JOIN pg_roles r
+       WHERE n.nspname NOT LIKE 'pg_%'
+         AND n.nspname NOT IN ('information_schema', '_timescaledb_catalog', '_timescaledb_internal', '_timescaledb_config', '_timescaledb_cache')
+         AND r.rolname NOT LIKE 'pg_%'
+         AND r.rolname NOT IN ('postgres', 'rds_superuser', 'rdsadmin', 'tsdbadmin')
+         AND has_schema_privilege(r.oid, n.oid, unnest(ARRAY['USAGE', 'CREATE']))`
+    ).pipe(catchWithWarning("schema_grants", [] as any[]))
+
+    // Aggregate schema grants by schema+grantee
+    const schemaGrantMap = new Map<string, SchemaGrantSnapshot>()
+    for (const row of schemaGrantRows as any[]) {
+      const key = `${row.schema_name}.${row.grantee}`
+      if (!schemaGrantMap.has(key)) {
+        schemaGrantMap.set(key, { schemaName: row.schema_name, grantee: row.grantee, privileges: [] })
+      }
+      ;(schemaGrantMap.get(key)!.privileges as string[]).push(row.privilege)
+    }
+    const schemaGrants = [...schemaGrantMap.values()]
+
+    // Role memberships
+    const membershipRows = yield* client.execute<{
+      role_name: string
+      member_name: string
+      admin_option: boolean
+    }>(
+      `SELECT r.rolname AS role_name, m.rolname AS member_name, am.admin_option
+       FROM pg_auth_members am
+       JOIN pg_roles r ON r.oid = am.roleid
+       JOIN pg_roles m ON m.oid = am.member
+       WHERE r.rolname NOT LIKE 'pg_%'
+         AND m.rolname NOT LIKE 'pg_%'`
+    ).pipe(catchWithWarning("role_memberships", [] as any[]))
+
+    const roleMemberships: RoleMembershipSnapshot[] = (membershipRows as any[]).map((r) => ({
+      role: r.role_name,
+      member: r.member_name,
+      adminOption: r.admin_option,
+    }))
+
+    // Default privileges
+    const defaultPrivRows = yield* client.execute<{
+      schema_name: string
+      role_name: string
+      object_type: string
+      grantee: string
+      privilege: string
+    }>(
+      `SELECT n.nspname AS schema_name, r.rolname AS role_name,
+              CASE d.defaclobjtype
+                WHEN 'r' THEN 'TABLE'
+                WHEN 'S' THEN 'SEQUENCE'
+                WHEN 'f' THEN 'FUNCTION'
+                WHEN 'T' THEN 'TYPE'
+                WHEN 'n' THEN 'SCHEMA'
+                ELSE d.defaclobjtype::text
+              END AS object_type,
+              a.grantee::regrole::text AS grantee,
+              a.privilege_type AS privilege
+       FROM pg_default_acl d
+       JOIN pg_namespace n ON n.oid = d.defaclnamespace
+       JOIN pg_roles r ON r.oid = d.defaclrole
+       CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+       WHERE n.nspname NOT LIKE 'pg_%'
+         AND n.nspname NOT IN ('information_schema')`
+    ).pipe(catchWithWarning("default_privileges", [] as any[]))
+
+    // Aggregate default privileges
+    const defaultPrivMap = new Map<string, DefaultPrivilegeSnapshot>()
+    for (const row of defaultPrivRows as any[]) {
+      const key = `${row.schema_name}.${row.role_name}.${row.object_type}.${row.grantee}`
+      if (!defaultPrivMap.has(key)) {
+        defaultPrivMap.set(key, {
+          schema: row.schema_name,
+          role: row.role_name,
+          objectType: row.object_type,
+          grantee: row.grantee,
+          privileges: [],
+        })
+      }
+      ;(defaultPrivMap.get(key)!.privileges as string[]).push(row.privilege)
+    }
+    const defaultPrivileges = [...defaultPrivMap.values()]
+
     return {
       tables,
       hypertables,
@@ -692,6 +878,11 @@ export const takeSnapshot: Effect.Effect<SchemaSnapshot, MigrationError, Timesca
       materializedViews,
       viewDependencies,
       functions,
+      roles,
+      tableGrants,
+      schemaGrants,
+      roleMemberships,
+      defaultPrivileges,
       takenAt: new Date(),
     }
   }).pipe(
