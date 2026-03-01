@@ -392,3 +392,106 @@ describe("definitionsToSnapshot — new snapshot fields (Batch 4F)", () => {
     expect(diff.tieringToRemove.length).toBe(0)
   })
 })
+
+// ============================================
+// Incremental diff: snapshot roundtrip (issue #27)
+// ============================================
+describe("incremental diff via snapshot roundtrip (issue #27)", () => {
+  test("second generate produces incremental diff, not full dump", () => {
+    // V1 schema: 3 tables
+    const users = pgTable("users", {
+      id: serial("id").primaryKey(),
+      name: text("name").notNull(),
+    })
+    const posts = pgTable("posts", {
+      id: serial("id").primaryKey(),
+      title: text("title").notNull(),
+    })
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, { timeColumn: "time", chunkInterval: "1 day" })
+
+    const v1Defs = [users, posts, metrics]
+
+    // Simulate first generate(): snapshot V1 state
+    const v1Snapshot = definitionsToSnapshot(v1Defs)
+
+    // V2 schema: add a column to posts, add a new table
+    const postsV2 = pgTable("posts", {
+      id: serial("id").primaryKey(),
+      title: text("title").notNull(),
+      body: text("body"),
+    })
+    const tags = pgTable("tags", {
+      id: serial("id").primaryKey(),
+      label: text("label").notNull(),
+    })
+
+    const v2Defs = [users, postsV2, metrics, tags]
+
+    // Simulate second generate(): diff V2 against V1 snapshot
+    const diff = diffSchema(v2Defs, v1Snapshot)
+
+    // Only "tags" should be created — users, posts, metrics already exist
+    expect(diff.tablesToCreate).toEqual([{ name: "tags", schema: "public" }])
+    expect(diff.tablesToDrop).toEqual([])
+
+    // "body" column should be added to posts
+    expect(diff.columnsToAdd).toHaveLength(1)
+    expect(diff.columnsToAdd[0]!.table).toBe("posts")
+    expect(diff.columnsToAdd[0]!.column).toBe("body")
+
+    // No hypertables to create (metrics already exists)
+    expect(diff.hypertablesToCreate).toEqual([])
+  })
+
+  test("unchanged schema produces empty diff", () => {
+    const users = pgTable("users", {
+      id: serial("id").primaryKey(),
+      name: text("name").notNull(),
+    })
+    const metrics = hypertable("metrics", {
+      time: timestamptz("time").notNull(),
+      value: doublePrecision("value"),
+    }, { timeColumn: "time", chunkInterval: "1 day" })
+
+    const defs = [users, metrics]
+    const snapshot = definitionsToSnapshot(defs)
+    const diff = diffSchema(defs, snapshot)
+    const { up, down } = generateMigrationSql(diff, defs, snapshot)
+
+    expect(up).toHaveLength(0)
+    expect(down).toHaveLength(0)
+  })
+
+  test("stale snapshot causes full dump (reproduces issue #27)", () => {
+    // This test documents the scenario from issue #27:
+    // User resets journal but not snapshot, snapshot becomes stale/mismatched
+
+    const users = pgTable("users", {
+      id: serial("id").primaryKey(),
+      name: text("name").notNull(),
+    })
+    const posts = pgTable("posts", {
+      id: serial("id").primaryKey(),
+      title: text("title").notNull(),
+    })
+
+    const v1Defs = [users, posts]
+    const v1Snapshot = definitionsToSnapshot(v1Defs)
+
+    // Diff V1 defs against V1 snapshot should be empty (no changes)
+    const diff = diffSchema(v1Defs, v1Snapshot)
+    const { up } = generateMigrationSql(diff, v1Defs, v1Snapshot)
+    expect(up).toHaveLength(0)
+
+    // Now diff same defs against EMPTY snapshot — simulates missing/corrupt snapshot
+    const emptySnapshot = { tables: [], hypertables: [], continuousAggregates: [], takenAt: new Date() }
+    const badDiff = diffSchema(v1Defs, emptySnapshot)
+
+    // With empty snapshot, ALL tables appear as new — this is the bug behavior
+    expect(badDiff.tablesToCreate).toHaveLength(2)
+    expect(badDiff.tablesToCreate.map(t => t.name).sort()).toEqual(["posts", "users"])
+  })
+})

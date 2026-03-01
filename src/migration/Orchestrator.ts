@@ -6,13 +6,14 @@ import type { SchemaDiff, SchemaDefinition } from "./Generator.js"
 import { diffSchema, generateMigrationSql } from "./Generator.js"
 import { definitionsToSnapshot, definitionsToPersistedSnapshot } from "./DefinitionsSnapshot.js"
 import {
-  readJournal, readSnapshot, atomicWriteAll,
+  readJournal, readSnapshot, writeSnapshot, atomicWriteAll,
   loadAllMigrations, computeMigrationChecksum, generateMigrationName,
 } from "./FileSystem.js"
 import { migrate, rollback, status, resolvedConfigToRunnerOptions } from "./Runner.js"
 import type { MigrationRunnerOptions } from "./Runner.js"
 import { ensureMigrationsTable, getAppliedMigrations } from "./Tracker.js"
 import type { SchemaSnapshot } from "./types.js"
+import type { PersistedSnapshot } from "./DefinitionsSnapshot.js"
 import type { ResolvedConfig } from "../config/defineConfig.js"
 import { configToDirectLayer } from "../config/defineConfig.js"
 
@@ -60,6 +61,25 @@ export async function generate(optionsOrConfig: GenerateOptions | ResolvedConfig
   // Load existing state
   const journal = await readJournal(migrationsDir)
   const persistedSnapshot = await readSnapshot(migrationsDir)
+  // Consistency check: warn if journal and snapshot are out of sync
+  if (persistedSnapshot !== null && journal.entries.length > 0) {
+    const latestEntry = journal.entries[journal.entries.length - 1]!
+    const snapshotTime = new Date(persistedSnapshot.generatedAt).getTime()
+    const journalTime = latestEntry.timestamp
+    if (snapshotTime - journalTime > 5000) {
+      console.warn(
+        `Warning: _snapshot.json (generatedAt: ${persistedSnapshot.generatedAt}) is newer than the latest journal entry ` +
+        `(timestamp: ${new Date(journalTime).toISOString()}). The journal may have been manually reset without updating the snapshot. ` +
+        `Consider running rebuildSnapshot() to fix this.`
+      )
+    }
+  } else if (persistedSnapshot === null && journal.entries.length > 0) {
+    console.warn(
+      `Warning: _journal.json has ${journal.entries.length} entries but _snapshot.json is missing. ` +
+      `Consider running rebuildSnapshot() to recreate the snapshot from your current definitions.`
+    )
+  }
+
   const previousSnapshot = persistedSnapshot?.definitions ?? emptySnapshot
 
   // Diff
@@ -105,6 +125,30 @@ export async function generate(optionsOrConfig: GenerateOptions | ResolvedConfig
   const filePath = await atomicWriteAll(migrationsDir, migrationFile, newJournal, newSnapshot)
 
   return { filePath, migrationName, up, down, diff }
+}
+
+export interface RebuildSnapshotOptions {
+  readonly definitions: ReadonlyArray<SchemaDefinition>
+  readonly migrationsDir: string
+}
+
+export async function rebuildSnapshot(config: ResolvedConfig): Promise<PersistedSnapshot>
+export async function rebuildSnapshot(options: RebuildSnapshotOptions): Promise<PersistedSnapshot>
+export async function rebuildSnapshot(optionsOrConfig: RebuildSnapshotOptions | ResolvedConfig): Promise<PersistedSnapshot> {
+  let definitions: ReadonlyArray<SchemaDefinition>
+  let migrationsDir: string
+  if (isResolvedConfig(optionsOrConfig)) {
+    definitions = optionsOrConfig.definitions
+    migrationsDir = optionsOrConfig.migrations.dir
+  } else {
+    definitions = optionsOrConfig.definitions
+    migrationsDir = optionsOrConfig.migrationsDir
+  }
+
+  await Bun.$`mkdir -p ${migrationsDir}`.quiet()
+  const snapshot = definitionsToPersistedSnapshot(definitions)
+  await writeSnapshot(migrationsDir, snapshot)
+  return snapshot
 }
 
 const executeSqlStatements = (file: MigrationFile, statements: ReadonlyArray<string>, direction: "up" | "down", configTransactional: boolean = true) =>

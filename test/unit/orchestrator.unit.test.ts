@@ -1,12 +1,13 @@
-import { test, expect, describe, beforeEach, afterEach } from "bun:test"
+import { test, expect, describe, beforeEach, afterEach, jest } from "bun:test"
 import { Effect } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { generate, migrationFileToEffect, loadAndRun } from "../../src/migration/Orchestrator.js"
+import { generate, rebuildSnapshot, migrationFileToEffect, loadAndRun } from "../../src/migration/Orchestrator.js"
 import { SnapshotWarning, drainWarnings } from "../../src/migration/Snapshot.js"
 import { migrate } from "../../src/migration/Runner.js"
-import { readJournal, readSnapshot, writeJournal, writeMigrationFile, computeMigrationChecksum, computeIntegrityHash } from "../../src/migration/FileSystem.js"
+import { readJournal, readSnapshot, writeSnapshot, writeJournal, writeMigrationFile, computeMigrationChecksum, computeIntegrityHash } from "../../src/migration/FileSystem.js"
+import { definitionsToPersistedSnapshot } from "../../src/migration/DefinitionsSnapshot.js"
 import { timestamptz, integer, doublePrecision, text, serial, boolean } from "../../src/schema/Column.js"
 import { pgTable } from "../../src/schema/Table.js"
 import { hypertable } from "../../src/schema/Hypertable.js"
@@ -643,5 +644,247 @@ describe("Atomic generate() (C2)", () => {
     expect(snapshot).not.toBeNull()
     expect(snapshot!.definitions.tables.length).toBe(1)
     expect(snapshot!.definitions.tables[0]!.name).toBe("users")
+  })
+})
+
+// =============================================================================
+// rebuildSnapshot() tests
+// =============================================================================
+
+describe("rebuildSnapshot()", () => {
+  test("rebuilds snapshot from definitions (options form)", async () => {
+    const users = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    const result = await rebuildSnapshot({
+      definitions: [users],
+      migrationsDir: dir,
+    })
+
+    expect(result.version).toBe(1)
+    expect(result.definitions.tables.length).toBe(1)
+    expect(result.definitions.tables[0]!.name).toBe("users")
+    expect(result.generatedAt).toBeDefined()
+
+    // Verify persisted to disk
+    const persisted = await readSnapshot(dir)
+    expect(persisted).not.toBeNull()
+    expect(persisted!.definitions.tables.length).toBe(1)
+    expect(persisted!.definitions.tables[0]!.name).toBe("users")
+  })
+
+  test("rebuilds snapshot from ResolvedConfig", async () => {
+    const users = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    // Minimal ResolvedConfig-like object
+    const config = {
+      definitions: [users],
+      migrations: { dir, advisoryLockId: 123456789, trackingTable: "_timescaledb_sdk_migrations", transactional: true },
+      schema: [],
+      features: {},
+      connection: null,
+      session: null,
+      defaults: null,
+      queue: { enabled: false, defaultMaxAttempts: 1, defaultPriority: 0 },
+    } as any
+
+    const result = await rebuildSnapshot(config)
+
+    expect(result.version).toBe(1)
+    expect(result.definitions.tables.length).toBe(1)
+    expect(result.definitions.tables[0]!.name).toBe("users")
+  })
+
+  test("creates directory if it doesn't exist", async () => {
+    const nestedDir = join(dir, "sub", "nested")
+    const users = pgTable("users", {
+      id: serial("id"),
+    })
+
+    const result = await rebuildSnapshot({
+      definitions: [users],
+      migrationsDir: nestedDir,
+    })
+
+    expect(result.version).toBe(1)
+    const persisted = await readSnapshot(nestedDir)
+    expect(persisted).not.toBeNull()
+  })
+
+  test("overwrites stale snapshot with updated definitions", async () => {
+    const usersV1 = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    // Generate V1
+    await generate({
+      definitions: [usersV1],
+      migrationsDir: dir,
+      description: "v1",
+    })
+
+    const snapshotV1 = await readSnapshot(dir)
+    expect(snapshotV1!.definitions.tables[0]!.columns.find((c) => c.name === "email")).toBeUndefined()
+
+    // Rebuild with V2 definitions
+    const usersV2 = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+      email: text("email").notNull(),
+    })
+
+    await rebuildSnapshot({
+      definitions: [usersV2],
+      migrationsDir: dir,
+    })
+
+    const snapshotV2 = await readSnapshot(dir)
+    expect(snapshotV2!.definitions.tables[0]!.columns.find((c) => c.name === "email")).toBeDefined()
+  })
+})
+
+// =============================================================================
+// generate() consistency check tests
+// =============================================================================
+
+describe("generate() consistency check", () => {
+  test("warns when snapshot is newer than latest journal entry", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
+
+    const users = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    // Generate initial migration normally
+    await generate({
+      definitions: [users],
+      migrationsDir: dir,
+    })
+
+    warnSpy.mockClear()
+
+    // Reset journal to empty but leave snapshot (simulating manual journal reset)
+    await writeJournal(dir, {
+      version: 1,
+      entries: [{ index: 1, name: "0001", timestamp: Date.now() - 60000, checksum: "abc" }],
+    })
+
+    // Write a snapshot with a much newer generatedAt
+    const futureSnapshot = definitionsToPersistedSnapshot([users])
+    await writeSnapshot(dir, {
+      ...futureSnapshot,
+      generatedAt: new Date(Date.now() + 60000).toISOString(),
+    })
+
+    // Add a column so there's something to diff
+    const usersV2 = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+      email: text("email"),
+    })
+
+    await generate({
+      definitions: [usersV2],
+      migrationsDir: dir,
+      description: "add email",
+    })
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("newer than the latest journal entry")
+    )
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("rebuildSnapshot()")
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  test("warns when journal has entries but snapshot is missing", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
+
+    const users = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    // Write journal with an entry but no snapshot file
+    await writeJournal(dir, {
+      version: 1,
+      entries: [{ index: 1, name: "0001_initial", timestamp: Date.now(), checksum: "abc" }],
+    })
+
+    await generate({
+      definitions: [users],
+      migrationsDir: dir,
+      description: "add users",
+    })
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("_journal.json has 1 entries but _snapshot.json is missing")
+    )
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("rebuildSnapshot()")
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  test("no warning when journal and snapshot are in sync", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
+
+    const users = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    // Normal generate — should not warn
+    await generate({
+      definitions: [users],
+      migrationsDir: dir,
+      description: "initial",
+    })
+
+    // Second generate with changes — still should not warn
+    const usersV2 = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+      email: text("email"),
+    })
+
+    await generate({
+      definitions: [usersV2],
+      migrationsDir: dir,
+      description: "add email",
+    })
+
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    warnSpy.mockRestore()
+  })
+
+  test("no warning on first generation (empty directory)", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
+
+    const users = pgTable("users", {
+      id: serial("id"),
+      name: text("name").notNull(),
+    })
+
+    await generate({
+      definitions: [users],
+      migrationsDir: dir,
+      description: "initial",
+    })
+
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    warnSpy.mockRestore()
   })
 })
