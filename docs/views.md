@@ -122,10 +122,10 @@ const orgTree = pgView(
 
 ### Materialized views
 
-Define a materialized view with `pgMaterializedView()`. Unlike regular views, materialized views store their data physically and support indexes:
+Define a materialized view with `pgMaterializedView()`. Unlike regular views, materialized views store their data physically and support indexes. The `extra()` callback receives typed helpers (`t`) that validate column names at compile time — the same pattern used by `pgTable` and `hypertable`:
 
 ```typescript
-import { pgMaterializedView, text, doublePrecision, integer, index } from "@jellologic/timescaledb-sdk/schema"
+import { pgMaterializedView, text, doublePrecision, integer } from "@jellologic/timescaledb-sdk/schema"
 
 const monthlySummary = pgMaterializedView(
   "monthly_summary",
@@ -142,9 +142,10 @@ const monthlySummary = pgMaterializedView(
     COUNT(*) AS order_count
   FROM orders
   GROUP BY 1, 2`,
-  (cols) => [
-    index("idx_monthly_summary_month", ["month"]),
-    index("idx_monthly_summary_region", ["region"]),
+  (_cols, t) => [
+    t.index("idx_monthly_summary_month", [t.asc("month")]),
+    t.index("idx_monthly_summary_region", [t.asc("region")]),
+    // t.index("bad", [t.asc("mnth")])  // TS error — "mnth" is not a column key
   ],
   {
     withNoData: true,    // don't populate on creation

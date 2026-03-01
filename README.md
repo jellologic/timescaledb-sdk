@@ -2,7 +2,7 @@
 
 **A complete, type-safe TypeScript SDK for TimescaleDB — built on Effect.**
 
-[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-v0.2.7-blue)](https://github.com/jellologic/timescaledb-sdk/packages)
+[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-v0.2.10-blue)](https://github.com/jellologic/timescaledb-sdk/packages)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6.svg)](https://www.typescriptlang.org/)
 
@@ -14,7 +14,7 @@
 
 | Category | Features | Module |
 |---|---|---|
-| **Schema Definition** | 40+ PostgreSQL column types, indexes, constraints, foreign keys | `@jellologic/timescaledb-sdk/schema` |
+| **Schema Definition** | 40+ PostgreSQL column types, indexes, constraints, foreign keys, compile-time safety | `@jellologic/timescaledb-sdk/schema` |
 | **Query Builder** | SELECT, INSERT, UPDATE, DELETE, JOINs, CTEs, window functions, aggregates | `@jellologic/timescaledb-sdk/query` |
 | **Hypertables** | Create, alter, drop hypertables; chunk interval configuration | `@jellologic/timescaledb-sdk/hypertable` |
 | **Continuous Aggregates** | Define, refresh, alter, drop materialized views with real-time aggregation | `@jellologic/timescaledb-sdk/cagg` |
@@ -103,41 +103,33 @@ Effect.runPromise(program.pipe(Effect.provide(appLayer)))
 
 ## Schema Definition
 
-Define hypertables with full PostgreSQL column types, indexes, and constraints:
+Define hypertables with full PostgreSQL column types, indexes, constraints, and compile-time safety:
 
 ```typescript
 import {
   hypertable, timestamptz, text, doublePrecision, integer,
-  uuid, boolean, jsonb, varchar, bigint, real, numeric,
+  uuid, boolean, jsonb,
 } from "@jellologic/timescaledb-sdk/schema"
-import { index, uniqueIndex, check, foreignKey } from "@jellologic/timescaledb-sdk/schema"
 
 const sensorReadings = hypertable("sensor_readings", {
   time: timestamptz("time").notNull(),
-  sensor_id: uuid("sensor_id").notNull(),
+  sensorId: uuid("sensor_id").notNull(),
   location: text("location").notNull(),
   temperature: doublePrecision("temperature"),
-  humidity: real("humidity"),
-  battery_level: integer("battery_level"),
-  is_active: boolean("is_active").default(true),
+  humidity: doublePrecision("humidity"),
+  batteryLevel: integer("battery_level"),
+  isActive: boolean("is_active").default(true),
   tags: jsonb("tags"),
-}, {
-  timeColumn: "time",
-  chunkInterval: "7 days",
-})
-
-// Add indexes for query performance
-const sensorIdx = index("sensor_readings", "sensor_id")
-const locationIdx = index("sensor_readings", "location")
-const compositeIdx = uniqueIndex("sensor_readings", ["sensor_id", "time"])
-
-// Add constraints
-const tempCheck = check("sensor_readings", "temperature > -100 AND temperature < 200")
-const sensorFk = foreignKey("sensor_readings", {
-  columns: ["sensor_id"],
-  references: { table: "sensors", columns: ["id"] },
-})
+}, { timeColumn: "time", chunkInterval: "7 days" },
+// Typed helpers: column names validated at compile time
+(_cols, t) => [
+  t.unique("ux_sensor_time", ["sensorId", "time"]),
+  t.index("idx_location", [t.desc("location")]),
+  // t.unique("bad", ["sensorid"]) // TS error — typo caught!
+])
 ```
+
+The `extra()` callback receives typed helpers (`t`) that validate column names against the table definition. Typos in column names, indexes, or constraints are caught by `tsc` before reaching the database. This works for `pgTable`, `hypertable`, and `pgMaterializedView`.
 
 ---
 

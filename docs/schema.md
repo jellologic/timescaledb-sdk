@@ -44,12 +44,22 @@ Hypertable config options:
 
 | Option | Type | Description |
 |---|---|---|
-| `timeColumn` | `string` | Required. Column used for time partitioning |
+| `timeColumn` | `string` | Required. Must be a key in the columns object with a valid time type and `notNull` |
 | `chunkInterval` | `string` | Chunk time interval (e.g. `"1 day"`, `"1 week"`) |
 | `createDefaultIndexes` | `boolean` | Whether to create default time index |
 | `compression` | `CompressionConfig` | Compression settings (segmentby, orderby, policy) |
 | `retention` | `RetentionConfig` | Retention policy (`{ dropAfter: "90 days" }`) |
 | `partitioning` | `PartitioningConfig[]` | Additional space dimensions |
+
+**Compile-time enforcement**: The `timeColumn` must reference a column with a valid time SQL type (`timestamptz`, `timestamp`, `date`, `bigint`, `integer`, `smallint`) and must be `notNull`. Invalid time columns produce TypeScript errors:
+
+```typescript
+// TS error — text is not a valid time column type
+hypertable("bad", { time: text("time").notNull() }, { timeColumn: "time" })
+
+// TS error — time column must be notNull
+hypertable("bad", { time: timestamptz("time") }, { timeColumn: "time" })
+```
 
 ### Table options
 
@@ -235,12 +245,29 @@ const users = pgTable("users", {
 
 Foreign key actions: `"CASCADE"`, `"RESTRICT"`, `"SET NULL"`, `"SET DEFAULT"`, `"NO ACTION"`.
 
+### Compile-time guards
+
+The schema DSL uses `this` parameter constraints to prevent invalid modifier chains at compile time:
+
+| Invalid chain | Error reason |
+|---|---|
+| `text("x").notNull().notNull()` | `.notNull()` already set |
+| `serial("id").notNull()` | Serial factories already imply `notNull` |
+| `integer("id").primaryKey().notNull()` | `.primaryKey()` already sets `notNull` |
+| `text("x").default("a").default("b")` | `.default()` already set |
+| `text("x").generatedAlwaysAs("...").default("v")` | Generated and default conflict |
+| `serial("id").default(1)` | Serial already has a default |
+| `enumColumn(status, "s").default("invalid")` | Only enum values accepted |
+| `text("x").primaryKey()` | `text` is not in `AllowedPKSqlType` |
+
+All of these produce TypeScript errors — no runtime checks needed.
+
 ## Indexes
 
-Define indexes in the `extra` callback (third argument to `pgTable`/`hypertable`):
+Define indexes in the `extra` callback (third argument to `pgTable`/`hypertable`). The callback receives both the built columns and **typed helpers** (`t`) that validate column names at compile time:
 
 ```typescript
-import { pgTable, text, timestamptz, index, uniqueIndex, brinIndex, expr } from "@jellologic/timescaledb-sdk/schema"
+import { pgTable, text, timestamptz } from "@jellologic/timescaledb-sdk/schema"
 
 const events = pgTable(
   "events",
@@ -249,11 +276,12 @@ const events = pgTable(
     type: text("type").notNull(),
     data: text("data"),
   },
-  (cols) => [
-    index("idx_events_type", ["type"]),
-    uniqueIndex("idx_events_type_time", ["type", "time"]),
-    brinIndex("idx_events_time_brin", ["time"]),
-    index("idx_events_lower_type", [expr("lower(type)")]),
+  (_cols, t) => [
+    t.index("idx_events_type", [t.asc("type")]),           // column name validated
+    t.uniqueIndex("idx_events_type_time", [t.asc("type"), t.desc("time")]),
+    t.brinIndex("idx_events_time_brin", [t.asc("time")]),
+    t.index("idx_events_lower", [t.expr("lower(type)")]),   // raw SQL — no validation
+    // t.index("bad", [t.asc("typo")])  // TS error — "typo" is not a column key
   ]
 )
 ```
@@ -328,10 +356,10 @@ index("idx_lower_email", [expr("lower(email)")])
 
 ## Constraints
 
-Define table-level constraints in the `extra` callback:
+Define table-level constraints in the `extra` callback. Typed helpers validate column names at compile time — use JS property keys (e.g. `"userId"`), not SQL column names (`"user_id"`); the helpers map them automatically:
 
 ```typescript
-import { pgTable, integer, text, check, unique, primaryKey, foreignKey, exclude, deferrable } from "@jellologic/timescaledb-sdk/schema"
+import { pgTable, integer, text, deferrable, foreignKey } from "@jellologic/timescaledb-sdk/schema"
 
 const orders = pgTable(
   "orders",
@@ -341,11 +369,11 @@ const orders = pgTable(
     status: text("status"),
     priority: integer("priority"),
   },
-  (cols) => [
-    primaryKey("pk_orders", ["id"]),
-    unique("uq_user_status", ["user_id", "status"]),
-    check("chk_priority", "priority BETWEEN 1 AND 5"),
-    foreignKey("fk_orders_user", ["user_id"], {
+  (_cols, t) => [
+    t.primaryKey("pk_orders", ["id"]),
+    t.unique("uq_user_status", ["userId", "status"]),         // JS keys → SQL names
+    t.check("chk_priority", "priority BETWEEN 1 AND 5"),
+    t.foreignKey("fk_orders_user", ["userId"], {              // "userId" → "user_id"
       table: "users",
       columns: ["id"],
     }, {
@@ -354,11 +382,12 @@ const orders = pgTable(
     }),
     deferrable(
       foreignKey("fk_deferred", ["user_id"], { table: "users", columns: ["id"] }),
-      "DEFERRED"  // or "IMMEDIATE"
+      "DEFERRED"
     ),
-    exclude("excl_priority", "gist", [
+    t.exclude("excl_priority", "gist", [
       { column: "priority", operator: "=" },
     ], "status = 'active'"),
+    // t.unique("bad", ["usrId"])  // TS error — "usrId" is not a column key
   ]
 )
 ```
@@ -366,16 +395,25 @@ const orders = pgTable(
 ## Enums
 
 ```typescript
-import { pgEnum, enumColumn, pgTable } from "@jellologic/timescaledb-sdk/schema"
+import { pgEnum, enumColumn, pgTable, serial } from "@jellologic/timescaledb-sdk/schema"
 
 const statusEnum = pgEnum("status_type", ["active", "inactive", "pending"] as const)
 
 const accounts = pgTable("accounts", {
   id: serial("id"),
-  status: enumColumn(statusEnum, "status").notNull(),
+  status: enumColumn(statusEnum, "status").notNull().default("active"),
   // TypeScript type of status: "active" | "inactive" | "pending"
 })
 ```
+
+**Compile-time enum default validation**: `.default()` only accepts values from the enum's value union. Invalid values produce a TypeScript error:
+
+```typescript
+enumColumn(statusEnum, "status").default("active")    // OK
+enumColumn(statusEnum, "status").default("invalid")   // TS error
+```
+
+The enum name is also preserved as `TSqlType`, so `.primaryKey()` correctly rejects enum columns (enums aren't valid PK types).
 
 ## Type inference
 
