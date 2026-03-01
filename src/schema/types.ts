@@ -114,6 +114,7 @@ export interface TableDefinition<
   readonly ifNotExists?: boolean
   readonly renamedFrom?: string
   readonly enableRls?: boolean
+  readonly forceRls?: boolean
   readonly rlsPolicies?: ReadonlyArray<RlsPolicyDef>
 }
 
@@ -265,6 +266,7 @@ export interface EnumTypeDef {
 export interface RlsPolicyDef {
   readonly _tag: "RlsPolicy"
   readonly name: string
+  readonly permissive?: boolean
   readonly command?: "ALL" | "SELECT" | "INSERT" | "UPDATE" | "DELETE"
   readonly using?: string
   readonly check?: string
@@ -334,4 +336,58 @@ export type InferSelect<T extends { columns: Record<string, ColumnDef<any>> }> =
   [K in keyof T["columns"]]: T["columns"][K] extends ColumnDef<infer V, true>
     ? V
     : T["columns"][K] extends ColumnDef<infer V> ? V | null : unknown
+}
+
+// --- Role & Grant types ---
+
+export interface RoleDef {
+  readonly _tag: "Role"
+  readonly name: string
+  readonly login?: boolean
+  readonly password?: string
+  readonly superuser?: boolean
+  readonly createdb?: boolean
+  readonly createrole?: boolean
+  readonly inherit?: boolean
+  readonly replication?: boolean
+  readonly bypassrls?: boolean
+  readonly connectionLimit?: number
+  readonly validUntil?: string
+  readonly inRoles?: ReadonlyArray<string>
+  readonly renamedFrom?: string
+}
+
+export type TablePrivilege = "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE" | "REFERENCES" | "TRIGGER" | "ALL"
+export type SchemaPrivilege = "USAGE" | "CREATE" | "ALL"
+
+export interface TableGrantDef {
+  readonly _tag: "TableGrant"
+  readonly table: string
+  readonly schema?: string
+  readonly privileges: ReadonlyArray<TablePrivilege>
+  readonly roles: ReadonlyArray<string>
+  readonly withGrantOption?: boolean
+}
+
+export interface SchemaGrantDef {
+  readonly _tag: "SchemaGrant"
+  readonly schemaName: string
+  readonly privileges: ReadonlyArray<SchemaPrivilege>
+  readonly roles: ReadonlyArray<string>
+  readonly withGrantOption?: boolean
+}
+
+export interface RoleMembershipDef {
+  readonly _tag: "RoleMembership"
+  readonly role: string
+  readonly members: ReadonlyArray<string>
+  readonly withAdminOption?: boolean
+}
+
+export interface DefaultPrivilegeDef {
+  readonly _tag: "DefaultPrivilege"
+  readonly inSchema: string
+  readonly forRole?: string
+  readonly onTables?: ReadonlyArray<TablePrivilege>
+  readonly roles: ReadonlyArray<string>
 }

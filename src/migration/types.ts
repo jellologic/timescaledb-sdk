@@ -40,6 +40,7 @@ export interface MigrationStatus {
 export interface RlsPolicySnapshot {
   readonly tableName: string
   readonly policyName: string
+  readonly permissive?: boolean
   readonly command: string
   readonly roles: ReadonlyArray<string>
   readonly using: string | null
@@ -113,6 +114,11 @@ export interface SchemaSnapshot {
   readonly functions?: ReadonlyArray<FunctionSnapshot>
   readonly procedures?: ReadonlyArray<ProcedureSnapshot>
   readonly triggerFunctions?: ReadonlyArray<TriggerFunctionSnapshot>
+  readonly roles?: ReadonlyArray<RoleSnapshot>
+  readonly tableGrants?: ReadonlyArray<TableGrantSnapshot>
+  readonly schemaGrants?: ReadonlyArray<SchemaGrantSnapshot>
+  readonly roleMemberships?: ReadonlyArray<RoleMembershipSnapshot>
+  readonly defaultPrivileges?: ReadonlyArray<DefaultPrivilegeSnapshot>
   readonly takenAt: Date
 }
 
@@ -123,6 +129,8 @@ export interface TableSnapshot {
   readonly indexes: ReadonlyArray<IndexSnapshot>
   readonly constraints?: ReadonlyArray<ConstraintSnapshot>
   readonly triggers?: ReadonlyArray<TriggerSnapshot>
+  readonly rlsEnabled?: boolean
+  readonly rlsForced?: boolean
 }
 
 export interface ColumnSnapshot {
@@ -217,4 +225,48 @@ export interface TriggerFunctionSnapshot {
   readonly volatility: string
   readonly security: string
   readonly bodyHash: string
+}
+
+// --- Role & Grant Snapshots ---
+
+export interface RoleSnapshot {
+  readonly name: string
+  readonly login: boolean
+  readonly superuser: boolean
+  readonly createdb: boolean
+  readonly createrole: boolean
+  readonly inherit: boolean
+  readonly replication: boolean
+  readonly bypassrls: boolean
+  readonly connectionLimit: number
+  readonly validUntil: string | null
+  readonly memberOf: ReadonlyArray<string>
+}
+
+export interface TableGrantSnapshot {
+  readonly tableName: string
+  readonly tableSchema: string
+  readonly grantee: string
+  readonly privileges: ReadonlyArray<string>
+  readonly isGrantable: boolean
+}
+
+export interface SchemaGrantSnapshot {
+  readonly schemaName: string
+  readonly grantee: string
+  readonly privileges: ReadonlyArray<string>
+}
+
+export interface RoleMembershipSnapshot {
+  readonly role: string
+  readonly member: string
+  readonly adminOption: boolean
+}
+
+export interface DefaultPrivilegeSnapshot {
+  readonly schema: string
+  readonly role: string
+  readonly objectType: string
+  readonly grantee: string
+  readonly privileges: ReadonlyArray<string>
 }

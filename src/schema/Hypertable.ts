@@ -1,5 +1,5 @@
 import type { ColumnBuilder } from "./Column.js"
-import type { ColumnDef, ConstraintDef, HypertableConfig, HypertableDefinition, IndexDef, TriggerDef } from "./types.js"
+import type { ColumnDef, ConstraintDef, HypertableConfig, HypertableDefinition, IndexDef, RlsPolicyDef, TriggerDef } from "./types.js"
 
 type ColumnMap<T extends Record<string, ColumnBuilder<any, any, any>>> = {
   [K in keyof T]: ReturnType<T[K]["build"]>
@@ -18,6 +18,9 @@ export const hypertable = <
     unlogged?: boolean
     ifNotExists?: boolean
     renamedFrom?: string
+    enableRls?: boolean
+    forceRls?: boolean
+    rlsPolicies?: ReadonlyArray<RlsPolicyDef>
   }
 ): HypertableDefinition<TName, ColumnMap<TColumns>> => {
   if (!(config.timeColumn in columns)) {
@@ -45,6 +48,9 @@ export const hypertable = <
     unlogged: options?.unlogged,
     ifNotExists: options?.ifNotExists,
     renamedFrom: options?.renamedFrom,
+    enableRls: options?.enableRls,
+    forceRls: options?.forceRls,
+    rlsPolicies: options?.rlsPolicies,
     hypertableConfig: config,
   }
 }
