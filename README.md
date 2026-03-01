@@ -40,22 +40,43 @@ Install the SDK and its peer dependencies:
 bun add @jellologic/timescaledb-sdk effect @effect/sql @effect/sql-pg
 ```
 
-Define a hypertable, query it with time_bucket, and execute with Effect:
+Create a config file and define your schema:
 
 ```typescript
+// timescale.config.ts
+import { defineConfig } from "@jellologic/timescaledb-sdk"
 import { hypertable, timestamptz, text, doublePrecision, jsonb } from "@jellologic/timescaledb-sdk/schema"
-import { select, gt, desc } from "@jellologic/timescaledb-sdk/query"
-import { timeBucket } from "@jellologic/timescaledb-sdk/hyperfunctions"
-import { TimescaleClient, layerFromConfig, layerFromEnv } from "@jellologic/timescaledb-sdk"
-import { Effect } from "effect"
 
-// 1. Define your hypertable schema
 const metrics = hypertable("metrics", {
   time: timestamptz("time").notNull(),
   device_id: text("device_id").notNull(),
   temperature: doublePrecision("temperature"),
   metadata: jsonb("metadata"),
 }, { timeColumn: "time", chunkInterval: "1 day" })
+
+export default defineConfig({
+  connection: {
+    database: "myapp",
+    username: "postgres",
+    password: "secret",
+    pool: { maxConnections: 10 },
+    direct: true,
+  },
+  schema: [metrics],
+})
+```
+
+Query with time_bucket and execute with Effect:
+
+```typescript
+import { select, gt, desc } from "@jellologic/timescaledb-sdk/query"
+import { timeBucket } from "@jellologic/timescaledb-sdk/hyperfunctions"
+import { loadConfig, configToLayer } from "@jellologic/timescaledb-sdk"
+import { Effect } from "effect"
+
+// 1. Load config and create pooled layer
+const config = await loadConfig()
+const appLayer = configToLayer(config)
 
 // 2. Build a time-series query
 const hourlyAvg = select("metrics")
@@ -70,18 +91,12 @@ const hourlyAvg = select("metrics")
 
 // 3. Execute as an Effect program
 const program = Effect.gen(function* () {
-  const client = yield* TimescaleClient
   const rows = yield* hourlyAvg.execute()
   return rows
 })
 
-// 4. Provide layers and run
-Effect.runPromise(
-  program.pipe(
-    Effect.provide(layerFromConfig),
-    Effect.provide(layerFromEnv),
-  )
-)
+// 4. Provide layer and run
+Effect.runPromise(program.pipe(Effect.provide(appLayer)))
 ```
 
 ---
@@ -281,30 +296,40 @@ const lifecycle = Effect.gen(function* () {
 
 ## Migrations
 
-Track schema changes with diff-based migrations:
+Track schema changes with diff-based migrations. The simplest approach uses the config file with convenience helpers that automatically use a direct (non-pooled) connection:
 
 ```typescript
-import { generate, loadAndRun, loadAndRollback, loadAndStatus } from "@jellologic/timescaledb-sdk/migration"
-import { diffSchema, generateMigrationSql } from "@jellologic/timescaledb-sdk/migration"
+import { generate, runWithConfig, rollbackWithConfig, statusWithConfig } from "@jellologic/timescaledb-sdk/migration"
+import { loadConfig } from "@jellologic/timescaledb-sdk"
 import { Effect } from "effect"
 
-const migrate = Effect.gen(function* () {
-  // Diff current schema against desired state and generate SQL
-  const diff = yield* diffSchema()
-  const sql = yield* generateMigrationSql(diff)
+const config = await loadConfig()
 
-  // Generate a timestamped migration file
-  yield* generate("add_sensor_readings_table")
+// Generate a migration file from schema diff (pure async, no DB needed)
+await generate(config, "add_sensor_readings_table")
 
-  // Run all pending migrations
-  yield* loadAndRun()
+// Run all pending migrations (uses direct connection automatically)
+await Effect.runPromise(runWithConfig(config))
 
-  // Check migration status
-  const status = yield* loadAndStatus()
+// Check migration status
+const migrationStatus = await Effect.runPromise(statusWithConfig(config))
 
-  // Rollback the last migration if needed
-  // yield* loadAndRollback()
-})
+// Rollback the last migration
+await Effect.runPromise(rollbackWithConfig(config, 1))
+```
+
+For more control, use the lower-level `loadAndRun`/`loadAndRollback`/`loadAndStatus` which require you to provide a `TimescaleClient` layer:
+
+```typescript
+import { loadAndRun } from "@jellologic/timescaledb-sdk/migration"
+import { configToDirectLayer } from "@jellologic/timescaledb-sdk"
+import { Effect } from "effect"
+
+await Effect.runPromise(
+  loadAndRun(config).pipe(
+    Effect.provide(configToDirectLayer(config))
+  )
+)
 ```
 
 ---
@@ -489,7 +514,7 @@ const call = calculateDiscount.call(99.99, 150)
 
 | Import Path | Description |
 |---|---|
-| `@jellologic/timescaledb-sdk` | Core client, config, `rawQuery`, `executeSql`, and all module namespaces |
+| `@jellologic/timescaledb-sdk` | Core client, `defineConfig`, `configToLayer`, `configToDirectLayer`, `loadConfig`, `rawQuery`, `executeSql`, and all module namespaces |
 | `@jellologic/timescaledb-sdk/schema` | Hypertable definitions, 40+ column types, indexes, constraints |
 | `@jellologic/timescaledb-sdk/query` | Query builder: SELECT, INSERT, UPDATE, DELETE, JOINs, CTEs, window functions |
 | `@jellologic/timescaledb-sdk/hypertable` | Create, alter, and drop hypertables; chunk interval management |
@@ -499,13 +524,13 @@ const call = calculateDiscount.call(99.99, 150)
 | `@jellologic/timescaledb-sdk/hyperfunctions` | 25+ time-series functions: time_bucket, gapfill, percentile, stats, and more |
 | `@jellologic/timescaledb-sdk/jobs` | Background job scheduling, alteration, and management |
 | `@jellologic/timescaledb-sdk/tiering` | Data tiering across tablespaces with automated policies |
-| `@jellologic/timescaledb-sdk/migration` | Schema diffing, migration generation, execution, and rollback |
+| `@jellologic/timescaledb-sdk/migration` | Schema diffing, migration generation, execution, rollback, and config-based convenience helpers (`runWithConfig`, `rollbackWithConfig`, `statusWithConfig`) |
 | `@jellologic/timescaledb-sdk/view` | Views and materialized views: create, drop, refresh, alter |
 | `@jellologic/timescaledb-sdk/functions` | PL/pgSQL functions, procedures, and trigger functions with TS transpiler |
 | `@jellologic/timescaledb-sdk/queue` | Persistent job queue: enqueue, dequeue, workers, scheduling, workflows |
 | `@jellologic/timescaledb-sdk/bulk` | `bulkInsert`, `bulkUpsert` with automatic batching |
 | `@jellologic/timescaledb-sdk/client` | Direct access to `TimescaleClient` service and layer factories |
-| `@jellologic/timescaledb-sdk/config` | Direct access to `TimescaleConfig` service and environment layer |
+| `@jellologic/timescaledb-sdk/config` | `defineConfig`, `configToLayer`, `configToDirectLayer`, `loadConfig`, and type exports |
 
 ---
 
@@ -523,7 +548,74 @@ const call = calculateDiscount.call(99.99, 150)
 
 ### Configuration
 
-The SDK reads PostgreSQL connection details from standard environment variables:
+The recommended way to configure the SDK is with a `timescale.config.ts` file using `defineConfig`:
+
+```typescript
+// timescale.config.ts
+import { defineConfig } from "@jellologic/timescaledb-sdk"
+import { users, posts, metrics } from "./src/schema"
+
+export default defineConfig({
+  connection: {
+    host: "localhost",
+    port: 5432,
+    database: "myapp",
+    username: "postgres",
+    password: "secret",
+    ssl: false,
+
+    // Pool settings — used by configToLayer() for normal operations
+    pool: {
+      maxConnections: 20,
+      minConnections: 5,
+      idleTimeout: "30 seconds",
+      connectionTTL: "5 minutes",
+    },
+
+    // Direct connection — used by configToDirectLayer() for migrations
+    direct: true,  // or { ssl: true } to override SSL for the direct connection
+  },
+
+  schema: [users, posts, metrics],
+
+  features: {
+    queue: true,  // auto-injects queue tables into definitions
+  },
+
+  migrations: {
+    dir: "./migrations",
+  },
+})
+```
+
+**Pool vs Direct connections:**
+
+| Mode | Factory | Use case | Behavior |
+|------|---------|----------|----------|
+| **Pool** | `configToLayer(config)` | Normal CRUD, queries, inserts | Pooled connections (default: 10) |
+| **Direct** | `configToDirectLayer(config)` | Migrations, DDL, advisory locks | Single connection (`maxConnections: 1`) |
+
+```typescript
+import { configToLayer, configToDirectLayer, loadConfig } from "@jellologic/timescaledb-sdk"
+import { Effect } from "effect"
+
+const config = await loadConfig()  // loads timescale.config.ts from CWD
+
+// Normal operations — pooled
+const appLayer = configToLayer(config)
+
+// Migrations — single direct connection
+const migrationLayer = configToDirectLayer(config)
+
+// Or use the convenience helpers that wire up the direct layer automatically:
+import { runWithConfig, rollbackWithConfig, statusWithConfig } from "@jellologic/timescaledb-sdk/migration"
+
+await Effect.runPromise(runWithConfig(config))
+await Effect.runPromise(rollbackWithConfig(config, 1))
+await Effect.runPromise(statusWithConfig(config))
+```
+
+All connection fields are optional except `database`, `username`, and `password`. If `connection` is omitted entirely, the SDK falls back to standard `PG*` environment variables:
 
 ```
 PGHOST=localhost
@@ -531,23 +623,8 @@ PGPORT=5432
 PGDATABASE=mydb
 PGUSER=postgres
 PGPASSWORD=secret
-```
-
-Or configure programmatically:
-
-```typescript
-import { TimescaleConfig } from "@jellologic/timescaledb-sdk"
-import { Redacted } from "effect"
-
-const config = new TimescaleConfig({
-  host: "localhost",
-  port: 5432,
-  database: "mydb",
-  username: "postgres",
-  password: Redacted.make("password"),
-  ssl: false,
-  maxConnections: 10,
-})
+PGSSL=true
+PG_MAX_CONNECTIONS=10
 ```
 
 ---

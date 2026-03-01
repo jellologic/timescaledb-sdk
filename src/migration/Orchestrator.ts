@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { TimescaleClient } from "../Client.js"
-import { MigrationError } from "../Error.js"
+import { ConnectionError, MigrationError } from "../Error.js"
 import type { MigrationFile, Migration, MigrationStatus, LoadMigrationOptions } from "./types.js"
 import type { SchemaDiff, SchemaDefinition } from "./Generator.js"
 import { diffSchema, generateMigrationSql } from "./Generator.js"
@@ -12,6 +12,11 @@ import {
 import { migrate, rollback, status } from "./Runner.js"
 import { ensureMigrationsTable, getAppliedMigrations } from "./Tracker.js"
 import type { SchemaSnapshot } from "./types.js"
+import type { ResolvedConfig } from "../config/defineConfig.js"
+import { configToDirectLayer } from "../config/defineConfig.js"
+
+const isResolvedConfig = (v: unknown): v is ResolvedConfig =>
+  typeof v === "object" && v !== null && "definitions" in v && "migrations" in v && !("migrationsDir" in v)
 
 export interface GenerateOptions {
   readonly definitions: ReadonlyArray<SchemaDefinition>
@@ -34,8 +39,19 @@ const emptySnapshot: SchemaSnapshot = {
   takenAt: new Date(),
 }
 
-export const generate = async (options: GenerateOptions): Promise<GenerateResult | null> => {
-  const { definitions, migrationsDir, description } = options
+export async function generate(config: ResolvedConfig, description?: string): Promise<GenerateResult | null>
+export async function generate(options: GenerateOptions): Promise<GenerateResult | null>
+export async function generate(optionsOrConfig: GenerateOptions | ResolvedConfig, description?: string): Promise<GenerateResult | null> {
+  let definitions: ReadonlyArray<SchemaDefinition>
+  let migrationsDir: string
+  if (isResolvedConfig(optionsOrConfig)) {
+    definitions = optionsOrConfig.definitions
+    migrationsDir = optionsOrConfig.migrations.dir
+  } else {
+    definitions = optionsOrConfig.definitions
+    migrationsDir = optionsOrConfig.migrationsDir
+    description = optionsOrConfig.description
+  }
 
   // Ensure directory exists
   await Bun.$`mkdir -p ${migrationsDir}`.quiet()
@@ -143,11 +159,11 @@ export const dryRunSql = async (
   }
 }
 
-export const loadAndRun = (
-  migrationsDir: string,
-  options?: RunOptions
-): Effect.Effect<ReadonlyArray<string>, MigrationError, TimescaleClient> =>
-  Effect.gen(function* () {
+export function loadAndRun(config: ResolvedConfig, options?: RunOptions): Effect.Effect<ReadonlyArray<string>, MigrationError, TimescaleClient>
+export function loadAndRun(migrationsDir: string, options?: RunOptions): Effect.Effect<ReadonlyArray<string>, MigrationError, TimescaleClient>
+export function loadAndRun(dirOrConfig: string | ResolvedConfig, options?: RunOptions): Effect.Effect<ReadonlyArray<string>, MigrationError, TimescaleClient> {
+  const migrationsDir = isResolvedConfig(dirOrConfig) ? dirOrConfig.migrations.dir : dirOrConfig
+  return Effect.gen(function* () {
     const files = yield* Effect.tryPromise({
       try: () => loadAllMigrations(migrationsDir, options),
       catch: (e) => new MigrationError({ message: `Failed to load migrations: ${e}`, cause: e }),
@@ -165,13 +181,13 @@ export const loadAndRun = (
 
     return yield* migrate(migrations)
   })
+}
 
-export const loadAndRollback = (
-  migrationsDir: string,
-  steps: number = 1,
-  options?: LoadMigrationOptions
-): Effect.Effect<ReadonlyArray<string>, MigrationError, TimescaleClient> =>
-  Effect.gen(function* () {
+export function loadAndRollback(config: ResolvedConfig, steps?: number, options?: LoadMigrationOptions): Effect.Effect<ReadonlyArray<string>, MigrationError, TimescaleClient>
+export function loadAndRollback(migrationsDir: string, steps?: number, options?: LoadMigrationOptions): Effect.Effect<ReadonlyArray<string>, MigrationError, TimescaleClient>
+export function loadAndRollback(dirOrConfig: string | ResolvedConfig, steps: number = 1, options?: LoadMigrationOptions): Effect.Effect<ReadonlyArray<string>, MigrationError, TimescaleClient> {
+  const migrationsDir = isResolvedConfig(dirOrConfig) ? dirOrConfig.migrations.dir : dirOrConfig
+  return Effect.gen(function* () {
     const files = yield* Effect.tryPromise({
       try: () => loadAllMigrations(migrationsDir, options),
       catch: (e) => new MigrationError({ message: `Failed to load migrations: ${e}`, cause: e }),
@@ -179,12 +195,13 @@ export const loadAndRollback = (
     const migrations = files.map(migrationFileToEffect)
     return yield* rollback(migrations, steps)
   })
+}
 
-export const loadAndStatus = (
-  migrationsDir: string,
-  options?: LoadMigrationOptions
-): Effect.Effect<MigrationStatus, MigrationError, TimescaleClient> =>
-  Effect.gen(function* () {
+export function loadAndStatus(config: ResolvedConfig, options?: LoadMigrationOptions): Effect.Effect<MigrationStatus, MigrationError, TimescaleClient>
+export function loadAndStatus(migrationsDir: string, options?: LoadMigrationOptions): Effect.Effect<MigrationStatus, MigrationError, TimescaleClient>
+export function loadAndStatus(dirOrConfig: string | ResolvedConfig, options?: LoadMigrationOptions): Effect.Effect<MigrationStatus, MigrationError, TimescaleClient> {
+  const migrationsDir = isResolvedConfig(dirOrConfig) ? dirOrConfig.migrations.dir : dirOrConfig
+  return Effect.gen(function* () {
     const files = yield* Effect.tryPromise({
       try: () => loadAllMigrations(migrationsDir, options),
       catch: (e) => new MigrationError({ message: `Failed to load migrations: ${e}`, cause: e }),
@@ -192,3 +209,13 @@ export const loadAndStatus = (
     const migrations = files.map(migrationFileToEffect)
     return yield* status(migrations)
   })
+}
+
+export const runWithConfig = (config: ResolvedConfig, options?: RunOptions): Effect.Effect<ReadonlyArray<string>, MigrationError | ConnectionError> =>
+  loadAndRun(config, options).pipe(Effect.provide(configToDirectLayer(config)))
+
+export const rollbackWithConfig = (config: ResolvedConfig, steps?: number, options?: LoadMigrationOptions): Effect.Effect<ReadonlyArray<string>, MigrationError | ConnectionError> =>
+  loadAndRollback(config, steps, options).pipe(Effect.provide(configToDirectLayer(config)))
+
+export const statusWithConfig = (config: ResolvedConfig, options?: LoadMigrationOptions): Effect.Effect<MigrationStatus, MigrationError | ConnectionError> =>
+  loadAndStatus(config, options).pipe(Effect.provide(configToDirectLayer(config)))

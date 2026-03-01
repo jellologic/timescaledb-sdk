@@ -46,6 +46,19 @@ export const someOperation = (args) =>
 
 **Layers**: `TimescaleClient.layer(pgConfig)`, `TimescaleClient.layerFromConfig`, `TimescaleConfigService.layerFromEnv`.
 
+### Configuration system (`src/config/`)
+
+Central config file (`timescale.config.ts`) loaded by `defineConfig()`. Supports two connection modes:
+
+- **Pool** (`configToLayer`) — Pooled connections for normal CRUD operations (default `maxConnections: 10`). Pool settings: `maxConnections`, `minConnections`, `idleTimeout`, `connectionTTL`.
+- **Direct** (`configToDirectLayer`) — Single non-pooled connection (`maxConnections: 1`) for migrations/DDL/advisory locks. Supports SSL override via `direct: { ssl: true }`.
+
+Both layer factories fall back to `PG*` environment variables when `connection` is null.
+
+**Config file**: `defineConfig({ connection, schema, features, migrations })` → `ResolvedConfig`. The `loadConfig()` function dynamically imports `timescale.config.ts` from CWD (or a custom path).
+
+**Migration convenience functions**: `runWithConfig`, `rollbackWithConfig`, `statusWithConfig` in `src/migration/Orchestrator.ts` — automatically provide a direct layer so the caller doesn't need to wire it up manually.
+
 ### Query builder internals
 
 - Immutable builders using `_clone()` on every method call.
@@ -67,7 +80,7 @@ The most complex module. Key flows:
 - **Snapshot.ts**: `takeSnapshot` introspects a live DB via `information_schema`, `pg_catalog`, and `timescaledb_information.*` views.
 - **FileSystem.ts**: Migration files embed an HMAC (`sha256`) integrity hash. `verifyIntegrity` checks on load; `sealMigration()` reseals hand-edited files. Uses temp-file + rename for atomic writes.
 - **Runner.ts**: Uses PostgreSQL advisory lock (`pg_try_advisory_lock(123456789)`) with `Effect.ensuring` for guaranteed release.
-- **Orchestrator.ts**: Top-level API — `generate()` (async, not Effect), `loadAndRun`/`loadAndRollback`/`loadAndStatus` (Effects).
+- **Orchestrator.ts**: Top-level API — `generate()` (async, not Effect), `loadAndRun`/`loadAndRollback`/`loadAndStatus` (Effects requiring `TimescaleClient`), `runWithConfig`/`rollbackWithConfig`/`statusWithConfig` (self-contained Effects that provide their own direct connection layer from config).
 
 ### Queue system (`src/queue/`)
 
@@ -93,7 +106,7 @@ Generic `bulkInsert` and `bulkUpsert` with automatic batching to stay under Post
 
 ## Module exports
 
-The package has 17 export paths (root + one per module). Each maps to `./dist/<module>/index.js`. The root `src/index.ts` re-exports all modules as namespaces plus the core `TimescaleClient`, `TimescaleConfig`, `rawQuery`, `executeSql`, and `Errors`.
+The package has 17 export paths (root + one per module). Each maps to `./dist/<module>/index.js`. The root `src/index.ts` re-exports all modules as namespaces plus the core `TimescaleClient`, `TimescaleConfig`, `rawQuery`, `executeSql`, `Errors`, and the config system (`defineConfig`, `configToLayer`, `configToDirectLayer`, `loadConfig`).
 
 ## Testing
 
