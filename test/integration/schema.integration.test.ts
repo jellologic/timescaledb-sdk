@@ -415,7 +415,7 @@ describe("Integration — Edge Cases", () => {
       // Step 1: Generate SQL from empty
       const emptySnap = { tables: [], hypertables: [], continuousAggregates: [], takenAt: new Date() }
       const diff = diffSchema([t], emptySnap)
-      expect(diff.tablesToCreate).toContain(name)
+      expect(diff.tablesToCreate.map(t => t.name)).toContain(name)
 
       // Step 2: Execute generated SQL
       const { up } = generateMigrationSql(diff, [t])
