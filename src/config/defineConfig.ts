@@ -4,7 +4,7 @@ import { TimescaleClient, layer as clientLayer } from "../Client.js"
 import { ConnectionError } from "../Error.js"
 import type { SchemaDefinition } from "../migration/Generator.js"
 import type { HypertableDefinition, TableDefinition, ColumnDef } from "../schema/types.js"
-import { DEFAULT_ALLOWED_PK_TYPES } from "../schema/types.js"
+import { DEFAULT_ALLOWED_PK_TYPES, DISALLOWED_HYPERTABLE_PK_TYPES } from "../schema/types.js"
 import { queueDefinitions } from "../queue/schema.js"
 
 type SchemaDefinitionWithSchema = Extract<SchemaDefinition, { readonly schema: string }>
@@ -282,6 +282,21 @@ export const defineConfig = (config: SDKConfig): ResolvedConfig => {
               `uses "${col.sqlType}" as primary key. Allowed: ${[...ALLOWED_PK_SQL_TYPES].join(", ")}.`
             )
           }
+        }
+      }
+    }
+  }
+
+  // Always reject disallowed PK types on hypertables (regardless of strictPrimaryKeys)
+  for (const def of definitions) {
+    if (isHypertable(def)) {
+      for (const [, col] of Object.entries(def.columns) as Array<[string, ColumnDef]>) {
+        if (col.isPrimaryKey && DISALLOWED_HYPERTABLE_PK_TYPES.includes(col.sqlType)) {
+          throw new Error(
+            `Column "${col.name}" in hypertable "${def.name}" ` +
+            `uses "${col.sqlType}" as primary key, which is not allowed on hypertables. ` +
+            `Hypertables require sortable PK types for chunk placement.`
+          )
         }
       }
     }

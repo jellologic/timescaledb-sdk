@@ -1050,10 +1050,11 @@ describe("primaryKey() type restrictions", () => {
     expect(col.isNotNull).toBe(true)
   })
 
-  // Negative: disallowed types cause compile-time errors
-  test("text cannot be PK", () => {
-    // @ts-expect-error — text cannot be a primary key
-    text("id").primaryKey()
+  // Positive: text is now allowed as PK (for Better Auth, ULIDs, nanoids)
+  test("text can be PK", () => {
+    const col = text("id").primaryKey().build()
+    expect(col.isPrimaryKey).toBe(true)
+    expect(col.sqlType).toBe("text")
   })
 
   test("boolean cannot be PK", () => {
@@ -1081,9 +1082,10 @@ describe("primaryKey() type restrictions", () => {
     numeric("id").primaryKey()
   })
 
-  test("text.notNull() still blocked as PK", () => {
-    // @ts-expect-error — text.notNull() is still blocked
-    text("id").notNull().primaryKey()
+  test("text.notNull() can be PK", () => {
+    const col = text("id").notNull().primaryKey().build()
+    expect(col.isPrimaryKey).toBe(true)
+    expect(col.isNotNull).toBe(true)
   })
 
   test("enum column cannot be PK", () => {

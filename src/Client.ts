@@ -37,7 +37,7 @@ const makeFromSqlClient = (sql: SqlClient.SqlClient): TimescaleClientShape => ({
     ),
 })
 
-const makeFromPgClient = (pgClient: PgClient.PgClient): TimescaleClientShape => ({
+export const makeFromPgClient = (pgClient: PgClient.PgClient): TimescaleClientShape => ({
   ...makeFromSqlClient(pgClient),
   listen: (channel: string) =>
     pgClient.listen(channel).pipe(
