@@ -44,14 +44,16 @@ export type SQLType =
 
 export interface PKTypesOverride {}
 
-export type DefaultAllowedPKTypes = "integer" | "bigint" | "serial" | "bigserial" | "uuid"
+export type DefaultAllowedPKTypes = "integer" | "bigint" | "serial" | "bigserial" | "uuid" | "text"
 
 export type AllowedPKSqlType =
   [keyof PKTypesOverride] extends [never]
     ? DefaultAllowedPKTypes
     : PKTypesOverride[keyof PKTypesOverride] & string
 
-export const DEFAULT_ALLOWED_PK_TYPES: ReadonlyArray<string> = ["integer", "bigint", "serial", "bigserial", "uuid"]
+export const DEFAULT_ALLOWED_PK_TYPES: ReadonlyArray<string> = ["integer", "bigint", "serial", "bigserial", "uuid", "text"]
+
+export const DISALLOWED_HYPERTABLE_PK_TYPES: ReadonlyArray<string> = ["text"]
 
 export type AllowedTimeSqlType = "timestamptz" | "timestamp" | "date" | "integer" | "bigint" | "smallint"
 

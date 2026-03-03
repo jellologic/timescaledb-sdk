@@ -12,9 +12,12 @@ export * as View from "./view/index.js"
 export * as Functions from "./functions/index.js"
 export * as Queue from "./queue/index.js"
 export * as Bulk from "./bulk/index.js"
+export * as Pool from "./pool.js"
 export { TimescaleClient, type TimescaleClientShape, layer as clientLayer, layerFromConfig, rawQuery, executeSql } from "./Client.js"
 export { TimescaleConfig, TimescaleConfigService, layer as configLayer, layerFromEnv } from "./Config.js"
 export * as Errors from "./Error.js"
+export { createPool } from "./pool.js"
+export type { PostgresPool, PostgresPoolClient, CreatePoolResult } from "./pool.js"
 export { defineConfig, configToLayer, configToDirectLayer, loadConfig, buildSessionInitSql } from "./config/index.js"
 export type {
   SDKConfig, ResolvedConfig, ConnectionConfig, PoolConfig, DirectConfig, FeaturesConfig,

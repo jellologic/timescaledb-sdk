@@ -501,7 +501,7 @@ describe("strictPrimaryKeys", () => {
 
   test("throws for disallowed PK type when enabled", () => {
     const badTable = pgTable("bad_table", {
-      id: new ColumnBuilder<string, false, false, "text">("text", "id").primaryKey() as any,
+      id: new ColumnBuilder<string, false, false, "varchar">("varchar", "id").primaryKey() as any,
       name: text("name"),
     })
     expect(() =>
@@ -509,7 +509,7 @@ describe("strictPrimaryKeys", () => {
         schema: [badTable],
         features: { strictPrimaryKeys: true },
       })
-    ).toThrow('[strictPrimaryKeys] Column "id" in table "bad_table" uses "text" as primary key')
+    ).toThrow('[strictPrimaryKeys] Column "id" in table "bad_table" uses "varchar" as primary key')
   })
 
   test("throws with descriptive message including table and column names", () => {
@@ -522,12 +522,12 @@ describe("strictPrimaryKeys", () => {
         schema: [badTable],
         features: { strictPrimaryKeys: true },
       })
-    ).toThrow('Column "code" in table "orders" uses "varchar" as primary key. Allowed: integer, bigint, serial, bigserial, uuid.')
+    ).toThrow('Column "code" in table "orders" uses "varchar" as primary key. Allowed: integer, bigint, serial, bigserial, uuid, text.')
   })
 
   test("validates hypertables too", () => {
     const badHypertable = hypertable("events", {
-      id: new ColumnBuilder<string, false, false, "text">("text", "id").primaryKey() as any,
+      id: new ColumnBuilder<string, false, false, "varchar">("varchar", "id").primaryKey() as any,
       time: timestamptz("time").notNull(),
     }, { timeColumn: "time" })
     expect(() =>
@@ -572,6 +572,41 @@ describe("strictPrimaryKeys", () => {
         features: { strictPrimaryKeys: false, allowedPrimaryKeyTypes: ["uuid"] },
       })
     ).not.toThrow()
+  })
+
+  test("text PK on regular table passes with strictPrimaryKeys enabled", () => {
+    const textPkTable = pgTable("auth_users", {
+      id: new ColumnBuilder<string, false, false, "text">("text", "id").primaryKey() as any,
+      email: text("email").notNull(),
+    })
+    expect(() =>
+      defineConfig({
+        schema: [textPkTable],
+        features: { strictPrimaryKeys: true },
+      })
+    ).not.toThrow()
+  })
+
+  test("text PK on hypertable throws even with strictPrimaryKeys disabled", () => {
+    const badHt = hypertable("events", {
+      id: new ColumnBuilder<string, false, false, "text">("text", "id").primaryKey() as any,
+      time: timestamptz("time").notNull(),
+    }, { timeColumn: "time" })
+    expect(() =>
+      defineConfig({
+        schema: [badHt],
+      })
+    ).toThrow('Column "id" in hypertable "events" uses "text" as primary key')
+  })
+
+  test("text PK on hypertable throws with descriptive message", () => {
+    const badHt = hypertable("events", {
+      id: new ColumnBuilder<string, false, false, "text">("text", "id").primaryKey() as any,
+      time: timestamptz("time").notNull(),
+    }, { timeColumn: "time" })
+    expect(() =>
+      defineConfig({ schema: [badHt] })
+    ).toThrow("not allowed on hypertables")
   })
 })
 
