@@ -4,8 +4,10 @@ import { TimescaleClient } from "../../src/Client.js"
 import { resetInitialized, ensureQueueTables } from "../../src/queue/Setup.js"
 import {
   enqueue, enqueueBulk, dequeue, completeJob, failJob, retryJob, cancelJob,
-  getJob, getJobsByStatus, queueStats, promoteDelayed, obliterate,
+  getJob, getJobsByStatus, queueStats, promoteDelayed, obliterate, updateJobProgress,
 } from "../../src/queue/Queue.js"
+import { queueMetrics } from "../../src/queue/Metrics.js"
+import { pauseQueue, resumeQueue, isQueuePaused } from "../../src/queue/PauseResume.js"
 import { pruneCompleted, pruneFailed, recoverStalled, runMaintenance } from "../../src/queue/Maintenance.js"
 import { addRepeatableJob, removeRepeatableJob, listRepeatableJobs, schedulerTick } from "../../src/queue/Scheduler.js"
 import {
@@ -30,6 +32,7 @@ afterAll(async () => {
       yield* client.execute(`DELETE FROM "_tsdb_sdk_job_workflows" WHERE "name" LIKE 'test_%'`).pipe(Effect.catchAll(() => Effect.void))
       yield* client.execute(`DELETE FROM "_tsdb_sdk_job_schedules" WHERE "queue" LIKE 'test_q_%'`).pipe(Effect.catchAll(() => Effect.void))
       yield* client.execute(`DELETE FROM "_tsdb_sdk_job_workers" WHERE "queue" LIKE 'test_q_%'`).pipe(Effect.catchAll(() => Effect.void))
+      yield* client.execute(`DELETE FROM "_tsdb_sdk_queue_state" WHERE "queue" LIKE 'test_q_%'`).pipe(Effect.catchAll(() => Effect.void))
     })
   ).catch(() => {})
   await runner.dispose()
@@ -880,5 +883,284 @@ describe("Integration — Workflow Advanced", () => {
       expect(fetched!.createdAt).toBeInstanceOf(Date)
       expect(fetched!.updatedAt).toBeInstanceOf(Date)
     }
+  })
+})
+
+// ============================================
+// Singleton Key (#31)
+// ============================================
+describe("Integration — Singleton Key", () => {
+  test("singletonKey deduplicates waiting+active jobs", async () => {
+    const q = uniqueQueue()
+    const first = await run(enqueue(q, "sync", { run: 1 }, { singletonKey: "vivid_sync" }))
+    const second = await run(enqueue(q, "sync", { run: 2 }, { singletonKey: "vivid_sync" }))
+
+    // Second enqueue should return the first job (no-op via ON CONFLICT DO UPDATE)
+    expect(second.id).toBe(first.id)
+    expect(second.data).toEqual({ run: 1 }) // original data preserved
+  })
+
+  test("singletonKey allows re-enqueue after completion", async () => {
+    const q = uniqueQueue()
+    const first = await run(enqueue(q, "sync", {}, { singletonKey: "key1" }))
+    await run(dequeue(q, 1, "w-1"))
+    await run(completeJob(first.id))
+
+    // After completion, a new job with the same singleton key should succeed
+    const second = await run(enqueue(q, "sync", { new: true }, { singletonKey: "key1" }))
+    expect(second.id).not.toBe(first.id)
+    expect(second.status).toBe("waiting")
+  })
+
+  test("singletonKey stored on job record", async () => {
+    const q = uniqueQueue()
+    const job = await run(enqueue(q, "test", {}, { singletonKey: "my-key" }))
+    expect(job.singletonKey).toBe("my-key")
+
+    const fetched = await run(getJob(job.id))
+    expect(fetched!.singletonKey).toBe("my-key")
+  })
+})
+
+// ============================================
+// Partition Key (#32)
+// ============================================
+describe("Integration — Partition Key", () => {
+  test("partitionKey stored on job record", async () => {
+    const q = uniqueQueue()
+    const job = await run(enqueue(q, "crawl", { url: "example.com" }, { partitionKey: "event-42" }))
+    expect(job.partitionKey).toBe("event-42")
+  })
+
+  test("dequeue with partition filter only returns matching jobs", async () => {
+    const q = uniqueQueue()
+    // Enqueue jobs with different partition keys
+    await run(
+      Effect.gen(function* () {
+        for (let i = 0; i < 8; i++) {
+          yield* enqueue(q, `job-${i}`, { i }, { partitionKey: `pk-${i}` })
+        }
+      })
+    )
+
+    // Dequeue with partitionIndex=0, partitionTotal=4 — should only get partition 0 jobs
+    const partition0 = await run(dequeue(q, 10, "w-0", { partitionIndex: 0, partitionTotal: 4 }))
+    const partition1 = await run(dequeue(q, 10, "w-1", { partitionIndex: 1, partitionTotal: 4 }))
+
+    // Each partition should get some jobs, and they should not overlap
+    const ids0 = new Set(partition0.map(j => j.id))
+    const ids1 = new Set(partition1.map(j => j.id))
+    for (const id of ids0) {
+      expect(ids1.has(id)).toBe(false)
+    }
+
+    // Total should be <= 8 (some may go to partitions 2 and 3)
+    expect(partition0.length + partition1.length).toBeLessThanOrEqual(8)
+  })
+
+  test("dequeue without partition options returns all jobs (including those with partition keys)", async () => {
+    const q = uniqueQueue()
+    await run(
+      Effect.gen(function* () {
+        yield* enqueue(q, "j1", {}, { partitionKey: "pk-a" })
+        yield* enqueue(q, "j2", {})
+      })
+    )
+
+    const jobs = await run(dequeue(q, 10, "w-1"))
+    expect(jobs.length).toBe(2)
+  })
+})
+
+// ============================================
+// Pause/Resume (#33)
+// ============================================
+describe("Integration — Pause/Resume", () => {
+  test("queue state table created", async () => {
+    await run(
+      Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        yield* ensureQueueTables
+        const rows = yield* client.execute<any>(
+          `SELECT table_name FROM information_schema.tables WHERE table_name = '_tsdb_sdk_queue_state'`
+        )
+        expect(rows.length).toBe(1)
+      })
+    )
+  })
+
+  test("pauseQueue + isQueuePaused round-trip", async () => {
+    const q = uniqueQueue()
+
+    expect(await run(isQueuePaused(q))).toBe(false)
+
+    await run(pauseQueue(q))
+    expect(await run(isQueuePaused(q))).toBe(true)
+
+    await run(resumeQueue(q))
+    expect(await run(isQueuePaused(q))).toBe(false)
+  })
+
+  test("dequeue returns empty when queue is paused", async () => {
+    const q = uniqueQueue()
+    await run(enqueue(q, "paused-job", {}))
+    await run(pauseQueue(q))
+
+    const jobs = await run(dequeue(q, 10, "w-1"))
+    expect(jobs.length).toBe(0)
+
+    // Resume and dequeue should work
+    await run(resumeQueue(q))
+    const resumed = await run(dequeue(q, 10, "w-1"))
+    expect(resumed.length).toBe(1)
+  })
+})
+
+// ============================================
+// Job Progress (#34)
+// ============================================
+describe("Integration — Job Progress", () => {
+  test("updateJobProgress stores progress on active job", async () => {
+    const q = uniqueQueue()
+    const enqueued = await run(enqueue(q, "long-running", {}))
+    await run(dequeue(q, 1, "w-1"))
+
+    const updated = await run(updateJobProgress(enqueued.id, { percent: 45, data: { page: 225, total: 500 } }))
+    expect(updated.progress).toEqual({ percent: 45, data: { page: 225, total: 500 } })
+
+    // Verify via getJob
+    const fetched = await run(getJob(enqueued.id))
+    expect(fetched!.progress).toEqual({ percent: 45, data: { page: 225, total: 500 } })
+  })
+
+  test("updateJobProgress updates progress incrementally", async () => {
+    const q = uniqueQueue()
+    const enqueued = await run(enqueue(q, "incremental", {}))
+    await run(dequeue(q, 1, "w-1"))
+
+    await run(updateJobProgress(enqueued.id, { percent: 25 }))
+    await run(updateJobProgress(enqueued.id, { percent: 50 }))
+    const final = await run(updateJobProgress(enqueued.id, { percent: 100 }))
+    expect(final.progress).toEqual({ percent: 100 })
+  })
+
+  test("newly enqueued job has null progress", async () => {
+    const q = uniqueQueue()
+    const job = await run(enqueue(q, "no-progress", {}))
+    expect(job.progress).toBeNull()
+  })
+})
+
+// ============================================
+// Dead Letter Queue (#35)
+// ============================================
+describe("Integration — Dead Letter Queue", () => {
+  test("failJob routes to DLQ when max attempts exhausted", async () => {
+    const q = uniqueQueue()
+    const dlq = uniqueQueue()
+
+    const job = await run(enqueue(q, "webhook", { url: "example.com" }, {
+      attempts: 1,
+      deadLetterQueue: dlq,
+    }))
+    await run(dequeue(q, 1, "w-1"))
+    await run(failJob(job.id, "Connection refused"))
+
+    // Job should be failed in original queue
+    const failed = await run(getJob(job.id))
+    expect(failed!.status).toBe("failed")
+
+    // DLQ should have a new job with the same name and data
+    const dlqJobs = await run(getJobsByStatus(dlq, "waiting"))
+    expect(dlqJobs.length).toBe(1)
+    expect(dlqJobs[0]!.name).toBe("webhook")
+    expect(dlqJobs[0]!.data).toEqual({ url: "example.com" })
+  })
+
+  test("failJob does not route to DLQ when attempts remaining", async () => {
+    const q = uniqueQueue()
+    const dlq = uniqueQueue()
+
+    const job = await run(enqueue(q, "retryable", {}, {
+      attempts: 3,
+      deadLetterQueue: dlq,
+    }))
+    await run(dequeue(q, 1, "w-1"))
+    // First failure — attempts=1, maxAttempts=3, should NOT go to DLQ
+    await run(failJob(job.id, "Temporary error"))
+
+    const dlqJobs = await run(getJobsByStatus(dlq, "waiting"))
+    expect(dlqJobs.length).toBe(0)
+  })
+
+  test("deadLetterQueue stored on job record", async () => {
+    const q = uniqueQueue()
+    const job = await run(enqueue(q, "test", {}, { deadLetterQueue: "my-dlq" }))
+    expect(job.deadLetterQueue).toBe("my-dlq")
+  })
+})
+
+// ============================================
+// Queue Metrics (#36)
+// ============================================
+describe("Integration — Queue Metrics", () => {
+  test("queueMetrics returns metrics for a queue with completed jobs", async () => {
+    const q = uniqueQueue()
+    await run(
+      Effect.gen(function* () {
+        // Create and complete some jobs
+        const j1 = yield* enqueue(q, "m1", {})
+        const j2 = yield* enqueue(q, "m2", {})
+        const j3 = yield* enqueue(q, "m3", {})
+        yield* dequeue(q, 3, "w-1")
+        yield* completeJob(j1.id, "done")
+        yield* completeJob(j2.id, "done")
+        yield* failJob(j3.id, "error")
+      })
+    )
+
+    const metrics = await run(queueMetrics(q))
+    expect(metrics.queue).toBe(q)
+    expect(metrics.completedCount).toBe(2)
+    expect(metrics.failedCount).toBe(1)
+    expect(metrics.throughput).toBe(2)
+    expect(metrics.failureRate).toBeCloseTo(1 / 3, 2)
+    expect(metrics.activeJobs).toBe(0)
+    expect(metrics.waitingJobs).toBe(0)
+  })
+
+  test("queueMetrics returns zeros for empty queue", async () => {
+    const q = uniqueQueue()
+    const metrics = await run(queueMetrics(q))
+    expect(metrics.completedCount).toBe(0)
+    expect(metrics.failedCount).toBe(0)
+    expect(metrics.throughput).toBe(0)
+    expect(metrics.failureRate).toBe(0)
+    expect(metrics.activeJobs).toBe(0)
+    expect(metrics.waitingJobs).toBe(0)
+  })
+
+  test("queueMetrics custom periodSeconds", async () => {
+    const q = uniqueQueue()
+    const metrics = await run(queueMetrics(q, { periodSeconds: 60 }))
+    expect(metrics.periodSeconds).toBe(60)
+  })
+
+  test("queueMetrics includes duration and wait time stats", async () => {
+    const q = uniqueQueue()
+    await run(
+      Effect.gen(function* () {
+        const j1 = yield* enqueue(q, "timed", {})
+        yield* dequeue(q, 1, "w-1")
+        yield* completeJob(j1.id)
+      })
+    )
+
+    const metrics = await run(queueMetrics(q))
+    // Duration and wait times should be non-null for completed jobs
+    expect(metrics.avgDurationMs).not.toBeNull()
+    expect(metrics.p95DurationMs).not.toBeNull()
+    expect(metrics.avgWaitMs).not.toBeNull()
+    expect(metrics.p95WaitMs).not.toBeNull()
   })
 })
