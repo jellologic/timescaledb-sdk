@@ -79,3 +79,8 @@ export class KvError extends Data.TaggedError("KvError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
+
+export class GatedInsertError extends Data.TaggedError("GatedInsertError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}

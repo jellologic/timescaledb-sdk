@@ -164,4 +164,5 @@ CREATE TRIGGER ${quoteIdentifier(guardFnName + "_trg")}
   return { trackingTableSql, singleFnSql, bulkFnSql, guardTriggerFnSql, guardTriggerSql, revokeSql, grantSql }
 }
 
+export { gatedInsert, gatedInsertBulk, applyGatedInsert, removeGatedInsert } from "./operations.js"
 export type { GatedInsertConfig } from "../schema/types.js"
