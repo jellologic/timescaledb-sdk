@@ -383,8 +383,8 @@ describe("Queue module", () => {
 
       expect(result.length).toBe(2)
       expect(capturedQuery).toContain("VALUES")
-      // Should have 20 params (2 jobs x 10 params each)
-      expect(capturedParams!.length).toBe(20)
+      // Should have 26 params (2 jobs x 13 params each)
+      expect(capturedParams!.length).toBe(26)
     })
   })
 
@@ -682,7 +682,7 @@ describe("Queue module", () => {
               priority: 0, attempts: 0, max_attempts: 1, backoff: null, unique_key: "dedup-key",
               scheduled_at: now, started_at: null, completed_at: null, failed_at: null,
               result: null, error: null, error_stack: null, timeout: null, worker_id: null,
-              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: null,
+              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: null, progress: null, singleton_key: null, partition_key: null, dead_letter_queue: null,
               created_at: now, updated_at: now,
             }] as any)
           }
@@ -708,7 +708,7 @@ describe("Queue module", () => {
               priority: 0, attempts: 0, max_attempts: 1, backoff: null, unique_key: null,
               scheduled_at: now, started_at: null, completed_at: null, failed_at: null,
               result: null, error: null, error_stack: null, timeout: null, worker_id: null,
-              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: null,
+              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: null, progress: null, singleton_key: null, partition_key: null, dead_letter_queue: null,
               created_at: now, updated_at: now,
             }] as any)
           }
@@ -735,7 +735,7 @@ describe("Queue module", () => {
               priority: 0, attempts: 1, max_attempts: 1, backoff: null, unique_key: null,
               scheduled_at: now, started_at: now, completed_at: now, failed_at: null,
               result: null, error: null, error_stack: null, timeout: null, worker_id: null,
-              parent_id: null, repeat_key: null, remove_on_complete: true, remove_on_fail: null,
+              parent_id: null, repeat_key: null, remove_on_complete: true, remove_on_fail: null, progress: null, singleton_key: null, partition_key: null, dead_letter_queue: null,
               created_at: now, updated_at: now,
             }] as any)
           }
@@ -761,7 +761,7 @@ describe("Queue module", () => {
               priority: 0, attempts: 1, max_attempts: 1, backoff: null, unique_key: null,
               scheduled_at: now, started_at: now, completed_at: now, failed_at: null,
               result: null, error: null, error_stack: null, timeout: null, worker_id: null,
-              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: null,
+              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: null, progress: null, singleton_key: null, partition_key: null, dead_letter_queue: null,
               created_at: now, updated_at: now,
             }] as any)
           }
@@ -789,7 +789,7 @@ describe("Queue module", () => {
               priority: 0, attempts: 1, max_attempts: 1, backoff: null, unique_key: null,
               scheduled_at: now, started_at: now, completed_at: null, failed_at: now,
               result: null, error: "err", error_stack: null, timeout: null, worker_id: null,
-              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: true,
+              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: true, progress: null, singleton_key: null, partition_key: null, dead_letter_queue: null,
               created_at: now, updated_at: now,
             }] as any)
           }
@@ -815,7 +815,7 @@ describe("Queue module", () => {
               priority: 0, attempts: 1, max_attempts: 1, backoff: null, unique_key: null,
               scheduled_at: now, started_at: now, completed_at: null, failed_at: now,
               result: null, error: "err", error_stack: null, timeout: null, worker_id: null,
-              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: null,
+              parent_id: null, repeat_key: null, remove_on_complete: null, remove_on_fail: null, progress: null, singleton_key: null, partition_key: null, dead_letter_queue: null,
               created_at: now, updated_at: now,
             }] as any)
           }

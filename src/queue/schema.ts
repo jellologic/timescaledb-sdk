@@ -52,6 +52,10 @@ export const jobQueue = pgTable("_tsdb_sdk_job_queue", {
   repeatKey: text("repeat_key"),
   removeOnComplete: jsonb("remove_on_complete"),
   removeOnFail: jsonb("remove_on_fail"),
+  progress: jsonb("progress"),
+  singletonKey: text("singleton_key"),
+  partitionKey: text("partition_key"),
+  deadLetterQueue: text("dead_letter_queue"),
   createdAt: timestamptz("created_at").notNull().defaultNow(),
   updatedAt: timestamptz("updated_at").notNull().defaultNow(),
 }, () => [
@@ -89,6 +93,11 @@ export const jobQueue = pgTable("_tsdb_sdk_job_queue", {
   index("_tsdb_sdk_job_queue_cleanup_idx",
     [expr("completed_at"), expr("failed_at")],
     { where: `"status" IN ('completed', 'failed')` }),
+
+  // Singleton key index (dedup for waiting+active only)
+  uniqueIndex("_tsdb_sdk_job_queue_singleton_key_idx",
+    [expr("queue"), expr("singleton_key")],
+    { where: `"singleton_key" IS NOT NULL AND "status" IN ('waiting', 'active')` }),
 
   // Notify trigger on insert or status update
   trigger("_tsdb_sdk_job_queue_notify", {
@@ -170,6 +179,17 @@ export const jobWorkers = pgTable("_tsdb_sdk_job_workers", {
 ])
 
 // ---------------------------------------------------------------------------
+// Table 5: _tsdb_sdk_queue_state (pause/resume per queue)
+// ---------------------------------------------------------------------------
+
+export const queueState = pgTable("_tsdb_sdk_queue_state", {
+  queue: text("queue").notNull().primaryKey(),
+  paused: boolean("paused").notNull().default(false),
+  pausedAt: timestamptz("paused_at"),
+  updatedAt: timestamptz("updated_at").notNull().defaultNow(),
+})
+
+// ---------------------------------------------------------------------------
 // All definitions for migration integration
 // ---------------------------------------------------------------------------
 
@@ -179,4 +199,5 @@ export const queueDefinitions: ReadonlyArray<SchemaDefinition> = [
   jobWorkflows,
   jobSchedules,
   jobWorkers,
+  queueState,
 ]

@@ -28,6 +28,10 @@ const mapRow = (row: any): JobRecord => ({
   repeatKey: row.repeat_key,
   removeOnComplete: row.remove_on_complete ?? null,
   removeOnFail: row.remove_on_fail ?? null,
+  progress: row.progress ?? null,
+  singletonKey: row.singleton_key ?? null,
+  partitionKey: row.partition_key ?? null,
+  deadLetterQueue: row.dead_letter_queue ?? null,
   createdAt: new Date(row.created_at),
   updatedAt: new Date(row.updated_at),
 })
@@ -59,6 +63,9 @@ export const enqueue = <TData = unknown>(
     const maxAttempts = options?.attempts ?? 1
     const backoff = options?.backoff ?? null
     const uniqueKey = options?.uniqueKey ?? null
+    const singletonKey = options?.singletonKey ?? null
+    const partitionKey = options?.partitionKey ?? null
+    const deadLetterQueue = options?.deadLetterQueue ?? null
     const timeout = options?.timeout ?? null
     const removeOnComplete = options?.removeOnComplete ?? null
     const removeOnFail = options?.removeOnFail ?? null
@@ -75,21 +82,26 @@ export const enqueue = <TData = unknown>(
     }
 
     // When uniqueKey is provided, use ON CONFLICT to reject duplicates for active/waiting/delayed jobs
+    // When singletonKey is provided (and no uniqueKey), use ON CONFLICT for waiting+active only
     const conflictClause = uniqueKey
       ? `ON CONFLICT ("queue", "unique_key") WHERE "unique_key" IS NOT NULL AND "status" NOT IN ('completed', 'failed', 'cancelled')
-         DO UPDATE SET "updated_at" = NOW()` // no-op update to return the existing row
+         DO UPDATE SET "updated_at" = NOW()`
+      : singletonKey
+      ? `ON CONFLICT ("queue", "singleton_key") WHERE "singleton_key" IS NOT NULL AND "status" IN ('waiting', 'active')
+         DO UPDATE SET "updated_at" = NOW()`
       : ""
 
     const rows = yield* client.execute<any>(
       `INSERT INTO "_tsdb_sdk_job_queue"
-        ("queue", "name", "data", "status", "priority", "max_attempts", "backoff", "unique_key", "scheduled_at", "timeout", "remove_on_complete", "remove_on_fail")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ("queue", "name", "data", "status", "priority", "max_attempts", "backoff", "unique_key", "scheduled_at", "timeout", "remove_on_complete", "remove_on_fail", "singleton_key", "partition_key", "dead_letter_queue")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        ${conflictClause}
        RETURNING *`,
       [queue, name, JSON.stringify(data), status, priority, maxAttempts,
        backoff ? JSON.stringify(backoff) : null, uniqueKey, scheduledAt.toISOString(), timeout,
        removeOnComplete !== null ? JSON.stringify(removeOnComplete) : null,
-       removeOnFail !== null ? JSON.stringify(removeOnFail) : null]
+       removeOnFail !== null ? JSON.stringify(removeOnFail) : null,
+       singletonKey, partitionKey, deadLetterQueue]
     )
 
     return mapRow(rows[0]) as JobRecord<TData>
@@ -118,6 +130,9 @@ export const enqueueBulk = <TData = unknown>(
       const maxAttempts = job.options?.attempts ?? 1
       const backoff = job.options?.backoff ?? null
       const uniqueKey = job.options?.uniqueKey ?? null
+      const singletonKey = job.options?.singletonKey ?? null
+      const partitionKey = job.options?.partitionKey ?? null
+      const deadLetterQueue = job.options?.deadLetterQueue ?? null
       const timeout = job.options?.timeout ?? null
 
       let status: JobStatus = "waiting"
@@ -132,18 +147,19 @@ export const enqueueBulk = <TData = unknown>(
       }
 
       values.push(
-        `($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6}, $${paramIdx + 7}, $${paramIdx + 8}, $${paramIdx + 9})`
+        `($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6}, $${paramIdx + 7}, $${paramIdx + 8}, $${paramIdx + 9}, $${paramIdx + 10}, $${paramIdx + 11}, $${paramIdx + 12})`
       )
       params.push(
         queue, job.name, JSON.stringify(job.data), status, priority, maxAttempts,
-        backoff ? JSON.stringify(backoff) : null, uniqueKey, scheduledAt.toISOString(), timeout
+        backoff ? JSON.stringify(backoff) : null, uniqueKey, scheduledAt.toISOString(), timeout,
+        singletonKey, partitionKey, deadLetterQueue
       )
-      paramIdx += 10
+      paramIdx += 13
     }
 
     const rows = yield* client.execute<any>(
       `INSERT INTO "_tsdb_sdk_job_queue"
-        ("queue", "name", "data", "status", "priority", "max_attempts", "backoff", "unique_key", "scheduled_at", "timeout")
+        ("queue", "name", "data", "status", "priority", "max_attempts", "backoff", "unique_key", "scheduled_at", "timeout", "singleton_key", "partition_key", "dead_letter_queue")
        VALUES ${values.join(", ")}
        RETURNING *`,
       params
@@ -159,16 +175,33 @@ export const enqueueBulk = <TData = unknown>(
 export const dequeue = (
   queue: string,
   limit: number,
-  workerId: string
+  workerId: string,
+  options?: { readonly partitionIndex?: number; readonly partitionTotal?: number }
 ): Effect.Effect<ReadonlyArray<JobRecord>, QueueError, TimescaleClient> =>
   Effect.gen(function* () {
     yield* ensureQueueTables
     const client = yield* TimescaleClient
 
+    // Check if queue is paused (inline to avoid circular import with PauseResume.ts)
+    const pauseRows = yield* client.execute<{ paused: boolean }>(
+      `SELECT "paused" FROM "_tsdb_sdk_queue_state" WHERE "queue" = $1`,
+      [queue]
+    ).pipe(Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<{ paused: boolean }>)))
+    if (pauseRows.length > 0 && pauseRows[0] && pauseRows[0].paused === true) return []
+
+    // Build partition filter clause
+    const hasPartition = options?.partitionIndex !== undefined && options?.partitionTotal !== undefined
+    const partitionClause = hasPartition
+      ? ` AND "partition_key" IS NOT NULL AND ((hashtext("partition_key") % $4) + $4) % $4 = $5`
+      : ""
+    const params: unknown[] = hasPartition
+      ? [queue, limit, workerId, options!.partitionTotal, options!.partitionIndex]
+      : [queue, limit, workerId]
+
     const rows = yield* client.execute<any>(
       `WITH candidates AS (
         SELECT id FROM "_tsdb_sdk_job_queue"
-        WHERE "queue" = $1 AND "status" = 'waiting' AND "scheduled_at" <= NOW()
+        WHERE "queue" = $1 AND "status" = 'waiting' AND "scheduled_at" <= NOW()${partitionClause}
         ORDER BY "priority" ASC, "created_at" ASC
         FOR UPDATE SKIP LOCKED
         LIMIT $2
@@ -181,7 +214,7 @@ export const dequeue = (
         RETURNING j.*
       )
       SELECT * FROM updated ORDER BY "priority" ASC, "created_at" ASC`,
-      [queue, limit, workerId]
+      params
     )
 
     return rows.map(mapRow)
@@ -264,6 +297,13 @@ export const failJob = (
     }
 
     const job = mapRow(rows[0])
+
+    // Route to dead letter queue if configured and max attempts exhausted
+    if (job.deadLetterQueue && job.attempts >= job.maxAttempts) {
+      yield* enqueue(job.deadLetterQueue, job.name, job.data, {
+        priority: job.priority,
+      })
+    }
 
     // Handle removeOnFail: true deletes immediately, number keeps that many
     if (job.removeOnFail === true) {
@@ -481,5 +521,31 @@ export const obliterate = (
   }).pipe(
     Effect.mapError((error) =>
       error instanceof QueueError ? error : new QueueError({ message: `Failed to obliterate queue: ${String(error)}`, cause: error })
+    )
+  )
+
+export const updateJobProgress = (
+  jobId: string,
+  progress: { readonly percent?: number; readonly data?: unknown }
+): Effect.Effect<JobRecord, QueueError, TimescaleClient> =>
+  Effect.gen(function* () {
+    const client = yield* TimescaleClient
+
+    const rows = yield* client.execute<any>(
+      `UPDATE "_tsdb_sdk_job_queue"
+       SET "progress" = $2, "updated_at" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [jobId, JSON.stringify(progress)]
+    )
+
+    if (rows.length === 0) {
+      return yield* Effect.fail(new QueueError({ message: `Job not found: ${jobId}` }))
+    }
+
+    return mapRow(rows[0])
+  }).pipe(
+    Effect.mapError((error) =>
+      error instanceof QueueError ? error : new QueueError({ message: `Failed to update job progress: ${String(error)}`, cause: error })
     )
   )

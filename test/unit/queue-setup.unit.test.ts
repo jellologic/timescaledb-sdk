@@ -158,7 +158,7 @@ describe("Queue Setup", () => {
   })
 
   test("queueDefinitions exports valid SchemaDefinition array", () => {
-    expect(queueDefinitions).toHaveLength(5)
+    expect(queueDefinitions).toHaveLength(6)
 
     // Trigger function
     expect(queueDefinitions[0]._tag).toBe("TriggerFunction")
@@ -168,7 +168,7 @@ describe("Queue Setup", () => {
     expect(queueDefinitions[1]._tag).toBe("Table")
     expect(jobQueue.name).toBe("_tsdb_sdk_job_queue")
     expect(Object.keys(jobQueue.columns)).toContain("status")
-    expect(jobQueue.indexes.length).toBe(7)
+    expect(jobQueue.indexes.length).toBe(8)
     expect(jobQueue.triggers.length).toBe(1)
 
     expect(queueDefinitions[2]._tag).toBe("Table")

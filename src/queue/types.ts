@@ -14,6 +14,9 @@ export interface JobOptions {
   readonly attempts?: number
   readonly backoff?: BackoffStrategy
   readonly uniqueKey?: string
+  readonly singletonKey?: string
+  readonly partitionKey?: string
+  readonly deadLetterQueue?: string
   readonly scheduledAt?: Date
   readonly timeout?: number
   readonly removeOnComplete?: boolean | number
@@ -53,6 +56,10 @@ export interface JobRecord<TData = unknown, TResult = unknown> {
   readonly repeatKey: string | null
   readonly removeOnComplete: boolean | number | null
   readonly removeOnFail: boolean | number | null
+  readonly progress: { readonly percent?: number; readonly data?: unknown } | null
+  readonly singletonKey: string | null
+  readonly partitionKey: string | null
+  readonly deadLetterQueue: string | null
   readonly createdAt: Date
   readonly updatedAt: Date
 }
@@ -68,6 +75,8 @@ export interface WorkerConfig<TData = unknown, TResult = unknown> {
   readonly hostname?: string
   readonly metadata?: Record<string, unknown>
   readonly heartbeatInterval?: number
+  readonly partitionIndex?: number
+  readonly partitionTotal?: number
   readonly processor: (job: JobRecord<TData>) => Effect.Effect<TResult, unknown, TimescaleClient>
 }
 
@@ -179,4 +188,20 @@ export interface WorkerControlMessage {
   readonly senderId: string
   readonly targetWorkerId?: string
   readonly timestamp: Date
+}
+
+export interface QueueMetrics {
+  readonly queue: string
+  readonly periodSeconds: number
+  readonly completedCount: number
+  readonly failedCount: number
+  readonly throughput: number
+  readonly failureRate: number
+  readonly avgDurationMs: number | null
+  readonly p95DurationMs: number | null
+  readonly avgWaitMs: number | null
+  readonly p95WaitMs: number | null
+  readonly activeJobs: number
+  readonly waitingJobs: number
+  readonly oldestPendingAgeMs: number | null
 }

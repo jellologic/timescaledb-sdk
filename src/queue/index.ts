@@ -1,7 +1,11 @@
 // Core
 export { enqueue, enqueueBulk, dequeue, getJob, getJobsByStatus, queueStats,
          completeJob, failJob, retryJob, cancelJob, obliterate, promoteDelayed,
-         calculateNextDelay } from "./Queue.js"
+         calculateNextDelay, updateJobProgress } from "./Queue.js"
+// Metrics
+export { queueMetrics } from "./Metrics.js"
+// Pause/Resume
+export { pauseQueue, resumeQueue, isQueuePaused } from "./PauseResume.js"
 // Worker
 export { QueueWorker, workerLayer } from "./Worker.js"
 // Orchestrator
@@ -19,9 +23,9 @@ export { pruneCompleted, pruneFailed, recoverStalled, runMaintenance } from "./M
 // Setup
 export { ensureQueueTables } from "./Setup.js"
 // Schema definitions (for migration integration)
-export { queueDefinitions, jobQueue, jobWorkflows, jobSchedules, jobWorkers, jobNotifyFunction } from "./schema.js"
+export { queueDefinitions, jobQueue, jobWorkflows, jobSchedules, jobWorkers, jobNotifyFunction, queueState } from "./schema.js"
 // Types
 export type { JobStatus, JobOptions, JobRecord, RepeatOptions, BackoffStrategy,
              QueueConfig, WorkerConfig, WorkflowStep, WorkflowRecord, WorkflowStepStatus,
-             QueueEvent, QueueEventType, QueueStats, ScheduleRecord, MaintenanceConfig,
+             QueueEvent, QueueEventType, QueueStats, QueueMetrics, ScheduleRecord, MaintenanceConfig,
              WorkerRecord, WorkerSignal, WorkerControlMessage } from "./types.js"
