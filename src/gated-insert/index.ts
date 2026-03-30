@@ -62,10 +62,12 @@ DECLARE
 BEGIN
   v_hash := md5(concat_ws('|', ${hashExpr}));
 
+  -- Lock the hash row (if exists) to serialize concurrent inserts for the same entity
   SELECT "payload_hash" INTO v_prev
   FROM ${quoteIdentifier(TRACKING_TABLE)}
   WHERE "entity_key" = concat_ws(':', ${entityKeyExpr})
-    AND "table_name" = '${tableName}';
+    AND "table_name" = '${tableName}'
+  FOR UPDATE;
 
   IF v_prev = v_hash THEN
     RETURN false;
@@ -95,6 +97,8 @@ $$`
   const bulkHashExpr = hashColumns.map(c => `(v_item->>'${c}')`).join(`, '|', `)
   const bulkEntityKeyExpr = deduplicateBy.map(c => `(v_item->>'${c}')`).join(`, ':', `)
 
+  const sortKeyExpr = `concat_ws(':', ${deduplicateBy.map(c => `elem->>'${c}'`).join(", ")})`
+
   const bulkFnSql = `CREATE OR REPLACE FUNCTION ${quoteIdentifier(config.bulkFn)}(p_items jsonb)
 RETURNS TABLE(inserted int, skipped int, total int)
 LANGUAGE plpgsql SECURITY DEFINER
@@ -108,13 +112,15 @@ DECLARE
 BEGIN
   SET LOCAL tsdb_sdk.bypass_guard = 'on';
 
-  FOR v_item IN SELECT * FROM jsonb_array_elements(p_items) LOOP
+  -- Sort by entity key to prevent deadlocks when parallel workers process overlapping keys
+  FOR v_item IN SELECT elem FROM jsonb_array_elements(p_items) AS elem ORDER BY ${sortKeyExpr} LOOP
     v_hash := md5(concat_ws('|', ${bulkHashExpr}));
 
     SELECT "payload_hash" INTO v_prev
     FROM ${quoteIdentifier(TRACKING_TABLE)}
     WHERE "entity_key" = concat_ws(':', ${bulkEntityKeyExpr})
-      AND "table_name" = '${tableName}';
+      AND "table_name" = '${tableName}'
+    FOR UPDATE;
 
     IF v_prev = v_hash THEN
       v_skipped := v_skipped + 1;
