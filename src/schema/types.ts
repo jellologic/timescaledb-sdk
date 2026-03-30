@@ -177,6 +177,22 @@ export interface TieringConfig {
 /** Modern columnstore config (TimescaleDB 2.18+). Alias for compression settings. */
 export type ColumnstoreConfig = CompressionConfig
 
+export interface GatedInsertConfig {
+  /** Name of the single-row insert function */
+  readonly singleFn: string
+  /** Name of the bulk insert function (takes jsonb array) */
+  readonly bulkFn: string
+  /** Roles granted EXECUTE on the insert functions */
+  readonly roles: ReadonlyArray<string>
+  /** Change detection configuration */
+  readonly changeDetection: {
+    /** Columns to include in the change hash (md5) */
+    readonly hashColumns: ReadonlyArray<string>
+    /** Columns forming the entity identity for deduplication */
+    readonly deduplicateBy: ReadonlyArray<string>
+  }
+}
+
 export interface HypertableConfig {
   readonly timeColumn: string
   readonly chunkInterval?: string
@@ -200,6 +216,8 @@ export interface HypertableConfig {
   readonly integerNowFunc?: string
   /** Direct compress settings for INSERT/COPY optimization (v2.18+) */
   readonly directCompress?: import("../compression/types.js").DirectCompressSettings
+  /** Gated insert: route writes through change-detection functions */
+  readonly gatedInsert?: GatedInsertConfig
 }
 
 export interface HypertableDefinition<
