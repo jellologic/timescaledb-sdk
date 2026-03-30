@@ -1,6 +1,6 @@
 {
   "name": "@jellologic/timescaledb-sdk",
-  "version": "0.2.21",
+  "version": "0.2.22",
   "description": "Complete, type-safe TypeScript SDK for TimescaleDB — hypertables, continuous aggregates, compression, hyperfunctions, migrations, and more. Built on Effect.",
   "type": "module",
   "main": "./dist/index.js",

@@ -82,6 +82,10 @@ describe("generateGatedInsertSql", () => {
       expect(result.singleFnSql).toContain("DO UPDATE SET")
     })
 
+    test("uses FOR UPDATE on hash lookup to serialize concurrent inserts", () => {
+      expect(result.singleFnSql).toContain("FOR UPDATE")
+    })
+
     test("sets bypass_guard before insert", () => {
       expect(result.singleFnSql).toContain("SET LOCAL tsdb_sdk.bypass_guard = 'on'")
     })
@@ -109,8 +113,14 @@ describe("generateGatedInsertSql", () => {
       expect(result.bulkFnSql).toContain("SECURITY DEFINER")
     })
 
-    test("loops over jsonb_array_elements", () => {
+    test("loops over jsonb_array_elements sorted by entity key", () => {
       expect(result.bulkFnSql).toContain("jsonb_array_elements(p_items)")
+      expect(result.bulkFnSql).toContain("ORDER BY")
+      expect(result.bulkFnSql).toContain("elem->>'event_id'")
+    })
+
+    test("uses FOR UPDATE on hash lookup to prevent deadlocks", () => {
+      expect(result.bulkFnSql).toContain("FOR UPDATE")
     })
 
     test("extracts values with ->> and casts", () => {
