@@ -33,7 +33,7 @@ describe("definitionsToSnapshot", () => {
 
     const activeCol = snapshot.tables[0]!.columns.find((c) => c.name === "active")
     expect(activeCol!.isNullable).toBe(true)
-    expect(activeCol!.defaultValue).toBe("true")
+    expect(activeCol!.defaultValue).toBe("TRUE")
   })
 
   test("converts hypertable to both TableSnapshot and HypertableSnapshot", () => {
