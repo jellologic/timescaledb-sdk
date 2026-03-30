@@ -2,7 +2,7 @@ import type { TableDefinition, HypertableDefinition, ColumnDef, EnumTypeDef, Cag
 import type { FunctionDefinition, ProcedureDefinition, TriggerFunctionDefinition } from "../functions/types.js"
 import { sqlTypeToPg } from "../functions/transpiler/TypeResolver.js"
 import type { SchemaSnapshot, TableSnapshot, ColumnSnapshot, HypertableSnapshot, CaggSnapshot, ConstraintSnapshot, TriggerSnapshot, EnumSnapshot, RlsPolicySnapshot, JobSnapshot, CaggPolicySnapshot, HypertablePolicySnapshot, ViewSnapshot, MaterializedViewSnapshot, ViewDependency, FunctionSnapshot, ProcedureSnapshot, TriggerFunctionSnapshot, IndexSnapshotColumn, RoleSnapshot, TableGrantSnapshot, SchemaGrantSnapshot, RoleMembershipSnapshot, DefaultPrivilegeSnapshot } from "./types.js"
-import { isSqlExpression } from "../internal/sql.js"
+import { isSqlExpression, toSqlValue } from "../internal/sql.js"
 import type { SchemaDefinition } from "./Generator.js"
 
 /** Resolve a TS property key to its SQL column name */
@@ -23,7 +23,7 @@ const columnDefToSnapshot = (col: ColumnDef): ColumnSnapshot => ({
   dataType: col.sqlType,
   isNullable: !col.isNotNull,
   defaultValue: col.defaultValue !== undefined
-    ? (isSqlExpression(col.defaultValue) ? col.defaultValue.value : String(col.defaultValue))
+    ? toSqlValue(col.defaultValue)
     : null,
 })
 

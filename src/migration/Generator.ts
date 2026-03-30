@@ -321,7 +321,10 @@ export const diffSchema = (
         columnsToDropDefault.push({ table: def.name, schema: def.schema, column: col.name })
       } else if (defHasDefault && existingHasDefault) {
         const defStr = toSqlValue(col.defaultValue)
-        if (defStr !== existingCol.defaultValue) {
+        // Normalize for comparison: PostgreSQL returns lowercase ('false'), toSqlValue returns uppercase ('FALSE')
+        const normalizedDef = defStr.toLowerCase()
+        const normalizedExisting = (existingCol.defaultValue ?? "").toLowerCase()
+        if (normalizedDef !== normalizedExisting) {
           columnsToSetDefault.push({ table: def.name, schema: def.schema, column: col.name, defaultValue: col.defaultValue })
         }
       }
