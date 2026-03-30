@@ -155,6 +155,74 @@ export const recoverStalled = (
     )
   )
 
+export const recoverStalledGlobal = (
+  stalledThreshold: number = 30000
+): Effect.Effect<number, QueueError, TimescaleClient> =>
+  Effect.gen(function* () {
+    yield* ensureQueueTables
+    const client = yield* TimescaleClient
+
+    const retryable = yield* client.execute<any>(
+      `UPDATE "_tsdb_sdk_job_queue"
+       SET "status" = 'waiting', "started_at" = NULL, "worker_id" = NULL, "updated_at" = NOW()
+       WHERE "status" = 'active'
+         AND "started_at" < NOW() - INTERVAL '${stalledThreshold} milliseconds'
+         AND "attempts" < "max_attempts"
+       RETURNING "id"`
+    )
+
+    const failed = yield* client.execute<any>(
+      `UPDATE "_tsdb_sdk_job_queue"
+       SET "status" = 'failed', "failed_at" = NOW(), "updated_at" = NOW(),
+           "error" = 'Job stalled and exceeded max attempts'
+       WHERE "status" = 'active'
+         AND "started_at" < NOW() - INTERVAL '${stalledThreshold} milliseconds'
+         AND "attempts" >= "max_attempts"
+       RETURNING "id"`
+    )
+
+    return retryable.length + failed.length
+  }).pipe(
+    Effect.mapError((error) =>
+      error instanceof QueueError ? error : new QueueError({ message: `Failed to recover stalled jobs globally: ${String(error)}`, cause: error })
+    )
+  )
+
+export const countArchivable = (
+  queue?: string,
+  options?: { readonly maxAge?: number }
+): Effect.Effect<{ readonly completed: number; readonly failed: number; readonly total: number }, QueueError, TimescaleClient> =>
+  Effect.gen(function* () {
+    yield* ensureQueueTables
+    const client = yield* TimescaleClient
+
+    const queueFilter = queue ? ` AND "queue" = $1` : ""
+    const params = queue ? [queue] : []
+
+    let ageFilter = ""
+    if (options?.maxAge) {
+      ageFilter = ` AND COALESCE("completed_at", "failed_at") < NOW() - INTERVAL '${options.maxAge} milliseconds'`
+    }
+
+    const rows = yield* client.execute<any>(
+      `SELECT
+        COALESCE(COUNT(*) FILTER (WHERE "status" = 'completed'), 0)::int AS completed,
+        COALESCE(COUNT(*) FILTER (WHERE "status" = 'failed'), 0)::int AS failed
+      FROM "_tsdb_sdk_job_queue"
+      WHERE "status" IN ('completed', 'failed')${queueFilter}${ageFilter}`,
+      params
+    )
+
+    const row = rows[0] ?? { completed: 0, failed: 0 }
+    const completed = Number(row.completed)
+    const failed = Number(row.failed)
+    return { completed, failed, total: completed + failed }
+  }).pipe(
+    Effect.mapError((error) =>
+      error instanceof QueueError ? error : new QueueError({ message: `Failed to count archivable jobs: ${String(error)}`, cause: error })
+    )
+  )
+
 export const runMaintenance = (
   queue: string,
   config?: MaintenanceConfig
