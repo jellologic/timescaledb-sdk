@@ -74,3 +74,8 @@ export class QueueError extends Data.TaggedError("QueueError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
+
+export class KvError extends Data.TaggedError("KvError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}
