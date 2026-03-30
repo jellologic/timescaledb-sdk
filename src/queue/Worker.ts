@@ -119,7 +119,10 @@ export const workerLayer = <TData = unknown, TResult = unknown>(
             continue
           }
 
-          const jobs = yield* dequeue(config.queue, available, workerId)
+          const partitionOpts = config.partitionIndex !== undefined && config.partitionTotal !== undefined
+            ? { partitionIndex: config.partitionIndex, partitionTotal: config.partitionTotal }
+            : undefined
+          const jobs = yield* dequeue(config.queue, available, workerId, partitionOpts)
 
           if (jobs.length === 0) {
             yield* waitForWork(config.queue, pollInterval, client, useNotify)

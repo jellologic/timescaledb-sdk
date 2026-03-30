@@ -5,7 +5,7 @@ import { quoteIdentifier, toSqlValue } from "../internal/sql.js"
 import type { TableDefinition, ColumnDef, ConstraintDef, IndexDef, TriggerDef, IndexColumn } from "../schema/types.js"
 import type { TriggerFunctionDefinition } from "../functions/types.js"
 import type { SchemaDefinition } from "../migration/Generator.js"
-import { jobNotifyFunction, jobQueue, jobWorkflows, jobSchedules, jobWorkers } from "./schema.js"
+import { jobNotifyFunction, jobQueue, jobWorkflows, jobSchedules, jobWorkers, queueState } from "./schema.js"
 
 // ---------------------------------------------------------------------------
 // DDL generators (mirrors migration/Generator.ts helpers for idempotent DDL)
@@ -120,7 +120,7 @@ const generateCreateTrigger = (tableName: string, trg: TriggerDef): string => {
 
 const definitionsToSql = (): string[] => {
   const statements: string[] = []
-  const defs: ReadonlyArray<SchemaDefinition> = [jobNotifyFunction, jobQueue, jobWorkflows, jobSchedules, jobWorkers]
+  const defs: ReadonlyArray<SchemaDefinition> = [jobNotifyFunction, jobQueue, jobWorkflows, jobSchedules, jobWorkers, queueState]
 
   for (const def of defs) {
     if (def._tag === "TriggerFunction") {
@@ -156,6 +156,17 @@ export const ensureQueueTables: Effect.Effect<void, QueueError, TimescaleClient>
     const client = yield* TimescaleClient
 
     for (const sql of definitionsToSql()) {
+      yield* client.execute(sql)
+    }
+
+    // Schema migrations for columns added after initial release
+    const columnMigrations = [
+      `ALTER TABLE "_tsdb_sdk_job_queue" ADD COLUMN IF NOT EXISTS "progress" jsonb`,
+      `ALTER TABLE "_tsdb_sdk_job_queue" ADD COLUMN IF NOT EXISTS "singleton_key" text`,
+      `ALTER TABLE "_tsdb_sdk_job_queue" ADD COLUMN IF NOT EXISTS "partition_key" text`,
+      `ALTER TABLE "_tsdb_sdk_job_queue" ADD COLUMN IF NOT EXISTS "dead_letter_queue" text`,
+    ]
+    for (const sql of columnMigrations) {
       yield* client.execute(sql)
     }
 
