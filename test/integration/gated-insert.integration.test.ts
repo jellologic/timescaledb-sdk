@@ -1,7 +1,7 @@
 import { test, expect, describe, afterAll } from "bun:test"
 import { Effect } from "effect"
 import { TimescaleClient } from "../../src/Client.js"
-import { generateGatedInsertSql } from "../../src/gated-insert/index.js"
+import { generateGatedInsertSql, gatedInsert, gatedInsertBulk, applyGatedInsert, removeGatedInsert } from "../../src/gated-insert/index.js"
 import { integer, text, timestamptz, numeric } from "../../src/schema/Column.js"
 import type { ColumnDef, GatedInsertConfig } from "../../src/schema/types.js"
 import { liveClient } from "../setup/test-layers.js"
@@ -43,7 +43,8 @@ afterAll(async () => {
       yield* client.execute(`DROP FUNCTION IF EXISTS "insert_test_gated_listing"`).pipe(Effect.catchAll(() => Effect.void))
       yield* client.execute(`DROP FUNCTION IF EXISTS "insert_test_gated_listings_bulk"`).pipe(Effect.catchAll(() => Effect.void))
       yield* client.execute(`DROP TABLE IF EXISTS "${TABLE}"`).pipe(Effect.catchAll(() => Effect.void))
-      yield* client.execute(`DELETE FROM "_tsdb_sdk_entity_hashes" WHERE "table_name" = '${TABLE}'`).pipe(Effect.catchAll(() => Effect.void))
+      yield* client.execute(`DELETE FROM "_tsdb_sdk_entity_hashes" WHERE "table_name" IN ('${TABLE}', 'test_gated_apply')`).pipe(Effect.catchAll(() => Effect.void))
+      yield* client.execute(`DROP TABLE IF EXISTS "test_gated_apply"`).pipe(Effect.catchAll(() => Effect.void))
     })
   ).catch(() => {})
   await runner.dispose()
@@ -219,5 +220,93 @@ describe("Integration — Verified Row Counts", () => {
         expect(rows[0].count).toBeLessThanOrEqual(4)
       })
     )
+  })
+})
+
+// ============================================
+// Apply/Remove helpers
+// ============================================
+describe("Integration — applyGatedInsert + removeGatedInsert", () => {
+  const TABLE2 = "test_gated_apply"
+  const config2: GatedInsertConfig = {
+    singleFn: "insert_test_apply",
+    bulkFn: "insert_test_apply_bulk",
+    roles: ["postgres"],
+    changeDetection: {
+      hashColumns: ["val"],
+      deduplicateBy: ["key"],
+    },
+  }
+  const columns2: Record<string, ColumnDef> = {
+    key: text("key").notNull().build(),
+    val: text("val").build(),
+    ts: timestamptz("ts").notNull().defaultNow().build(),
+  }
+
+  test("applyGatedInsert creates all artifacts", async () => {
+    await run(
+      Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        yield* client.execute(`CREATE TABLE IF NOT EXISTS "${TABLE2}" ("key" text NOT NULL, "val" text, "ts" timestamptz NOT NULL DEFAULT NOW())`)
+        yield* applyGatedInsert(TABLE2, config2, columns2)
+
+        // Verify function exists
+        const fns = yield* client.execute<any>(
+          `SELECT routine_name FROM information_schema.routines WHERE routine_name = $1`,
+          ["insert_test_apply"]
+        )
+        expect(fns.length).toBe(1)
+
+        // Verify trigger exists
+        const trgs = yield* client.execute<any>(
+          `SELECT trigger_name FROM information_schema.triggers WHERE event_object_table = $1`,
+          [TABLE2]
+        )
+        expect(trgs.length).toBeGreaterThanOrEqual(1)
+      })
+    )
+  })
+
+  test("gatedInsert helper works after apply", async () => {
+    const inserted = await run(gatedInsert("insert_test_apply", ["k1", "v1", new Date().toISOString()]))
+    expect(inserted).toBe(true)
+
+    // Second call with same data → skipped
+    const skipped = await run(gatedInsert("insert_test_apply", ["k1", "v1", new Date().toISOString()]))
+    expect(skipped).toBe(false)
+  })
+
+  test("gatedInsertBulk helper works after apply", async () => {
+    const result = await run(gatedInsertBulk("insert_test_apply_bulk", [
+      { key: "k2", val: "v2", ts: new Date().toISOString() },
+      { key: "k3", val: "v3", ts: new Date().toISOString() },
+    ]))
+    expect(result.inserted).toBe(2)
+    expect(result.total).toBe(2)
+  })
+
+  test("removeGatedInsert tears down all artifacts", async () => {
+    await run(removeGatedInsert(TABLE2, config2))
+
+    // Verify function is gone
+    const fns = await run(
+      Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        return yield* client.execute<any>(
+          `SELECT routine_name FROM information_schema.routines WHERE routine_name = $1`,
+          ["insert_test_apply"]
+        )
+      })
+    )
+    expect(fns.length).toBe(0)
+
+    // Direct INSERT should work again (guard removed)
+    await run(
+      Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        yield* client.execute(`INSERT INTO "${TABLE2}" ("key", "val") VALUES ('direct', 'ok')`)
+      })
+    )
+    // If we get here without error, the guard trigger was successfully removed
   })
 })
