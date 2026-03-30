@@ -4,11 +4,11 @@ import { TimescaleClient } from "../../src/Client.js"
 import { resetInitialized, ensureQueueTables } from "../../src/queue/Setup.js"
 import {
   enqueue, enqueueBulk, dequeue, completeJob, failJob, retryJob, cancelJob,
-  getJob, getJobsByStatus, queueStats, promoteDelayed, obliterate, updateJobProgress,
+  getJob, getJobsByStatus, getChildJobs, queueStats, promoteDelayed, obliterate, updateJobProgress,
 } from "../../src/queue/Queue.js"
 import { queueMetrics } from "../../src/queue/Metrics.js"
 import { pauseQueue, resumeQueue, isQueuePaused } from "../../src/queue/PauseResume.js"
-import { pruneCompleted, pruneFailed, recoverStalled, runMaintenance } from "../../src/queue/Maintenance.js"
+import { pruneCompleted, pruneFailed, recoverStalled, recoverStalledGlobal, countArchivable, runMaintenance } from "../../src/queue/Maintenance.js"
 import { addRepeatableJob, removeRepeatableJob, listRepeatableJobs, schedulerTick } from "../../src/queue/Scheduler.js"
 import {
   registerWorker, deregisterWorker, heartbeat, getActiveWorkers, cleanDeadWorkers, getWorker,
@@ -1162,5 +1162,102 @@ describe("Integration — Queue Metrics", () => {
     expect(metrics.p95DurationMs).not.toBeNull()
     expect(metrics.avgWaitMs).not.toBeNull()
     expect(metrics.p95WaitMs).not.toBeNull()
+  })
+})
+
+// ============================================
+// Child Jobs (#39)
+// ============================================
+describe("Integration — Child Jobs", () => {
+  test("getChildJobs returns children by parent_id", async () => {
+    const q = uniqueQueue()
+    await run(
+      Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        yield* ensureQueueTables
+
+        // Create parent job
+        const parent = yield* enqueue(q, "parent", { type: "workflow" })
+
+        // Create child jobs with parent_id via raw SQL (enqueue doesn't support parent_id)
+        yield* client.execute(
+          `INSERT INTO "_tsdb_sdk_job_queue" ("queue", "name", "data", "status", "priority", "max_attempts", "parent_id", "scheduled_at")
+           VALUES ($1, 'child-1', '{"idx":1}', 'waiting', 0, 1, $2, NOW()),
+                  ($1, 'child-2', '{"idx":2}', 'waiting', 0, 1, $2, NOW())`,
+          [q, parent.id]
+        )
+
+        const children = yield* getChildJobs(parent.id)
+        expect(children.length).toBe(2)
+        expect(children[0]!.parentId).toBe(parent.id)
+        expect(children[1]!.parentId).toBe(parent.id)
+      })
+    )
+  })
+
+  test("getChildJobs returns empty for job with no children", async () => {
+    const q = uniqueQueue()
+    const parent = await run(enqueue(q, "lonely", {}))
+    const children = await run(getChildJobs(parent.id))
+    expect(children.length).toBe(0)
+  })
+})
+
+// ============================================
+// Global Stale Recovery (#39)
+// ============================================
+describe("Integration — Global Stale Recovery", () => {
+  test("recoverStalledGlobal recovers across all queues", async () => {
+    const q1 = uniqueQueue()
+    const q2 = uniqueQueue()
+    await run(
+      Effect.gen(function* () {
+        const client = yield* TimescaleClient
+        yield* ensureQueueTables
+
+        // Insert stalled jobs in two different queues
+        yield* client.execute(
+          `INSERT INTO "_tsdb_sdk_job_queue" ("queue", "name", "data", "status", "priority", "max_attempts", "attempts", "started_at", "scheduled_at")
+           VALUES ($1, 'stalled-1', '{}', 'active', 0, 3, 1, NOW() - INTERVAL '5 minutes', NOW()),
+                  ($2, 'stalled-2', '{}', 'active', 0, 3, 1, NOW() - INTERVAL '5 minutes', NOW())`,
+          [q1, q2]
+        )
+      })
+    )
+
+    const recovered = await run(recoverStalledGlobal(30000))
+    expect(recovered).toBeGreaterThanOrEqual(2)
+  })
+})
+
+// ============================================
+// Count Archivable (#39)
+// ============================================
+describe("Integration — Count Archivable", () => {
+  test("countArchivable returns counts for completed and failed jobs", async () => {
+    const q = uniqueQueue()
+    await run(
+      Effect.gen(function* () {
+        const j1 = yield* enqueue(q, "arch-1", {})
+        const j2 = yield* enqueue(q, "arch-2", {})
+        const j3 = yield* enqueue(q, "arch-3", {})
+        yield* dequeue(q, 3, "w-1")
+        yield* completeJob(j1.id)
+        yield* completeJob(j2.id)
+        yield* failJob(j3.id, "error")
+      })
+    )
+
+    const counts = await run(countArchivable(q))
+    expect(counts.completed).toBe(2)
+    expect(counts.failed).toBe(1)
+    expect(counts.total).toBe(3)
+  })
+
+  test("countArchivable with no queue counts globally", async () => {
+    const counts = await run(countArchivable())
+    expect(counts.total).toBeGreaterThanOrEqual(0)
+    expect(typeof counts.completed).toBe("number")
+    expect(typeof counts.failed).toBe("number")
   })
 })

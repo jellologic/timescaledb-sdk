@@ -1,5 +1,5 @@
 // Core
-export { enqueue, enqueueBulk, dequeue, getJob, getJobsByStatus, queueStats,
+export { enqueue, enqueueBulk, dequeue, getJob, getJobsByStatus, getChildJobs, queueStats,
          completeJob, failJob, retryJob, cancelJob, obliterate, promoteDelayed,
          calculateNextDelay, updateJobProgress } from "./Queue.js"
 // Metrics
@@ -19,7 +19,7 @@ export { QueueEventBus, eventBusLayer, emitEvent, listenForEvents } from "./Even
 // Registry
 export { registerWorker, deregisterWorker, heartbeat, getActiveWorkers, cleanDeadWorkers, getWorker } from "./Registry.js"
 // Maintenance
-export { pruneCompleted, pruneFailed, recoverStalled, runMaintenance } from "./Maintenance.js"
+export { pruneCompleted, pruneFailed, recoverStalled, recoverStalledGlobal, countArchivable, runMaintenance } from "./Maintenance.js"
 // Setup
 export { ensureQueueTables } from "./Setup.js"
 // Schema definitions (for migration integration)

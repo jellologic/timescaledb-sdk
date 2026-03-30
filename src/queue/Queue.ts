@@ -444,6 +444,32 @@ export const getJobsByStatus = (
     )
   )
 
+export const getChildJobs = (
+  parentJobId: string,
+  options?: { readonly limit?: number; readonly offset?: number }
+): Effect.Effect<ReadonlyArray<JobRecord>, QueueError, TimescaleClient> =>
+  Effect.gen(function* () {
+    yield* ensureQueueTables
+    const client = yield* TimescaleClient
+
+    const limit = options?.limit ?? 100
+    const offset = options?.offset ?? 0
+
+    const rows = yield* client.execute<any>(
+      `SELECT * FROM "_tsdb_sdk_job_queue"
+       WHERE "parent_id" = $1
+       ORDER BY "created_at" ASC
+       LIMIT $2 OFFSET $3`,
+      [parentJobId, limit, offset]
+    )
+
+    return rows.map(mapRow)
+  }).pipe(
+    Effect.mapError((error) =>
+      error instanceof QueueError ? error : new QueueError({ message: `Failed to get child jobs: ${String(error)}`, cause: error })
+    )
+  )
+
 export const queueStats = (
   queue: string
 ): Effect.Effect<QueueStats, QueueError, TimescaleClient> =>
