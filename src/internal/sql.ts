@@ -31,7 +31,12 @@ export const toSqlValue = (value: unknown): string => {
   if (isSqlExpression(value)) return value.value
   if (typeof value === "number" || typeof value === "bigint") return String(value)
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE"
-  if (typeof value === "string") return quoteString(value)
+  if (typeof value === "string") {
+    // Detect strings that are already SQL-formatted defaults (e.g., "'{}'::jsonb", "NOW()", "gen_random_uuid()")
+    // These should pass through as raw SQL, not be re-quoted
+    if (/^'.*'::\w+/.test(value) || /^[A-Za-z_]+\(/.test(value)) return value
+    return quoteString(value)
+  }
   if (value instanceof Date) return quoteString(value.toISOString())
   return quoteString(JSON.stringify(value))
 }
